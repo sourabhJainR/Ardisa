@@ -15,6 +15,54 @@ pub struct FunctionSignature {
 pub struct SemanticModel {
     pub inferred_types: HashMap<crate::NodeId, Type>,
     pub function_returns: HashMap<String, Type>,
+    /// Structurally validated declarations. Compilation remains fail-closed.
+    pub constructs: Vec<TypedConstructDeclaration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedConstructDeclaration {
+    pub kind: ConstructKind,
+    pub name: String,
+    pub members: Vec<TypedConstructMember>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedConstructMember {
+    Field { name: String, ty: TypeKind, span: Span },
+    Clause { name: String, value: String, span: Span },
+    Transition { from: String, to: String, span: Span },
+}
+
+/// Validate declaration structure and produce a typed semantic representation.
+/// This inspection API omits AIF610; normal analyze() still rejects compilation.
+pub fn analyze_constructs(module: &Module) -> Result<Vec<TypedConstructDeclaration>, Vec<Diagnostic>> {
+    let mut checker = Checker {
+        functions: HashMap::new(),
+        inferred_types: HashMap::new(),
+        function_returns: HashMap::new(),
+        errors: Vec::new(),
+    };
+    validate_construct_declarations(module, &mut checker);
+    if !checker.errors.is_empty() {
+        return Err(checker.errors);
+    }
+    Ok(module.constructs.iter().map(|declaration| TypedConstructDeclaration {
+        kind: declaration.kind,
+        name: declaration.name.clone(),
+        span: declaration.span,
+        members: declaration.members.iter().map(|member| match member {
+            ConstructMember::Field { name, ty, span } => TypedConstructMember::Field {
+                name: name.clone(), ty: ty.kind.clone(), span: *span,
+            },
+            ConstructMember::Clause { name, value, span } => TypedConstructMember::Clause {
+                name: name.clone(), value: value.clone(), span: *span,
+            },
+            ConstructMember::Transition { from, to, span } => TypedConstructMember::Transition {
+                from: from.clone(), to: to.clone(), span: *span,
+            },
+        }).collect(),
+    }).collect())
 }
 
 /// Validate semantic types including String concatenation.
@@ -93,6 +141,16 @@ pub fn analyze(module: &Module) -> Result<SemanticModel, Vec<Diagnostic>> {
         Ok(SemanticModel {
             inferred_types: checker.inferred_types,
             function_returns: checker.function_returns,
+            constructs: module.constructs.iter().map(|declaration| TypedConstructDeclaration {
+                kind: declaration.kind,
+                name: declaration.name.clone(),
+                span: declaration.span,
+                members: declaration.members.iter().map(|member| match member {
+                    ConstructMember::Field { name, ty, span } => TypedConstructMember::Field { name: name.clone(), ty: ty.kind.clone(), span: *span },
+                    ConstructMember::Clause { name, value, span } => TypedConstructMember::Clause { name: name.clone(), value: value.clone(), span: *span },
+                    ConstructMember::Transition { from, to, span } => TypedConstructMember::Transition { from: from.clone(), to: to.clone(), span: *span },
+                }).collect(),
+            }).collect(),
         })
     } else {
         Err(checker.errors)
