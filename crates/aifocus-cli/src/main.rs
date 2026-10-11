@@ -317,6 +317,10 @@ fn display_value(value: &ardisa_core::NativeValue) -> String {
             let rendered = values.iter().map(|bits| f32::from_bits(*bits).to_string()).collect::<Vec<_>>().join(", ");
             format!("Tensor<{dimensions}>[{rendered}]")
         }
+        ardisa_core::NativeValue::Embedding { domain, values } => {
+            let rendered = values.iter().map(|bits| f32::from_bits(*bits).to_string()).collect::<Vec<_>>().join(", ");
+            format!("Embedding<{domain}>[{rendered}]")
+        }
         ardisa_core::NativeValue::String(value) => value.clone(),
         ardisa_core::NativeValue::List(values) => {
             let rendered = values.iter().map(display_value).collect::<Vec<_>>();
