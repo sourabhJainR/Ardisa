@@ -70,6 +70,7 @@ pub struct Type {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeKind {
     Int,
+    Float(u32),
     Bool,
     String,
     Unit,
