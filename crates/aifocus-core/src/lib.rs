@@ -791,6 +791,12 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_finite_float_literals() {
+        let source = "module floats\\nfn main() -> F32\\n  999999999999999999999999999999999999999999.0\\n";
+        assert!(parse(source).is_err(), "overflowing decimal literals must fail closed");
+    }
+
+    #[test]
     fn parses_expression_ast() {
         let module = parse("module hello\nfn add(a: Int, b: Int) -> Int\n  a + b * 2\n").unwrap();
         let Item::Function(function) = &module.items[0];
