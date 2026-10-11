@@ -66,6 +66,44 @@ pub struct NativeProgram {
     pub functions: BTreeMap<String, NativeFunction>,
 }
 
+/// An immutable program that has passed native-program validation.
+///
+/// The wrapped program is never exposed mutably. Keeping it behind an Arc also
+/// prevents mutation through Arc::get_mut while this wrapper exists. Execution
+/// arguments and limits are deliberately validated per invocation.
+#[derive(Debug, Clone)]
+pub struct ValidatedNativeProgram {
+    program: Arc<NativeProgram>,
+}
+
+impl ValidatedNativeProgram {
+    /// Validate and take ownership of a native program.
+    pub fn try_new(program: NativeProgram) -> Result<Self, NativeError> {
+        Self::try_from_shared(Arc::new(program))
+    }
+
+    /// Validate a shared program and retain an immutable reference to it.
+    pub fn try_from_shared(program: Arc<NativeProgram>) -> Result<Self, NativeError> {
+        validate_native_program(&program)?;
+        Ok(Self { program })
+    }
+
+    /// Borrow the validated program without exposing mutable access.
+    pub fn as_program(&self) -> &NativeProgram {
+        &self.program
+    }
+
+    /// Execute with fresh runtime state and per-call argument/limit checks.
+    pub fn run_with_limits(
+        &self,
+        entry: &str,
+        args: &[NativeValue],
+        limits: ExecutionLimits,
+    ) -> Result<NativeValue, NativeError> {
+        run_validated_program_with_limits(self, entry, args, limits)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeFunction {
     pub params: Vec<String>,
@@ -570,26 +608,37 @@ pub fn run_program_with_limits(
 
 /// Execute an immutable program shared by the caller and all child tasks.
 ///
-/// Unlike run_program_with_limits, this entry point does not clone the whole
-/// program at each invocation. Callers that execute the same compiled program
-/// repeatedly can retain one Arc<NativeProgram> and reuse it. The program is
-/// validated on each invocation; runtime state and budgets remain per execution.
+/// This compatibility entry point validates on each call. Callers that can
+/// retain a validated wrapper should use run_validated_program_with_limits to
+/// avoid repeating program-level validation.
 pub fn run_shared_program_with_limits(
     program: Arc<NativeProgram>,
     entry: &str,
     args: &[NativeValue],
     limits: ExecutionLimits,
 ) -> Result<NativeValue, NativeError> {
-    validate_native_program(&program)?;
+    let validated = ValidatedNativeProgram::try_from_shared(program)?;
+    run_validated_program_with_limits(&validated, entry, args, limits)
+}
+
+/// Execute a previously validated immutable program without revalidating its
+/// code and metadata. Caller-specific inputs, execution limits, counters, and
+/// task state are still fresh and checked for every invocation.
+pub fn run_validated_program_with_limits(
+    program: &ValidatedNativeProgram,
+    entry: &str,
+    args: &[NativeValue],
+    limits: ExecutionLimits,
+) -> Result<NativeValue, NativeError> {
     validate_input_values(args, limits)?;
-    let function = program.functions.get(entry)
+    let function = program.program.functions.get(entry)
         .ok_or_else(|| NativeError::InvalidProgram(format!("unknown function '{entry}'")))?;
     let state = Arc::new(ExecutionState {
         limits,
         instructions: AtomicUsize::new(0),
         active_tasks: AtomicUsize::new(0),
     });
-    run_function(&program, function, args, None, state, 0)
+    run_function(&program.program, function, args, None, state, 0)
 }
 
 fn run_function(
@@ -1987,6 +2036,75 @@ fn fact(n: Int) -> Int
             ),
             Ok(NativeValue::Int(15))
         );
+    }
+
+    #[test]
+    fn validated_program_rejects_invalid_program_at_construction() {
+        let invalid = NativeProgram {
+            functions: BTreeMap::from([(
+                "main".into(),
+                NativeFunction {
+                    params: vec![],
+                    code: vec![
+                        NativeInstr::PushString("x".repeat(MAX_PROGRAM_EMBEDDED_STRING_BYTES + 1)),
+                        NativeInstr::Return,
+                    ],
+                },
+            )]),
+        };
+        assert!(matches!(
+            ValidatedNativeProgram::try_new(invalid),
+            Err(NativeError::ResourceLimit(message)) if message.contains("embedded string byte")
+        ));
+    }
+
+    #[test]
+    fn validated_program_reuses_code_but_resets_budgets_and_checks_each_call() {
+        let program = NativeProgram {
+            functions: BTreeMap::from([(
+                "main".into(),
+                NativeFunction {
+                    params: vec!["input".into()],
+                    code: vec![NativeInstr::Load("input".into()), NativeInstr::Return],
+                },
+            )]),
+        };
+        let validated = ValidatedNativeProgram::try_new(program).unwrap();
+        let limits = ExecutionLimits {
+            max_instructions: 2,
+            max_string_bytes: 4,
+            ..ExecutionLimits::default()
+        };
+
+        assert_eq!(
+            validated.run_with_limits("main", &[NativeValue::String("ok".into())], limits),
+            Ok(NativeValue::String("ok".into()))
+        );
+        // A fresh execution budget is created for each call.
+        assert_eq!(
+            validated.run_with_limits("main", &[NativeValue::String("yes".into())], limits),
+            Ok(NativeValue::String("yes".into()))
+        );
+        // Caller-specific arguments are still validated even though the program is trusted.
+        assert!(matches!(
+            validated.run_with_limits("main", &[NativeValue::String("too-long".into())], limits),
+            Err(NativeError::ResourceLimit(message)) if message.contains("string byte")
+        ));
+    }
+
+    #[test]
+    fn validated_program_rejects_unknown_entry_per_invocation() {
+        let program = NativeProgram {
+            functions: BTreeMap::from([(
+                "main".into(),
+                NativeFunction { params: vec![], code: vec![NativeInstr::PushUnit, NativeInstr::Return] },
+            )]),
+        };
+        let validated = ValidatedNativeProgram::try_new(program).unwrap();
+        assert!(matches!(
+            validated.run_with_limits("missing", &[], ExecutionLimits::default()),
+            Err(NativeError::InvalidProgram(message)) if message.contains("unknown function")
+        ));
     }
 
     #[test]
