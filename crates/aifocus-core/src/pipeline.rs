@@ -359,6 +359,92 @@ fn main() -> F32
     }
 
     #[test]
+    fn source_tensor_constructor_enforces_element_limit() {
+        let source = r#"module tensor_limit
+fn main() -> Tensor<F32>
+  return tensor([16385], [1])
+"#;
+        let artifact = compile_source(source).expect("element limits are enforced at runtime");
+        let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+        assert!(
+            matches!(
+                native::run_program(&program, "main", &[]),
+                Err(native::NativeError::ResourceLimit(_))
+            ),
+            "oversized tensor shapes must fail closed"
+        );
+    }
+
+    #[test]
+    fn source_quantized_tensor_constructor_enforces_element_limit() {
+        let source = r#"module quantized_tensor_limit
+fn main() -> Tensor<F32>
+  return dequantize(quantized_tensor([16385], 1.0, 0, [1]))
+"#;
+        let artifact = compile_source(source).expect("element limits are enforced at runtime");
+        let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+        assert!(
+            matches!(
+                native::run_program(&program, "main", &[]),
+                Err(native::NativeError::ResourceLimit(_))
+            ),
+            "oversized quantized tensor shapes must fail closed"
+        );
+    }
+
+    #[test]
+    fn source_tensor_matmul_rejects_non_finite_results() {
+        let source = r#"module tensor_matmul_overflow
+fn main() -> Tensor<F32>
+  let left = tensor([1, 1], [3.4e38])
+  let right = tensor([1, 1], [2.0])
+  return tensor_matmul(left, right)
+"#;
+        let artifact = compile_source(source).expect("finite inputs should compile");
+        let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+        assert!(
+            matches!(
+                native::run_program(&program, "main", &[]),
+                Err(native::NativeError::Type(_))
+            ),
+            "matmul overflow must not produce a non-finite tensor"
+        );
+    }
+
+    #[test]
+    fn source_embedding_dot_rejects_non_finite_results() {
+        let source = r#"module embedding_dot_overflow
+fn main() -> F32
+  let left = embedding("text", [3.4e38])
+  let right = embedding("text", [2.0])
+  return embedding_dot(left, right)
+"#;
+        let artifact = compile_source(source).expect("finite embeddings should compile");
+        let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+        assert!(
+            matches!(
+                native::run_program(&program, "main", &[]),
+                Err(native::NativeError::Type(_))
+            ),
+            "embedding dot overflow must fail closed"
+        );
+    }
+
+    #[test]
+    fn source_dequantize_rejects_non_finite_results() {
+        let source = r#"module dequantize_overflow
+fn main() -> Tensor<F32>
+  return dequantize(quantized_tensor([1], 3.4e38, -128, [127]))
+"#;
+        let artifact = compile_source(source).expect("finite quantization scale should compile");
+        let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+        assert!(
+            native::run_program(&program, "main", &[]).is_err(),
+            "dequantization overflow must not yield a non-finite tensor"
+        );
+    }
+
+    #[test]
     fn pipeline_artifact_executes() {
         let compiled = compile_source(SOURCE).expect("compile");
         let program = native::decode_program(&compiled.artifact).expect("decode");
