@@ -396,7 +396,7 @@ fn main() -> Tensor<F32>
     fn source_tensor_matmul_rejects_non_finite_results() {
         let source = r#"module tensor_matmul_overflow
 fn main() -> Tensor<F32>
-  let left = tensor([1, 1], [3.4e38])
+  let left = tensor([1, 1], [340000000000000000000000000000000000000.0])
   let right = tensor([1, 1], [2.0])
   return tensor_matmul(left, right)
 "#;
@@ -415,7 +415,7 @@ fn main() -> Tensor<F32>
     fn source_embedding_dot_rejects_non_finite_results() {
         let source = r#"module embedding_dot_overflow
 fn main() -> F32
-  let left = embedding("text", [3.4e38])
+  let left = embedding("text", [340000000000000000000000000000000000000.0])
   let right = embedding("text", [2.0])
   return embedding_dot(left, right)
 "#;
@@ -434,7 +434,7 @@ fn main() -> F32
     fn source_dequantize_rejects_non_finite_results() {
         let source = r#"module dequantize_overflow
 fn main() -> Tensor<F32>
-  return dequantize(quantized_tensor([1], 3.4e38, -128, [127]))
+  return dequantize(quantized_tensor([1], 340000000000000000000000000000000000000.0, -128, [127]))
 "#;
         let artifact = compile_source(source).expect("finite quantization scale should compile");
         let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
