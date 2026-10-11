@@ -1450,12 +1450,26 @@ fn main(a: String) -> String
         assert_eq!(encode_program(&decoded), encoded);
         assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Bool(true));
 
-        let not_program = NativeProgram { functions: BTreeMap::from([(
+        let or_program = NativeProgram { functions: BTreeMap::from([(
             "main".to_string(), NativeFunction { params: vec![], code: vec![
-                NativeInstr::PushProbability(half), NativeInstr::ProbabilityNot, NativeInstr::Return,
+                NativeInstr::PushProbability(half),
+                NativeInstr::PushProbability(quarter),
+                NativeInstr::ProbabilityOr,
+                NativeInstr::PushProbability(0.6f32.to_bits()),
+                NativeInstr::ProbabilityMeets,
+                NativeInstr::Return,
             ] }
         )])};
-        assert_eq!(run_program(&not_program, "main", &[]).unwrap(), NativeValue::Probability(half));
+        assert_eq!(run_program(&or_program, "main", &[]).unwrap(), NativeValue::Bool(true));
+
+        let low = 0.25f32.to_bits();
+        let expected_not = 0.75f32.to_bits();
+        let not_program = NativeProgram { functions: BTreeMap::from([(
+            "main".to_string(), NativeFunction { params: vec![], code: vec![
+                NativeInstr::PushProbability(low), NativeInstr::ProbabilityNot, NativeInstr::Return,
+            ] }
+        )])};
+        assert_eq!(run_program(&not_program, "main", &[]).unwrap(), NativeValue::Probability(expected_not));
     }
 
     #[test]
