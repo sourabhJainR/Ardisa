@@ -7,6 +7,10 @@
 
 use std::collections::VecDeque;
 
+/// Hard upper bound for a single cache's entry count. This bounds both runtime
+/// work and the amount of state accepted from untrusted program inputs.
+pub const MAX_KV_CACHE_ENTRIES: usize = 16_384;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheFullPolicy {
     /// Preserve existing entries and reject an append when capacity is reached.
@@ -24,6 +28,7 @@ pub struct KvEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KvCacheError {
     ZeroCapacity,
+    CapacityTooLarge { requested: usize, maximum: usize },
     EmptyVector,
     KeyDimension { expected: usize, actual: usize },
     ValueDimension { expected: usize, actual: usize },
@@ -47,11 +52,14 @@ impl KvCache {
         if capacity == 0 {
             return Err(KvCacheError::ZeroCapacity);
         }
+        if capacity > MAX_KV_CACHE_ENTRIES {
+            return Err(KvCacheError::CapacityTooLarge { requested: capacity, maximum: MAX_KV_CACHE_ENTRIES });
+        }
         Ok(Self {
             capacity,
             key_dim: None,
             value_dim: None,
-            entries: VecDeque::with_capacity(capacity),
+            entries: VecDeque::new(),
         })
     }
 
@@ -130,6 +138,7 @@ mod tests {
     #[test]
     fn rejects_zero_capacity_and_empty_vectors() {
         assert_eq!(KvCache::new(0).unwrap_err(), KvCacheError::ZeroCapacity);
+        assert_eq!(KvCache::new(MAX_KV_CACHE_ENTRIES + 1).unwrap_err(), KvCacheError::CapacityTooLarge { requested: MAX_KV_CACHE_ENTRIES + 1, maximum: MAX_KV_CACHE_ENTRIES });
         let mut cache = KvCache::new(2).unwrap();
         assert_eq!(cache.append(vec![], vec![1.0], CacheFullPolicy::Reject), Err(KvCacheError::EmptyVector));
     }
