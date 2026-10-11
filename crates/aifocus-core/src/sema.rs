@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    ast::{BinaryOp, Block, Expr, ExprKind, Function, Item, Module, StmtKind, Type, TypeKind},
+    ast::{BinaryOp, Block, ConstructKind, ConstructMember, Expr, ExprKind, Function, Item, Module, StmtKind, Type, TypeKind},
     source::{Diagnostic, Span},
 };
 
@@ -29,6 +29,8 @@ pub fn analyze(module: &Module) -> Result<SemanticModel, Vec<Diagnostic>> {
         function_returns: HashMap::new(),
         errors: Vec::new(),
     };
+
+    validate_construct_declarations(module, &mut checker);
 
     for declaration in &module.constructs {
         checker.error(
@@ -94,6 +96,93 @@ pub fn analyze(module: &Module) -> Result<SemanticModel, Vec<Diagnostic>> {
         })
     } else {
         Err(checker.errors)
+    }
+}
+
+
+/// Validate the declaration structure we can currently prove, while retaining
+/// AIF610 until declarations are carried through typed IR and native execution.
+fn validate_construct_declarations(module: &Module, checker: &mut Checker) {
+    use std::collections::HashSet;
+
+    let mut declaration_names = HashSet::new();
+    for declaration in &module.constructs {
+        if !declaration_names.insert(declaration.name.as_str()) {
+            checker.error(
+                "AIF611",
+                format!("duplicate AI Mode declaration '{}'", declaration.name),
+                declaration.span,
+            );
+        }
+
+        let mut member_names = HashSet::new();
+        let mut transitions = HashSet::new();
+        for member in &declaration.members {
+            match member {
+                ConstructMember::Field { name, span, .. } => {
+                    if declaration.kind == ConstructKind::Phase {
+                        checker.error(
+                            "AIF612",
+                            format!("phase '{}' cannot declare field '{}'; use transitions", declaration.name, name),
+                            *span,
+                        );
+                    }
+                    if !member_names.insert(name.as_str()) {
+                        checker.error(
+                            "AIF613",
+                            format!("duplicate member '{}' in declaration '{}'", name, declaration.name),
+                            *span,
+                        );
+                    }
+                }
+                ConstructMember::Clause { name, span, .. } => {
+                    let allowed = match declaration.kind {
+                        ConstructKind::Trace => matches!(name.as_str(), "signature"),
+                        ConstructKind::Cell => matches!(name.as_str(), "invariant"),
+                        ConstructKind::Vault => matches!(name.as_str(), "capabilities" | "denies"),
+                        ConstructKind::Proof => matches!(name.as_str(), "requires" | "ensures" | "on_unknown" | "required"),
+                        ConstructKind::Phase => false,
+                    };
+                    if !allowed {
+                        checker.error(
+                            "AIF614",
+                            format!("clause '{}' is not supported for {:?} declaration '{}'", name, declaration.kind, declaration.name),
+                            *span,
+                        );
+                    }
+                    if !member_names.insert(name.as_str()) {
+                        checker.error(
+                            "AIF613",
+                            format!("duplicate member '{}' in declaration '{}'", name, declaration.name),
+                            *span,
+                        );
+                    }
+                }
+                ConstructMember::Transition { from, to, span } => {
+                    if declaration.kind != ConstructKind::Phase {
+                        checker.error(
+                            "AIF612",
+                            format!("{:?} declaration '{}' cannot declare phase transitions", declaration.kind, declaration.name),
+                            *span,
+                        );
+                    }
+                    if from == to {
+                        checker.error(
+                            "AIF615",
+                            format!("phase '{}' contains a self-transition for '{}'", declaration.name, from),
+                            *span,
+                        );
+                    }
+                    if !transitions.insert((from.as_str(), to.as_str())) {
+                        checker.error(
+                            "AIF616",
+                            format!("duplicate phase transition '{} -> {}' in '{}'", from, to, declaration.name),
+                            *span,
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
