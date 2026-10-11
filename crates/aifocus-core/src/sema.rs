@@ -1010,7 +1010,7 @@ mod tests {
     #[test]
     fn construct_analysis_rejects_empty_clauses_and_unsupported_unknown_policy() {
         let module = parse(
-            "module invalid_clause_values\\ntrace Evidence\\n  signature: \\ncell State\\n  value: Int\\n  invariant: \\nvault Safe\\n  capabilities: clock\\nproof Contract\\n  requires: valid\\n  ensures: true\\n  on_unknown: allow\\n  required: maybe\\nphase Lifecycle\\n  Ready -> Done\\n",
+            "module invalid_clause_values\ntrace Evidence\n  signature: \ncell State\n  value: Int\n  invariant: \nvault Safe\n  capabilities: clock\nproof Contract\n  requires: valid\n  ensures: true\n  on_unknown: allow\n  required: maybe\nphase Lifecycle\n  Ready -> Done\n",
         )
         .expect("empty clause values remain parseable for semantic diagnostics");
 
