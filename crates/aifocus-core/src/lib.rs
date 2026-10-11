@@ -21,6 +21,7 @@ pub mod fuzz;
 pub mod interop;
 pub mod ir;
 pub mod learning;
+pub mod kv_cache;
 pub mod lower;
 pub mod module_graph;
 pub mod native;
@@ -59,6 +60,7 @@ pub use ir::{IrFunction, IrModule, IrOp, IrValue};
 pub use optimizer::optimize;
 pub use pipeline::{compile_source, CompiledArtifact, PipelineError, PipelineEvidence, PipelineTiming};
 pub use typed_ir::{TypedBasicBlock, TypedIrFunction, TypedIrModule, TypedIrOp, TypedTerminator, TypedValue, TypedValueKind};
+pub use kv_cache::{CacheFullPolicy, KvCache, KvCacheError, KvEntry};
 pub use learning::{
     LearningEntry, LearningKey, LearningProvenance, LearningStatus, PersistentCompilerLearning,
     ProvenanceKind,
