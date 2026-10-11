@@ -43,6 +43,95 @@ pub fn lower_constructs(module: &Module) -> Result<Vec<TypedIrConstruct>, Vec<St
             crate::sema::TypedConstructMember::Transition { from, to, span } => TypedIrConstructMember::Transition { from, to, span },
         }).collect(),
     }).collect())
+
+}
+
+/// Validate typed construct metadata before any serializer or downstream consumer
+/// accepts it. This is a tooling contract only; it does not make constructs executable.
+pub fn validate_construct_metadata(constructs: &[TypedIrConstruct]) -> Result<(), Vec<String>> {
+    use std::collections::BTreeSet;
+
+    let mut errors = Vec::new();
+    let mut construct_names = BTreeSet::new();
+    for construct in constructs {
+        if construct.name.trim().is_empty() {
+            errors.push("construct name must not be empty".to_string());
+        }
+        if !construct_names.insert((construct.kind as u8, construct.name.clone())) {
+            errors.push(format!("duplicate construct declaration: {}", construct.name));
+        }
+
+        let mut member_names = BTreeSet::new();
+        let mut transitions = BTreeSet::new();
+        for member in &construct.members {
+            match member {
+                TypedIrConstructMember::Field { name, .. } => {
+                    if name.trim().is_empty() {
+                        errors.push(format!("{}: field name must not be empty", construct.name));
+                    }
+                    if !member_names.insert(name.clone()) {
+                        errors.push(format!("{}: duplicate member name: {}", construct.name, name));
+                    }
+                }
+                TypedIrConstructMember::Clause { name, value, .. } => {
+                    if name.trim().is_empty() || value.trim().is_empty() {
+                        errors.push(format!("{}: clause name and value must not be empty", construct.name));
+                    }
+                    if !member_names.insert(name.clone()) {
+                        errors.push(format!("{}: duplicate member name: {}", construct.name, name));
+                    }
+                }
+                TypedIrConstructMember::Transition { from, to, .. } => {
+                    if from.trim().is_empty() || to.trim().is_empty() {
+                        errors.push(format!("{}: transition endpoints must not be empty", construct.name));
+                    }
+                    if !transitions.insert((from.clone(), to.clone())) {
+                        errors.push(format!("{}: duplicate transition: {} -> {}", construct.name, from, to));
+                    }
+                }
+            }
+        }
+    }
+    if errors.is_empty() { Ok(()) } else { Err(errors) }
+}
+
+/// Encode validated construct metadata in a stable, versioned representation for
+/// tooling and differential tests. Source spans are intentionally excluded. This
+/// format is not an executable artifact and is not accepted by the native runtime.
+pub fn encode_construct_metadata(constructs: &[TypedIrConstruct]) -> Result<String, Vec<String>> {
+    validate_construct_metadata(constructs)?;
+    let mut output = String::from("ARDISA-CONSTRUCT-META-V1\n");
+    for construct in constructs {
+        output.push_str(&format!("K|{}|{}\n", construct_kind_name(construct.kind), encode_metadata_atom(&construct.name)));
+        for member in &construct.members {
+            match member {
+                TypedIrConstructMember::Field { name, ty, .. } => output.push_str(&format!("F|{}|{}\n", encode_metadata_atom(name), encode_metadata_atom(&ty.display_name()))),
+                TypedIrConstructMember::Clause { name, value, .. } => output.push_str(&format!("C|{}|{}\n", encode_metadata_atom(name), encode_metadata_atom(value))),
+                TypedIrConstructMember::Transition { from, to, .. } => output.push_str(&format!("T|{}|{}\n", encode_metadata_atom(from), encode_metadata_atom(to))),
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn construct_kind_name(kind: crate::ast::ConstructKind) -> &'static str {
+    match kind {
+        crate::ast::ConstructKind::Trace => "Trace",
+        crate::ast::ConstructKind::Cell => "Cell",
+        crate::ast::ConstructKind::Vault => "Vault",
+        crate::ast::ConstructKind::Proof => "Proof",
+        crate::ast::ConstructKind::Phase => "Phase",
+    }
+}
+
+fn encode_metadata_atom(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -515,6 +604,45 @@ mod tests {
             Some(TypedIrConstructMember::Transition { from, to, .. }) if from == "Ready" && to == "Done"
         ));
         assert!(lower(&module).is_err(), "regular compiler lowering must remain fail-closed");
+    }
+
+    #[test]
+    fn construct_metadata_encoding_is_deterministic_and_span_independent() {
+        let module = crate::parse(
+            "module constructs\ncell State\n  value: Int\n  invariant: valid\nphase Lifecycle\n  Ready -> Done\n",
+        ).unwrap();
+        let constructs = lower_constructs(&module).unwrap();
+        let encoded = encode_construct_metadata(&constructs).unwrap();
+        assert!(encoded.starts_with("ARDISA-CONSTRUCT-META-V1\n"));
+        let mut relocated = constructs.clone();
+        for construct in &mut relocated {
+            construct.span = crate::source::Span::new(100, 200);
+            for member in &mut construct.members {
+                match member {
+                    TypedIrConstructMember::Field { span, .. }
+                    | TypedIrConstructMember::Clause { span, .. }
+                    | TypedIrConstructMember::Transition { span, .. } => *span = crate::source::Span::new(101, 102),
+                }
+            }
+        }
+        assert_eq!(encode_construct_metadata(&relocated).unwrap(), encoded);
+        assert_eq!(encoded, encode_construct_metadata(&constructs).unwrap());
+    }
+
+    #[test]
+    fn construct_metadata_rejects_duplicate_members_before_encoding() {
+        let module = crate::parse(
+            "module constructs\ncell State\n  value: Int\n  invariant: valid\n",
+        ).unwrap();
+        let mut constructs = lower_constructs(&module).unwrap();
+        constructs[0].members.push(TypedIrConstructMember::Field {
+            name: "value".into(),
+            ty: TypeKind::Int,
+            span: crate::source::Span::new(0, 0),
+        });
+        let errors = validate_construct_metadata(&constructs).unwrap_err();
+        assert!(errors.iter().any(|error| error.contains("duplicate member name: value")));
+        assert!(encode_construct_metadata(&constructs).is_err());
     }
 
     #[test]
