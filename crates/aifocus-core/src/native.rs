@@ -129,6 +129,8 @@ pub struct NativeFunction {
 /// Native values are intentionally dependency-free so the native compiler can bootstrap incrementally.
 pub enum NativeValue {
     Int(i64),
+    /// Finite f32 runtime scalar encoded as bits for deterministic Eq and serialization.
+    Float(u32),
     Bool(bool),
     /// A probability is stored as f32 bits to preserve Eq and deterministic artifacts.
     Probability(u32),
@@ -237,6 +239,9 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
         match value {
             NativeValue::String(s) if s.len() > limits.max_string_bytes => {
                 return Err(NativeError::ResourceLimit("string exceeds byte limit".into()));
+            }
+            NativeValue::Float(bits) if !f32::from_bits(*bits).is_finite() => {
+                return Err(NativeError::Type("Float value must be finite".into()));
             }
             NativeValue::Tensor { shape, values } => {
                 validate_tensor_parts(shape, values, limits.max_collection_items)?;
@@ -955,7 +960,7 @@ fn run_function(
                 if !sum.is_finite() {
                     return Err(NativeError::Type("embedding dot product produced non-finite value".into()));
                 }
-                stack.push(NativeValue::Probability(sum.to_bits()));
+                stack.push(NativeValue::Float(sum.to_bits()));
             }
             NativeInstr::PushUnit => stack.push(NativeValue::Unit),
             NativeInstr::PushString(value) => {
@@ -1685,7 +1690,7 @@ fn main(a: String) -> String
         let encoded = encode_program(&program);
         let decoded = decode_program(&encoded).unwrap();
         assert_eq!(encode_program(&decoded), encoded);
-        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Probability(11.0f32.to_bits()));
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Float(11.0f32.to_bits()));
 
         let mismatched = NativeProgram { functions: BTreeMap::from([("main".to_string(), NativeFunction { params: vec![], code: vec![
             embedding("text", &[1.0]), embedding("image", &[1.0]), NativeInstr::EmbeddingDot, NativeInstr::Return,
