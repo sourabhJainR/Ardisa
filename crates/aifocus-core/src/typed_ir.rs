@@ -100,14 +100,14 @@ pub fn validate_construct_metadata(constructs: &[TypedIrConstruct]) -> Result<()
 /// format is not an executable artifact and is not accepted by the native runtime.
 pub fn encode_construct_metadata(constructs: &[TypedIrConstruct]) -> Result<String, Vec<String>> {
     validate_construct_metadata(constructs)?;
-    let mut output = String::from("ARDISA-CONSTRUCT-META-V1\\n");
+    let mut output = String::from("ARDISA-CONSTRUCT-META-V1\n");
     for construct in constructs {
-        output.push_str(&format!("K|{}|{}\\n", construct_kind_name(construct.kind), encode_metadata_atom(&construct.name)));
+        output.push_str(&format!("K|{}|{}\n", construct_kind_name(construct.kind), encode_metadata_atom(&construct.name)));
         for member in &construct.members {
             match member {
-                TypedIrConstructMember::Field { name, ty, .. } => output.push_str(&format!("F|{}|{}\\n", encode_metadata_atom(name), encode_metadata_atom(&ty.display_name()))),
-                TypedIrConstructMember::Clause { name, value, .. } => output.push_str(&format!("C|{}|{}\\n", encode_metadata_atom(name), encode_metadata_atom(value))),
-                TypedIrConstructMember::Transition { from, to, .. } => output.push_str(&format!("T|{}|{}\\n", encode_metadata_atom(from), encode_metadata_atom(to))),
+                TypedIrConstructMember::Field { name, ty, .. } => output.push_str(&format!("F|{}|{}\n", encode_metadata_atom(name), encode_metadata_atom(&ty.display_name()))),
+                TypedIrConstructMember::Clause { name, value, .. } => output.push_str(&format!("C|{}|{}\n", encode_metadata_atom(name), encode_metadata_atom(value))),
+                TypedIrConstructMember::Transition { from, to, .. } => output.push_str(&format!("T|{}|{}\n", encode_metadata_atom(from), encode_metadata_atom(to))),
             }
         }
     }
@@ -609,11 +609,11 @@ mod tests {
     #[test]
     fn construct_metadata_encoding_is_deterministic_and_span_independent() {
         let module = crate::parse(
-            "module constructs\\ncell State\\n  value: Int\\n  invariant: valid\\nphase Lifecycle\\n  Ready -> Done\\n",
+            "module constructs\ncell State\n  value: Int\n  invariant: valid\nphase Lifecycle\n  Ready -> Done\n",
         ).unwrap();
         let constructs = lower_constructs(&module).unwrap();
         let encoded = encode_construct_metadata(&constructs).unwrap();
-        assert!(encoded.starts_with("ARDISA-CONSTRUCT-META-V1\\n"));
+        assert!(encoded.starts_with("ARDISA-CONSTRUCT-META-V1\n"));
         let mut relocated = constructs.clone();
         for construct in &mut relocated {
             construct.span = crate::source::Span::new(100, 200);
@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn construct_metadata_rejects_duplicate_members_before_encoding() {
         let module = crate::parse(
-            "module constructs\\ncell State\\n  value: Int\\n  invariant: valid\\n",
+            "module constructs\ncell State\n  value: Int\n  invariant: valid\n",
         ).unwrap();
         let mut constructs = lower_constructs(&module).unwrap();
         constructs[0].members.push(TypedIrConstructMember::Field {
