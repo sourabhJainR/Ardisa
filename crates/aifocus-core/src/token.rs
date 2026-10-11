@@ -18,6 +18,7 @@ pub enum TokenKind {
     False,
     Ident,
     Int,
+    Float,
     String,
     Arrow,
     Equal,
@@ -162,9 +163,20 @@ pub fn lex(input: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 while cursor < bytes.len() && (bytes[cursor] as char).is_ascii_digit() {
                     cursor += 1;
                 }
+                let mut kind = TokenKind::Int;
+                if cursor + 1 < bytes.len()
+                    && bytes[cursor] == b'.'
+                    && (bytes[cursor + 1] as char).is_ascii_digit()
+                {
+                    kind = TokenKind::Float;
+                    cursor += 1;
+                    while cursor < bytes.len() && (bytes[cursor] as char).is_ascii_digit() {
+                        cursor += 1;
+                    }
+                }
                 let word = &content[start..cursor];
                 tokens.push(Token {
-                    kind: TokenKind::Int,
+                    kind,
                     span: Span::new(line_start + start, line_start + cursor),
                     lexeme: word.into(),
                 });

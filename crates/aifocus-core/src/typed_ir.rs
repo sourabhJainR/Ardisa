@@ -90,6 +90,7 @@ pub struct TypedValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedValueKind {
     Int(i64),
+    Float(u32),
     Bool(bool),
     String(String),
     Name(String),
@@ -202,12 +203,12 @@ fn lower_expr(
     errors:&mut Vec<String>
 )->Option<TypedValue>{
     let ty=types.get(&expr.id).map(|t|t.kind.clone()).or_else(||match &expr.kind {
-        ExprKind::Int(_)=>Some(TypeKind::Int), ExprKind::Bool(_)=>Some(TypeKind::Bool),
+        ExprKind::Int(_)=>Some(TypeKind::Int), ExprKind::Float(_)=>Some(TypeKind::Named("F32".into())), ExprKind::Bool(_)=>Some(TypeKind::Bool),
         ExprKind::String(_)=>Some(TypeKind::String), ExprKind::Name(n)=>locals.get(n).cloned(),
         _=>None
     })?;
     let kind=match &expr.kind {
-        ExprKind::Int(v)=>TypedValueKind::Int(*v), ExprKind::Bool(v)=>TypedValueKind::Bool(*v),
+        ExprKind::Int(v)=>TypedValueKind::Int(*v), ExprKind::Float(bits)=>TypedValueKind::Float(*bits), ExprKind::Bool(v)=>TypedValueKind::Bool(*v),
         ExprKind::String(v)=>TypedValueKind::String(v.clone()), ExprKind::Name(v)=>TypedValueKind::Name(v.clone()),
         ExprKind::Group(e)=>return lower_expr(e,types,locals,errors),
         ExprKind::List(xs)=>TypedValueKind::List(xs.iter().filter_map(|e|lower_expr(e,types,locals,errors)).collect()),
@@ -427,7 +428,8 @@ fn optimize_value(value: &mut TypedValue) {
             then_ops.iter_mut().for_each(optimize_op);
             else_ops.iter_mut().for_each(optimize_op);
         }
-        TypedValueKind::Int(_)
+        TypedValueKind::Float(_)
+        | TypedValueKind::Int(_)
         | TypedValueKind::Bool(_)
         | TypedValueKind::String(_)
         | TypedValueKind::Name(_) => {}
@@ -477,6 +479,7 @@ fn typed_op_to_legacy(op: &TypedIrOp) -> crate::ir::IrOp {
 fn typed_value_to_legacy(value: &TypedValue) -> crate::ir::IrValue {
     match &value.kind {
         TypedValueKind::Int(v) => crate::ir::IrValue::Int(*v),
+        TypedValueKind::Float(bits) => crate::ir::IrValue::Float(*bits),
         TypedValueKind::Bool(v) => crate::ir::IrValue::Bool(*v),
         TypedValueKind::String(v) => crate::ir::IrValue::String(v.clone()),
         TypedValueKind::Name(v) => crate::ir::IrValue::Name(v.clone()),

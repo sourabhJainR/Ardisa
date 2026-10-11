@@ -194,6 +194,7 @@ fn reference_expr(
 ) -> Result<native::NativeValue, String> {
     match &expr.kind {
         ExprKind::Int(value) => Ok(native::NativeValue::Int(*value)),
+        ExprKind::Float(bits) => Ok(native::NativeValue::Float(*bits)),
         ExprKind::Bool(value) => Ok(native::NativeValue::Bool(*value)),
         ExprKind::String(value) => Ok(native::NativeValue::String(value.clone())),
         ExprKind::Name(name) => locals

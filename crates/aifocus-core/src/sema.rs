@@ -457,6 +457,7 @@ impl Checker {
     fn check_expr(&mut self, expr: &Expr, locals: &HashMap<String, Type>) -> Option<Type> {
         let result = match &expr.kind {
             ExprKind::Int(_) => Some(type_node(TypeKind::Int, expr.span)),
+            ExprKind::Float(_) => Some(type_node(TypeKind::Named("F32".into()), expr.span)),
             ExprKind::Bool(_) => Some(type_node(TypeKind::Bool, expr.span)),
             ExprKind::String(_) => Some(type_node(TypeKind::String, expr.span)),
             ExprKind::List(elements) => {
@@ -588,7 +589,7 @@ impl Checker {
                     let shape = self.check_expr(&args[0], locals)?;
                     let values = self.check_expr(&args[1], locals)?;
                     if !is_int_list(&shape) { self.error("AIF341", "tensor shape must be a List<Int>", args[0].span); }
-                    if !is_int_list(&values) { self.error("AIF342", "tensor values must be a List<Int> in this source-level slice", args[1].span); }
+                    if !is_numeric_list(&values) { self.error("AIF342", "tensor values must be a homogeneous List<Int> or List<F32>", args[1].span); }
                     let ty = type_node(TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]), expr.span);
                     self.inferred_types.insert(expr.id, ty.clone());
                     return Some(ty);
@@ -606,7 +607,7 @@ impl Checker {
                     let domain = self.check_expr(&args[0], locals)?;
                     let values = self.check_expr(&args[1], locals)?;
                     if !is_kind(&domain, &TypeKind::String) { self.error("AIF346", "embedding domain must be a String", args[0].span); }
-                    if !is_int_list(&values) { self.error("AIF347", "embedding coordinates must be a List<Int> in this source-level slice", args[1].span); }
+                    if !is_numeric_list(&values) { self.error("AIF347", "embedding coordinates must be a homogeneous List<Int> or List<F32>", args[1].span); }
                     let ty = type_node(TypeKind::Generic("Embedding".into(), vec![type_node(TypeKind::Named("DynamicDomain".into()), expr.span)]), expr.span);
                     self.inferred_types.insert(expr.id, ty.clone());
                     return Some(ty);
@@ -798,6 +799,13 @@ fn same_type_kind(left: &TypeKind, right: &TypeKind) -> bool {
 
 fn is_int_list(ty: &Type) -> bool {
     matches!(&ty.kind, TypeKind::List(element) if matches!(&element.kind, TypeKind::Int))
+}
+
+fn is_numeric_list(ty: &Type) -> bool {
+    match &ty.kind {
+        TypeKind::List(element) => matches!(&element.kind, TypeKind::Int) || matches!(&element.kind, TypeKind::Named(name) if name == "F32"),
+        _ => false,
+    }
 }
 
 fn type_node(kind: TypeKind, span: Span) -> Type {

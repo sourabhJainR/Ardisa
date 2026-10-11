@@ -157,6 +157,7 @@ impl Lowerer {
         self.record(expr.id, expr.span);
         match &expr.kind {
             ExprKind::Int(value) => self.out.push_str(&value.to_string()),
+            ExprKind::Float(bits) => self.out.push_str(&format!("{:?}", f32::from_bits(*bits))),
             ExprKind::Bool(value) => self.out.push_str(if *value { "true" } else { "false" }),
             ExprKind::String(value) => {
                 self.out.push('"');

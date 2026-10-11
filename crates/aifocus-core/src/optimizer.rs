@@ -32,7 +32,7 @@ fn is_pure_expr(op: &IrOp) -> bool {
 
 fn is_pure_value(v: &IrValue) -> bool {
     match v {
-        IrValue::Int(_) | IrValue::Bool(_) | IrValue::String(_) | IrValue::Name(_) => true,
+        IrValue::Int(_) | IrValue::Float(_) | IrValue::Bool(_) | IrValue::String(_) | IrValue::Name(_) => true,
         IrValue::List(xs) => xs.iter().all(is_pure_value),
         IrValue::Index { collection, index } => is_pure_value(collection) && is_pure_value(index),
         IrValue::Binary { left, right, .. } => is_pure_value(left) && is_pure_value(right),
