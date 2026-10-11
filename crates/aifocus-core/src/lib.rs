@@ -875,4 +875,27 @@ mod ai_mode_declaration_parser_tests {
         let errors = sema::check(&module).expect_err("unimplemented security declarations must fail closed");
         assert!(errors.iter().any(|error| error.code == "AIF610"));
     }
+
+    #[test]
+    fn semantic_validation_reports_duplicate_constructs_and_members() {
+        let module = parse(
+            "module duplicates\ncell State\n  value: Int\n  value: Int\ncell State\n  count: Int\n",
+        ).unwrap();
+        let errors = sema::check(&module).expect_err("constructs remain fail-closed");
+        assert!(errors.iter().any(|error| error.code == "AIF611"));
+        assert!(errors.iter().any(|error| error.code == "AIF613"));
+        assert!(errors.iter().any(|error| error.code == "AIF610"));
+    }
+
+    #[test]
+    fn semantic_validation_rejects_invalid_construct_members_and_phase_edges() {
+        let module = parse(
+            "module invalid\ntrace Evidence\n  invariant: true\nphase Lifecycle\n  Ready -> Ready\n  Ready -> Done\n  Ready -> Done\n",
+        ).unwrap();
+        let errors = sema::check(&module).expect_err("unsupported declarations remain fail-closed");
+        assert!(errors.iter().any(|error| error.code == "AIF614"));
+        assert!(errors.iter().any(|error| error.code == "AIF615"));
+        assert!(errors.iter().any(|error| error.code == "AIF616"));
+        assert!(errors.iter().any(|error| error.code == "AIF610"));
+    }
 }
