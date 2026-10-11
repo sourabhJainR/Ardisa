@@ -773,6 +773,28 @@ mod tests {
     }
 
     #[test]
+    fn construct_analysis_produces_typed_metadata_but_normal_analysis_fails_closed() {
+        let module = parse(
+            "module constructs\ntrace Evidence\n  signature: sha256\ncell State\n  value: Int\n  invariant: valid\nvault NoNetwork\n  denies: network\n  capabilities: filesystem\nproof P\n  requires: valid\n  ensures: true\n  on_unknown: reject\n  required: true\nphase Lifecycle\n  Ready -> Done\n",
+        ).unwrap();
+
+        let constructs = analyze_constructs(&module).unwrap();
+        assert_eq!(constructs.len(), 5);
+        assert!(matches!(constructs[0].kind, ConstructKind::Trace));
+        assert!(matches!(
+            constructs[1].members.first(),
+            Some(TypedConstructMember::Field { name, ty: TypeKind::Int, .. }) if name == "value"
+        ));
+        assert!(matches!(
+            constructs[4].members.first(),
+            Some(TypedConstructMember::Transition { from, to, .. }) if from == "Ready" && to == "Done"
+        ));
+
+        let errors = analyze(&module).expect_err("constructs must remain fail-closed until runtime enforcement exists");
+        assert!(errors.iter().any(|error| error.code == "AIF610"));
+    }
+
+    #[test]
     fn infers_return_through_later_declaration() {
         let module = parse("module x\nfn main() -> Int\n  value()\nfn value()\n  42\n").unwrap();
         assert!(check(&module).is_ok());
