@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn evicts_oldest_deterministically_to_meet_all_budgets() {
         let mut window = ContextWindow::new(budget()).unwrap();
-        window.append(segment(SegmentModality::Text, b"ab", 2)).unwrap();
+        window.append(segment(SegmentModality::Text, b"ab", 3)).unwrap();
         window.append(segment(SegmentModality::Image, b"cd", 1)).unwrap();
         window.append(segment(SegmentModality::Audio, b"ef", 2)).unwrap();
         assert_eq!(window.segments().iter().map(|s| s.modality).collect::<Vec<_>>(), vec![SegmentModality::Image, SegmentModality::Audio]);
