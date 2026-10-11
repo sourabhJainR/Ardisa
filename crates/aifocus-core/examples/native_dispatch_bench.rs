@@ -67,12 +67,14 @@ fn workloads() -> Vec<Workload> {
 }
 
 fn arithmetic_and_jumps() -> Workload {
-    let mut code = Vec::with_capacity(ARITHMETIC_REPEATS * 4 + 2);
+    let mut code = Vec::with_capacity(ARITHMETIC_REPEATS * 6 + 2);
     for _ in 0..ARITHMETIC_REPEATS {
         let start = code.len();
         code.push(NativeInstr::PushBool(true));
-        code.push(NativeInstr::JumpIfFalse(start + 4));
+        code.push(NativeInstr::JumpIfFalse(start + 6));
         code.push(NativeInstr::PushInt(3));
+        code.push(NativeInstr::PushInt(4));
+        code.push(NativeInstr::Add);
         code.push(NativeInstr::Pop);
     }
     code.push(NativeInstr::PushInt(7));
@@ -108,22 +110,7 @@ fn workload(name: &'static str, code: Vec<NativeInstr>) -> Workload {
             _ => 0,
         })
         .sum::<usize>();
-    let estimated_dispatch_payload_bytes_avoided_per_pass = code
-        .iter()
-        .map(|instruction| match instruction {
-            NativeInstr::PushString(value)
-            | NativeInstr::Append(value)
-            | NativeInstr::Load(value)
-            | NativeInstr::Store(value)
-            | NativeInstr::AddAssign(value)
-            | NativeInstr::StoreIndex(value)
-            | NativeInstr::Join { name: value }
-            | NativeInstr::Cancel { name: value } => value.len(),
-            NativeInstr::Call { callee, .. } => callee.len(),
-            NativeInstr::Spawn { name, callee, .. } => name.len() + callee.len(),
-            _ => 0,
-        })
-        .sum::<usize>();
+    let estimated_dispatch_payload_bytes_avoided_per_pass = embedded_string_bytes;
     Workload {
         name,
         instruction_count: code.len(),
@@ -144,7 +131,12 @@ fn report(workload: &Workload, iterations: usize) {
         let started = Instant::now();
         let result = run_program(&workload.program, "main", &[]);
         elapsed += started.elapsed();
-        assert_eq!(result, Ok(NativeValue::Int(7)), "{} returned an unexpected result", workload.name);
+        assert_eq!(
+            result,
+            Ok(NativeValue::Int(7)),
+            "{} returned an unexpected result",
+            workload.name
+        );
     }
 
     let executed_instructions = workload.instruction_count.saturating_mul(iterations);
