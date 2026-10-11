@@ -310,12 +310,17 @@ fn parse_value(
 fn display_value(value: &ardisa_core::NativeValue) -> String {
     match value {
         ardisa_core::NativeValue::Int(value) => value.to_string(),
+        ardisa_core::NativeValue::Float(bits) => f32::from_bits(*bits).to_string(),
         ardisa_core::NativeValue::Bool(value) => value.to_string(),
         ardisa_core::NativeValue::Probability(bits) => f32::from_bits(*bits).to_string(),
         ardisa_core::NativeValue::Tensor { shape, values } => {
             let dimensions = shape.iter().map(usize::to_string).collect::<Vec<_>>().join("x");
             let rendered = values.iter().map(|bits| f32::from_bits(*bits).to_string()).collect::<Vec<_>>().join(", ");
             format!("Tensor<{dimensions}>[{rendered}]")
+        }
+        ardisa_core::NativeValue::Embedding { domain, values } => {
+            let rendered = values.iter().map(|bits| f32::from_bits(*bits).to_string()).collect::<Vec<_>>().join(", ");
+            format!("Embedding<{domain}>[{rendered}]")
         }
         ardisa_core::NativeValue::String(value) => value.clone(),
         ardisa_core::NativeValue::List(values) => {

@@ -24,6 +24,9 @@ pub enum NativeInstr {
     PushTensor { shape: Vec<usize>, values: Vec<u32> },
     TensorAdd,
     TensorMatMul,
+    /// Push a domain-tagged finite embedding with deterministic f32-bit coordinates.
+    PushEmbedding { domain: String, values: Vec<u32> },
+    EmbeddingDot,
     PushUnit,
     PushString(String),
     PushList(usize),
@@ -126,11 +129,15 @@ pub struct NativeFunction {
 /// Native values are intentionally dependency-free so the native compiler can bootstrap incrementally.
 pub enum NativeValue {
     Int(i64),
+    /// Finite f32 runtime scalar encoded as bits for deterministic Eq and serialization.
+    Float(u32),
     Bool(bool),
     /// A probability is stored as f32 bits to preserve Eq and deterministic artifacts.
     Probability(u32),
     /// Tensor dimensions and IEEE-754 f32 values encoded as bits.
     Tensor { shape: Vec<usize>, values: Vec<u32> },
+    /// Nominal domain label plus IEEE-754 f32 coordinate bits.
+    Embedding { domain: String, values: Vec<u32> },
     String(String),
     List(Vec<NativeValue>),
     ResultOk(Box<NativeValue>),
@@ -233,8 +240,14 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
             NativeValue::String(s) if s.len() > limits.max_string_bytes => {
                 return Err(NativeError::ResourceLimit("string exceeds byte limit".into()));
             }
+            NativeValue::Float(bits) if !f32::from_bits(*bits).is_finite() => {
+                return Err(NativeError::Type("Float value must be finite".into()));
+            }
             NativeValue::Tensor { shape, values } => {
                 validate_tensor_parts(shape, values, limits.max_collection_items)?;
+            }
+            NativeValue::Embedding { domain, values } => {
+                validate_embedding_parts(domain, values, limits.max_collection_items)?;
             }
             NativeValue::List(items) => {
                 if items.len() > limits.max_collection_items {
@@ -725,6 +738,8 @@ fn run_function(
                 | NativeInstr::PushTensor { .. }
                 | NativeInstr::TensorAdd
                 | NativeInstr::TensorMatMul
+                | NativeInstr::PushEmbedding { .. }
+                | NativeInstr::EmbeddingDot
                 | NativeInstr::PushUnit
                 | NativeInstr::PushString(_)
                 | NativeInstr::PushList(_)
@@ -924,6 +939,28 @@ fn run_function(
                     }
                 }
                 stack.push(NativeValue::Tensor { shape: vec![m, n], values });
+            }
+            NativeInstr::PushEmbedding { domain, values } => {
+                validate_embedding_parts(domain, values, state.limits.max_collection_items)?;
+                stack.push(NativeValue::Embedding { domain: domain.clone(), values: values.clone() });
+            }
+            NativeInstr::EmbeddingDot => {
+                let right = pop_embedding(&mut stack, state.limits.max_collection_items)?;
+                let left = pop_embedding(&mut stack, state.limits.max_collection_items)?;
+                if left.0 != right.0 {
+                    return Err(NativeError::Type("embedding dot product requires matching domains".into()));
+                }
+                if left.1.len() != right.1.len() {
+                    return Err(NativeError::Type("embedding dot product requires matching dimensions".into()));
+                }
+                let mut sum = 0.0f32;
+                for (a, b) in left.1.iter().zip(&right.1) {
+                    sum += f32::from_bits(*a) * f32::from_bits(*b);
+                }
+                if !sum.is_finite() {
+                    return Err(NativeError::Type("embedding dot product produced non-finite value".into()));
+                }
+                stack.push(NativeValue::Float(sum.to_bits()));
             }
             NativeInstr::PushUnit => stack.push(NativeValue::Unit),
             NativeInstr::PushString(value) => {
@@ -1262,6 +1299,10 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
             match instr {
                 NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
                 NativeInstr::PushTensor { shape, values } => { validate_tensor_parts(shape, values, MAX_TENSOR_ELEMENTS)?; }
+                NativeInstr::PushEmbedding { domain, values } => {
+                    validate_embedding_parts(domain, values, MAX_TENSOR_ELEMENTS)?;
+                    add_bytes(domain)?;
+                }
                 NativeInstr::PushString(s) | NativeInstr::Append(s) |
                 NativeInstr::Load(s) | NativeInstr::Store(s) |
                 NativeInstr::AddAssign(s) | NativeInstr::StoreIndex(s) |
@@ -1382,6 +1423,8 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::PushTensor { shape, values } => format!("PushTensor:{}/{}", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(","), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
         NativeInstr::TensorAdd => "TensorAdd".into(),
         NativeInstr::TensorMatMul => "TensorMatMul".into(),
+        NativeInstr::PushEmbedding { domain, values } => format!("PushEmbedding:{}/{}", encode_hex(domain.as_bytes()), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
+        NativeInstr::EmbeddingDot => "EmbeddingDot".into(),
         NativeInstr::PushUnit => "PushUnit".into(),
         NativeInstr::PushString(v) => format!("PushString:{}", escape_artifact(v)),
         NativeInstr::PushList(v) => format!("PushList:{v}"),
@@ -1425,6 +1468,8 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "PushTensor"=>{let (shape, values)=arg.split_once('/').ok_or_else(bad)?; let shape=shape.split(',').map(|v|v.parse::<usize>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushTensor{shape,values}},
         "TensorAdd"=>NativeInstr::TensorAdd,
         "TensorMatMul"=>NativeInstr::TensorMatMul,
+        "PushEmbedding"=>{let (domain, values)=arg.split_once('/').ok_or_else(bad)?; let domain=String::from_utf8(decode_hex(domain).map_err(|_|bad())?).map_err(|_|bad())?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushEmbedding{domain,values}},
+        "EmbeddingDot"=>NativeInstr::EmbeddingDot,
         "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Len"=>NativeInstr::Len,
         "PushString"=>NativeInstr::PushString(unescape_artifact(arg)?),
         "PushList"=>NativeInstr::PushList(int(arg)?),"Append"=>NativeInstr::Append(unescape_artifact(arg)?),
@@ -1468,6 +1513,47 @@ fn pop_tensor(stack: &mut Vec<NativeValue>, limit: usize) -> Result<(Vec<usize>,
         Some(NativeValue::Tensor { shape, values }) => { validate_tensor_parts(&shape, &values, limit)?; Ok((shape, values)) }
         _ => Err(NativeError::Type("expected Tensor value".into())),
     }
+}
+
+fn validate_embedding_parts(domain: &str, values: &[u32], max_elements: usize) -> Result<(), NativeError> {
+    if domain.trim().is_empty() || domain.len() > 1024 {
+        return Err(NativeError::InvalidProgram("embedding domain must be non-empty and at most 1024 bytes".into()));
+    }
+    if values.is_empty() || values.len() > max_elements.min(MAX_TENSOR_ELEMENTS) {
+        return Err(NativeError::ResourceLimit("embedding dimension is empty or exceeds the element limit".into()));
+    }
+    if values.iter().any(|bits| !f32::from_bits(*bits).is_finite()) {
+        return Err(NativeError::InvalidProgram("embedding coordinates must be finite".into()));
+    }
+    Ok(())
+}
+
+fn pop_embedding(stack: &mut Vec<NativeValue>, limit: usize) -> Result<(String, Vec<u32>), NativeError> {
+    match stack.pop() {
+        Some(NativeValue::Embedding { domain, values }) => {
+            validate_embedding_parts(&domain, &values, limit)?;
+            Ok((domain, values))
+        }
+        _ => Err(NativeError::Type("expected Embedding value".into())),
+    }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes { out.push(HEX[(byte >> 4) as usize] as char); out.push(HEX[(byte & 0x0f) as usize] as char); }
+    out
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, ()> {
+    if value.len() % 2 != 0 { return Err(()); }
+    let mut out = Vec::with_capacity(value.len() / 2);
+    let bytes = value.as_bytes();
+    for pair in bytes.chunks_exact(2) {
+        let digit = |b: u8| -> Result<u8, ()> { match b { b'0'..=b'9' => Ok(b-b'0'), b'a'..=b'f' => Ok(b-b'a'+10), b'A'..=b'F' => Ok(b-b'A'+10), _ => Err(()) } };
+        out.push((digit(pair[0])? << 4) | digit(pair[1])?);
+    }
+    Ok(out)
 }
 
 fn validate_probability_bits(bits: u32) -> Result<f32, NativeError> {
@@ -1593,6 +1679,23 @@ fn main(a: String) -> String
             tensor(vec![2, 2], &[1.0, 2.0, 3.0, 4.0]), tensor(vec![2, 1], &[5.0, 6.0]), NativeInstr::TensorMatMul, NativeInstr::Return,
         ] })])};
         assert_eq!(run_program(&matmul, "main", &[]).unwrap(), NativeValue::Tensor { shape: vec![2,1], values: [17.0f32,39.0].iter().map(|v|v.to_bits()).collect() });
+    }
+
+    #[test]
+    fn domain_embeddings_execute_and_round_trip_with_domain_safety() {
+        let embedding = |domain: &str, values: &[f32]| NativeInstr::PushEmbedding { domain: domain.to_owned(), values: values.iter().map(|v| v.to_bits()).collect() };
+        let program = NativeProgram { functions: BTreeMap::from([("main".to_string(), NativeFunction { params: vec![], code: vec![
+            embedding("text/domain", &[1.0, 2.0]), embedding("text/domain", &[3.0, 4.0]), NativeInstr::EmbeddingDot, NativeInstr::Return,
+        ] })])};
+        let encoded = encode_program(&program);
+        let decoded = decode_program(&encoded).unwrap();
+        assert_eq!(encode_program(&decoded), encoded);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Float(11.0f32.to_bits()));
+
+        let mismatched = NativeProgram { functions: BTreeMap::from([("main".to_string(), NativeFunction { params: vec![], code: vec![
+            embedding("text", &[1.0]), embedding("image", &[1.0]), NativeInstr::EmbeddingDot, NativeInstr::Return,
+        ] })])};
+        assert!(matches!(run_program(&mismatched, "main", &[]), Err(NativeError::Type(_))));
     }
 
     #[test]
