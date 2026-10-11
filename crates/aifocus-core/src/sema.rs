@@ -968,6 +968,23 @@ mod tests {
     }
 
     #[test]
+    fn construct_analysis_rejects_missing_required_members() {
+        let module = parse(
+            "module missing_construct_members\ntrace MissingTrace\ncell MissingCell\n  value: Int\nvault MissingVault\n  denies: network\nproof MissingProof\n  requires: valid\nphase MissingPhase\n",
+        )
+        .expect("structurally incomplete constructs should still parse for diagnostics");
+
+        let errors = analyze_constructs(&module)
+            .expect_err("every construct must declare its minimum required members");
+        let required_errors = errors.iter().filter(|error| error.code == "AIF617").count();
+        assert!(
+            required_errors >= 7,
+            "expected missing signature, invariant, capabilities, proof clauses, and phase transition diagnostics; got {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn infers_return_through_later_declaration() {
         let module = parse("module x\nfn main() -> Int\n  value()\nfn value()\n  42\n").unwrap();
         assert!(check(&module).is_ok());
