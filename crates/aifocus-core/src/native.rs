@@ -29,6 +29,8 @@ pub enum NativeInstr {
     MakeTensor,
     /// Build a domain-tagged embedding from a source-level domain and integer list.
     MakeEmbedding,
+    /// Build a validated signed-int8 quantized tensor from source-level lists and metadata.
+    MakeQuantizedTensor,
     /// Push signed-int8 quantized tensor storage with finite positive scale.
     PushQuantizedTensor { shape: Vec<usize>, scale_bits: u32, zero_point: i8, values: Vec<i8> },
     /// Convert a quantized tensor to a finite f32 tensor.
@@ -579,6 +581,10 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::TensorMatMul);
             } else if callee == "embedding" && args.len() == 2 {
                 code.push(NativeInstr::MakeEmbedding);
+            } else if callee == "quantized_tensor" && args.len() == 4 {
+                code.push(NativeInstr::MakeQuantizedTensor);
+            } else if callee == "dequantize" && args.len() == 1 {
+                code.push(NativeInstr::DequantizeTensor);
             } else if callee == "embedding_dot" && args.len() == 2 {
                 code.push(NativeInstr::EmbeddingDot);
             } else if callee == "len" && args.len() == 1 {
@@ -1002,6 +1008,16 @@ fn run_function(
             NativeInstr::PushQuantizedTensor { shape, scale_bits, zero_point, values } => {
                 validate_quantized_tensor_parts(shape, *scale_bits, values, state.limits.max_collection_items)?;
                 stack.push(NativeValue::QuantizedTensor { shape: shape.clone(), scale_bits: *scale_bits, zero_point: *zero_point, values: values.clone() });
+            }
+            NativeInstr::MakeQuantizedTensor => {
+                let values = match stack.pop() { Some(NativeValue::List(values)) => values, _ => return Err(NativeError::Type("quantized_tensor values must be a List<Int>".into())) };
+                let zero_point = match stack.pop() { Some(NativeValue::Int(value)) => i8::try_from(value).map_err(|_| NativeError::Type("quantized tensor zero point must be in [-128, 127]".into()))?, _ => return Err(NativeError::Type("quantized tensor zero point must be an Int".into())) };
+                let scale_bits = match stack.pop() { Some(NativeValue::Float(bits)) if f32::from_bits(bits).is_finite() && f32::from_bits(bits) > 0.0 => bits, Some(NativeValue::Int(value)) if value > 0 && (value as f32).is_finite() => (value as f32).to_bits(), _ => return Err(NativeError::Type("quantization scale must be finite and positive".into())) };
+                let shape = match stack.pop() { Some(NativeValue::List(shape)) => shape, _ => return Err(NativeError::Type("quantized_tensor shape must be a List<Int>".into())) };
+                let shape = shape.into_iter().map(|value| match value { NativeValue::Int(dimension) if dimension > 0 => usize::try_from(dimension).map_err(|_| NativeError::ResourceLimit("quantized tensor dimension overflow".into())), _ => Err(NativeError::Type("quantized tensor dimensions must be positive Int values".into())) }).collect::<Result<Vec<_>, _>>()?;
+                let values = values.into_iter().map(|value| match value { NativeValue::Int(number) => i8::try_from(number).map_err(|_| NativeError::Type("quantized tensor values must be in [-128, 127]".into())), _ => Err(NativeError::Type("quantized tensor values must be Int values".into())) }).collect::<Result<Vec<_>, _>>()?;
+                validate_quantized_tensor_parts(&shape, scale_bits, &values, state.limits.max_collection_items)?;
+                stack.push(NativeValue::QuantizedTensor { shape, scale_bits, zero_point, values });
             }
             NativeInstr::DequantizeTensor => {
                 let value = stack.pop().ok_or_else(|| NativeError::Type("expected QuantizedTensor value".into()))?;
@@ -1503,6 +1519,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::TensorMatMul => "TensorMatMul".into(),
         NativeInstr::MakeTensor => "MakeTensor".into(),
         NativeInstr::MakeEmbedding => "MakeEmbedding".into(),
+        NativeInstr::MakeQuantizedTensor => "MakeQuantizedTensor".into(),
         NativeInstr::PushQuantizedTensor { shape, scale_bits, zero_point, values } => format!("PushQuantizedTensor:{}/{}/{}/{}", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(","), scale_bits, zero_point, values.iter().map(i8::to_string).collect::<Vec<_>>().join(",")),
         NativeInstr::DequantizeTensor => "DequantizeTensor".into(),
         NativeInstr::PushEmbedding { domain, values } => format!("PushEmbedding:{}/{}", encode_hex(domain.as_bytes()), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
@@ -1553,6 +1570,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "TensorMatMul"=>NativeInstr::TensorMatMul,
         "MakeTensor"=>NativeInstr::MakeTensor,
         "MakeEmbedding"=>NativeInstr::MakeEmbedding,
+        "MakeQuantizedTensor"=>NativeInstr::MakeQuantizedTensor,
         "PushQuantizedTensor"=>{let mut parts=arg.split('/'); let shape=parts.next().ok_or_else(bad)?.split(',').map(|v|v.parse::<usize>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; let scale_bits=parts.next().ok_or_else(bad)?.parse::<u32>().map_err(|_|bad())?; let zero_point=parts.next().ok_or_else(bad)?.parse::<i8>().map_err(|_|bad())?; let values=parts.next().ok_or_else(bad)?.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<i8>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; if parts.next().is_some(){return Err(bad());} NativeInstr::PushQuantizedTensor{shape,scale_bits,zero_point,values}},
         "DequantizeTensor"=>NativeInstr::DequantizeTensor,
         "PushEmbedding"=>{let (domain, values)=arg.split_once('/').ok_or_else(bad)?; let domain=String::from_utf8(decode_hex(domain).map_err(|_|bad())?).map_err(|_|bad())?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushEmbedding{domain,values}},
