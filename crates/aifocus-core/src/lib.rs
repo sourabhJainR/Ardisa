@@ -249,7 +249,8 @@ impl Parser {
                     id: self.id("param", &param_name_text),
                     span: source::Span::new(param_start, param_end),
                     name: param_name_text,
-                    ty,                });
+                    ty,
+                });
                 if !self.eat(TokenKind::Comma) {
                     break;
                 }
@@ -498,7 +499,8 @@ impl Parser {
             self.expect(TokenKind::Newline, "end of expression statement")?;
         }
         Some(Stmt {
-            id: self.id("expr", &start.to_string()),            span: source::Span::new(start, end),
+            id: self.id("expr", &start.to_string()),
+            span: source::Span::new(start, end),
             kind: StmtKind::Expr(expr),
         })
     }
@@ -747,7 +749,8 @@ impl Parser {
         ) {
             self.bump();
         }
-        self.skip_newlines();    }
+        self.skip_newlines();
+    }
 
     fn error(&mut self, code: &'static str, message: impl Into<String>) {
         self.errors.push(source::Diagnostic::error(
