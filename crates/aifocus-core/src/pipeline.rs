@@ -217,6 +217,56 @@ fn main() -> F32
         assert!(matches!(native::run_program(&program, "main", &[]), Err(native::NativeError::Type(_))));
     }
     #[test]
+    fn source_float_literals_flow_through_tensor_construction_and_native_execution() {
+        let source = r#"module ai_float
+fn main() -> Tensor<F32>
+  let left = tensor([2], [1.5, 2.25])
+  let right = tensor([2], [2.5, 3.75])
+  return tensor_add(left, right)
+"#;
+        let artifact = compile_source(source).expect("float tensor source should compile");
+        let program = native::decode_program(&artifact.artifact).expect("float artifact should decode");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("float tensor should execute"),
+            native::NativeValue::Tensor {
+                shape: vec![2],
+                values: [4.0f32, 6.0].iter().map(|value| value.to_bits()).collect(),
+            }
+        );
+    }
+
+    #[test]
+    fn source_float_literals_flow_through_embedding_dot() {
+        let source = r#"module ai_float_embedding
+fn main() -> F32
+  let left = embedding("text", [0.5, 2.0])
+  let right = embedding("text", [4.0, 1.5])
+  return embedding_dot(left, right)
+"#;
+        let artifact = compile_source(source).expect("float embedding source should compile");
+        let program = native::decode_program(&artifact.artifact).expect("float artifact should decode");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("embedding dot should execute"),
+            native::NativeValue::Float(5.0f32.to_bits())
+        );
+    }
+
+    #[test]
+    fn non_finite_float_artifact_payloads_are_rejected() {
+        let program = native::NativeProgram {
+            functions: [(
+                "main".to_string(),
+                native::NativeFunction {
+                    params: vec![],
+                    code: vec![native::NativeInstr::PushFloat(f32::INFINITY.to_bits()), native::NativeInstr::Return],
+                },
+            )].into_iter().collect(),
+        };
+        let encoded = native::encode_program(&program);
+        assert!(native::decode_program(&encoded).is_err());
+    }
+
+    #[test]
     fn pipeline_artifact_executes() {
         let compiled = compile_source(SOURCE).expect("compile");
         let program = native::decode_program(&compiled.artifact).expect("decode");
