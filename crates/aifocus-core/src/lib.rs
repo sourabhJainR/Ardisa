@@ -908,7 +908,16 @@ mod ai_type_pipeline_regression_tests {
 
     #[test]
     fn ai_type_signatures_pass_through_native_compile_pipeline() {
-        let source = "module ai_pipeline\nfn identity(value: Tensor<F32>) -> Tensor<F32>\n  value\nfn embedding(value: Embedding<TextDomain>) -> Embedding<TextDomain>\n  value\nfn confidence(value: Probability) -> Probability\n  value\nfn packed(value: QuantizedTensor<I8>) -> QuantizedTensor<I8>\n  value\n";
+        let source = r#"module ai_pipeline
+fn identity(value: Tensor<F32>) -> Tensor<F32>
+  value
+fn embedding(value: Embedding<TextDomain>) -> Embedding<TextDomain>
+  value
+fn confidence(value: Probability) -> Probability
+  value
+fn packed(value: QuantizedTensor<I8>) -> QuantizedTensor<I8>
+  value
+"#;
         let compiled = compile_source(source).expect("well-formed AI type signatures should pass the compiler pipeline");
         assert!(compiled.evidence.phase_order.contains(&"semantic_type"));
         assert!(compiled.evidence.phase_order.contains(&"typed_ir"));
@@ -918,7 +927,10 @@ mod ai_type_pipeline_regression_tests {
 
     #[test]
     fn invalid_ai_type_signatures_fail_before_native_emission() {
-        let source = "module bad_ai_pipeline\nfn invalid(value: Tensor<String>) -> Tensor<String>\n  value\n";
+        let source = r#"module bad_ai_pipeline
+fn invalid(value: Tensor<String>) -> Tensor<String>
+  value
+"#;
         let error = compile_source(source).expect_err("invalid tensor element type must fail closed");
         assert!(matches!(error, crate::PipelineError::Semantic(ref errors) if errors.iter().any(|item| item.code == "AIF320")));
     }
