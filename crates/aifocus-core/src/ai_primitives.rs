@@ -13,6 +13,8 @@ pub enum AiTypeError {
     RankMismatch { left: usize, right: usize },
     ShapeMismatch { left: Vec<usize>, right: Vec<usize> },
     InvalidDimension,
+    InvalidDomain,
+    NonFiniteValue,
     DomainMismatch { left: String, right: String },
     EmbeddingDimension { expected: usize, actual: usize },
     InvalidProbability,
@@ -79,7 +81,7 @@ impl TensorValue {
     pub fn new(shape: TensorShape, element_type: AiNumericType, values: Vec<f32>) -> Result<Self, AiTypeError> {
         let expected = shape.elements()?;
         if expected != values.len() { return Err(AiTypeError::ShapeElementCount { expected, actual: values.len() }); }
-        if values.iter().any(|x| !x.is_finite()) { return Err(AiTypeError::InvalidScale); }
+        if values.iter().any(|x| !x.is_finite()) { return Err(AiTypeError::NonFiniteValue); }
         Ok(Self { shape, element_type, values })
     }
     pub fn add(&self, other: &Self, max_elements: usize) -> Result<Self, AiTypeError> {
@@ -97,9 +99,8 @@ pub struct DomainEmbedding<const N: usize> { domain: String, values: [f32; N] }
 impl<const N: usize> DomainEmbedding<N> {
     pub fn new(domain: impl Into<String>, values: [f32; N]) -> Result<Self, AiTypeError> {
         let domain = domain.into();
-        if domain.is_empty() || values.iter().any(|x| !x.is_finite()) {
-            return Err(AiTypeError::EmbeddingDimension { expected: N, actual: values.len() });
-        }
+        if domain.trim().is_empty() { return Err(AiTypeError::InvalidDomain); }
+        if values.iter().any(|x| !x.is_finite()) { return Err(AiTypeError::NonFiniteValue); }
         Ok(Self { domain, values })
     }
     pub fn domain(&self) -> &str { &self.domain }
@@ -108,7 +109,9 @@ impl<const N: usize> DomainEmbedding<N> {
         if self.domain != other.domain {
             return Err(AiTypeError::DomainMismatch { left: self.domain.clone(), right: other.domain.clone() });
         }
-        Ok(self.values.iter().zip(other.values.iter()).map(|(a,b)| a*b).sum())
+        let result: f32 = self.values.iter().zip(other.values.iter()).map(|(a,b)| a*b).sum();
+        if !result.is_finite() { return Err(AiTypeError::NonFiniteValue); }
+        Ok(result)
     }
 }
 
@@ -135,7 +138,7 @@ impl QuantizationScale {
     }
     pub fn value(self) -> f32 { self.0 }
     pub fn quantize_i8(self, value: f32) -> Result<i8, AiTypeError> {
-        if !value.is_finite() { return Err(AiTypeError::InvalidScale); }
+        if !value.is_finite() { return Err(AiTypeError::NonFiniteValue); }
         let q = (value / self.0).round();
         if q < i8::MIN as f32 || q > i8::MAX as f32 { return Err(AiTypeError::QuantizedOutOfRange); }
         Ok(q as i8)
@@ -234,6 +237,17 @@ mod tests {
         let b = DomainEmbedding::<2>::new("image", [1.0,0.0]).unwrap();
         assert!(matches!(a.dot(&b), Err(AiTypeError::DomainMismatch { .. })));
     }
+    #[test]
+    fn non_finite_numeric_results_and_empty_domains_are_rejected() {
+        assert!(matches!(TensorValue::new(shape(&[1]), AiNumericType::F32, vec![f32::NAN]), Err(AiTypeError::NonFiniteValue)));
+        assert!(matches!(DomainEmbedding::<1>::new("  ", [1.0]), Err(AiTypeError::InvalidDomain)));
+        let a = DomainEmbedding::<1>::new("shared", [f32::MAX]).unwrap();
+        assert!(matches!(a.dot(&a), Err(AiTypeError::NonFiniteValue)));
+        let scale = QuantizationScale::new(1.0).unwrap();
+        assert!(matches!(scale.quantize_i8(f32::NAN), Err(AiTypeError::NonFiniteValue)));
+        assert!(matches!(TensorValue::new(shape(&[1]), AiNumericType::F32, vec![f32::MAX]).unwrap().add(&TensorValue::new(shape(&[1]), AiNumericType::F32, vec![f32::MAX]).unwrap(), 8), Err(AiTypeError::NonFiniteValue)));
+    }
+
     #[test]
     fn probability_rejects_nan_infinity_and_out_of_range() {
         for value in [f32::NAN, f32::INFINITY, -0.01, 1.01] { assert!(Probability::new(value).is_err()); }
