@@ -251,6 +251,16 @@ mod tests {
         assert!(a.add(&b).is_err());
     }
     #[test]
+    fn embedding_probability_and_quantized_encodings_are_deterministic() {
+        let embedding = DomainEmbedding::<2>::new("text", [1.0, 2.0]).unwrap();
+        assert_eq!(encode_embedding(&embedding).unwrap(), encode_embedding(&embedding).unwrap());
+        let probability = Probability::new(0.75).unwrap();
+        assert_eq!(encode_probability(probability), encode_probability(probability));
+        let quantized = QuantizedTensor::new(shape(&[2]), QuantizationScale::new(0.5).unwrap(), 0, vec![1, 2]).unwrap();
+        assert_eq!(encode_quantized_tensor(&quantized).unwrap(), encode_quantized_tensor(&quantized).unwrap());
+    }
+
+    #[test]
     fn canonical_encoding_is_stable() {
         let value = TensorValue::new(shape(&[2]), AiNumericType::F32, vec![1.0,2.0]).unwrap();
         assert_eq!(encode_tensor_descriptor(&value).unwrap(), encode_tensor_descriptor(&value).unwrap());
