@@ -2,9 +2,11 @@
 
 This benchmark was added after the dispatch loop was changed to borrow immutable
 `NativeInstr` values rather than clone each instruction before matching it. It
-also compares the compatibility entry point, which clones a `NativeProgram`
-per call, with the shared-program entry point, which reuses an `Arc` supplied
-by the caller.
+also compares three execution paths: the compatibility entry point, which clones
+a `NativeProgram` per call; the shared-program entry point, which reuses an
+`Arc` but validates each call; and a `ValidatedNativeProgram` wrapper that
+validates immutable code once and reuses that validation. Argument checks,
+execution limits, instruction counters, and task state remain per invocation.
 
 ## Run
 
