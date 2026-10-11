@@ -239,6 +239,7 @@ impl Checker {
     ) -> Option<Type> {
         match &expr.kind {
             ExprKind::Int(_) => Some(type_node(TypeKind::Int, expr)),
+            ExprKind::Float(_) => Some(type_node(TypeKind::Named("F32".into()), expr)),
             ExprKind::Bool(_) => Some(type_node(TypeKind::Bool, expr)),
             ExprKind::String(_) => Some(type_node(TypeKind::String, expr)),
             ExprKind::Name(name) => {
