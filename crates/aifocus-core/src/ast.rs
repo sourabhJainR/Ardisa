@@ -70,7 +70,6 @@ pub struct Type {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeKind {
     Int,
-    Float(u32),
     Bool,
     String,
     Unit,
@@ -164,6 +163,7 @@ pub struct Expr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExprKind {
     Int(i64),
+    Float(u32),
     Bool(bool),
     String(String),
     Name(String),
