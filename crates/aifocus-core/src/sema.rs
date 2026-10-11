@@ -241,7 +241,30 @@ fn validate_construct_declarations(module: &Module, checker: &mut Checker) {
                         );
                     }
                 }
-                ConstructMember::Clause { name, span, .. } => {
+                ConstructMember::Clause { name, value, span } => {
+                    if value.trim().is_empty() {
+                        checker.error(
+                            "AIF618",
+                            format!("clause '{}' in '{}' must have a non-empty value", name, declaration.name),
+                            *span,
+                        );
+                    }
+                    if name == "required" && !matches!(value.trim(), "true" | "false") {
+                        checker.error(
+                            "AIF618",
+                            format!("clause 'required' in '{}' must be 'true' or 'false'", declaration.name),
+                            *span,
+                        );
+                    }
+                    // Until an explicit unknown-policy lattice is implemented, only
+                    // the conservative reject policy is accepted.
+                    if name == "on_unknown" && value.trim() != "reject" {
+                        checker.error(
+                            "AIF618",
+                            format!("unsupported on_unknown policy '{}' in '{}'; only 'reject' is currently supported", value.trim(), declaration.name),
+                            *span,
+                        );
+                    }
                     let allowed = match declaration.kind {
                         ConstructKind::Trace => matches!(name.as_str(), "signature"),
                         ConstructKind::Cell => matches!(name.as_str(), "invariant"),
@@ -980,6 +1003,22 @@ mod tests {
         assert!(
             required_errors >= 6,
             "expected missing signature, invariant, capabilities, and three proof clauses; got {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn construct_analysis_rejects_empty_clauses_and_unsupported_unknown_policy() {
+        let module = parse(
+            "module invalid_clause_values\\ntrace Evidence\\n  signature: \\ncell State\\n  value: Int\\n  invariant: \\nvault Safe\\n  capabilities: clock\\nproof Contract\\n  requires: valid\\n  ensures: true\\n  on_unknown: allow\\n  required: maybe\\nphase Lifecycle\\n  Ready -> Done\\n",
+        )
+        .expect("empty clause values remain parseable for semantic diagnostics");
+
+        let errors = analyze_constructs(&module)
+            .expect_err("empty or unsupported policy values must be rejected");
+        assert!(
+            errors.iter().filter(|error| error.code == "AIF618").count() >= 4,
+            "expected empty signature, empty invariant, unsupported on_unknown, and invalid required diagnostics; got {:?}",
             errors
         );
     }
