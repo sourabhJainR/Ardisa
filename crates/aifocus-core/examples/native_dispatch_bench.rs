@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ardisa_core::native::{NativeFunction, NativeInstr, NativeProgram, NativeValue, run_program};
+use ardisa_core::native::{NativeFunction, NativeInstr, NativeProgram, NativeValue, run_program, run_shared_program_with_limits, ExecutionLimits};
 
 const SMALL_STRING_REPEATS: usize = 2_048;
 const LARGE_STRING_REPEATS: usize = 256;
@@ -126,15 +127,28 @@ fn workload(name: &'static str, code: Vec<NativeInstr>) -> Workload {
 }
 
 fn report(workload: &Workload, iterations: usize) {
+    report_mode(workload, iterations, false);
+    report_mode(workload, iterations, true);
+}
+
+fn report_mode(workload: &Workload, iterations: usize, shared: bool) {
+    // Construct the reusable Arc before timing so this compares entry-point cost.
+    let shared_program = Arc::new(workload.program.clone());
     let mut elapsed = Duration::ZERO;
     for _ in 0..iterations {
         let started = Instant::now();
-        let result = run_program(&workload.program, "main", &[]);
+        let result = if shared {
+            run_shared_program_with_limits(
+                Arc::clone(&shared_program), "main", &[], ExecutionLimits::default()
+            )
+        } else {
+            run_program(&workload.program, "main", &[])
+        };
         elapsed += started.elapsed();
         assert_eq!(
             result,
             Ok(NativeValue::Int(7)),
-            "{} returned an unexpected result",
+            "{} returned an unexpected result (shared={shared})",
             workload.name
         );
     }
@@ -152,8 +166,9 @@ fn report(workload: &Workload, iterations: usize) {
         executed_instructions as f64 * 1_000_000_000.0 / elapsed_ns as f64
     };
     println!(
-        "workload={} code_instructions={} embedded_string_bytes={} estimated_dispatch_payload_bytes_avoided_per_pass={} iterations={} elapsed_ns={} ns_per_instruction={:.2} instructions_per_second={:.0}",
+        "workload={} mode={} code_instructions={} embedded_string_bytes={} estimated_dispatch_payload_bytes_avoided_per_pass={} iterations={} elapsed_ns={} ns_per_instruction={:.2} instructions_per_second={:.0}",
         workload.name,
+        if shared { "shared_program" } else { "cloning_entry_point" },
         workload.instruction_count,
         workload.embedded_string_bytes,
         workload.estimated_dispatch_payload_bytes_avoided_per_pass,

@@ -565,9 +565,23 @@ pub fn run_program_with_limits(
     args: &[NativeValue],
     limits: ExecutionLimits,
 ) -> Result<NativeValue, NativeError> {
-    validate_native_program(program)?;
+    run_shared_program_with_limits(Arc::new(program.clone()), entry, args, limits)
+}
+
+/// Execute an immutable program shared by the caller and all child tasks.
+///
+/// Unlike run_program_with_limits, this entry point does not clone the whole
+/// program at each invocation. Callers that execute the same compiled program
+/// repeatedly can retain one Arc<NativeProgram> and reuse it. The program is
+/// validated on each invocation; runtime state and budgets remain per execution.
+pub fn run_shared_program_with_limits(
+    program: Arc<NativeProgram>,
+    entry: &str,
+    args: &[NativeValue],
+    limits: ExecutionLimits,
+) -> Result<NativeValue, NativeError> {
+    validate_native_program(&program)?;
     validate_input_values(args, limits)?;
-    let program = Arc::new(program.clone());
     let function = program.functions.get(entry)
         .ok_or_else(|| NativeError::InvalidProgram(format!("unknown function '{entry}'")))?;
     let state = Arc::new(ExecutionState {
@@ -1948,6 +1962,31 @@ fn fact(n: Int) -> Int
             run_program(&program, "main", &[]),
             Err(NativeError::Type(message)) if message.contains("overflow")
         ));
+    }
+
+    #[test]
+    fn shared_program_execution_reuses_immutable_program_and_returns_result() {
+        let program = Arc::new(NativeProgram {
+            functions: BTreeMap::from([(
+                "main".into(),
+                NativeFunction {
+                    params: vec![],
+                    code: vec![NativeInstr::PushInt(7), NativeInstr::PushInt(8), NativeInstr::Add, NativeInstr::Return],
+                },
+            )]),
+        });
+        assert_eq!(
+            run_shared_program_with_limits(
+                Arc::clone(&program), "main", &[], ExecutionLimits::default()
+            ),
+            Ok(NativeValue::Int(15))
+        );
+        assert_eq!(
+            run_shared_program_with_limits(
+                program, "main", &[], ExecutionLimits::default()
+            ),
+            Ok(NativeValue::Int(15))
+        );
     }
 
     #[test]

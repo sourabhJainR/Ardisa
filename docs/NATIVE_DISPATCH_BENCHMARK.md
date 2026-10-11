@@ -1,7 +1,10 @@
 # Native VM dispatch benchmark
 
 This benchmark was added after the dispatch loop was changed to borrow immutable
-`NativeInstr` values rather than clone each instruction before matching it.
+`NativeInstr` values rather than clone each instruction before matching it. It
+also compares the compatibility entry point, which clones a `NativeProgram`
+per call, with the shared-program entry point, which reuses an `Arc` supplied
+by the caller.
 
 ## Run
 
@@ -39,10 +42,15 @@ allocator count, does not include allocator overhead, and does not imply zero
 allocations. Runtime values (including the string value pushed by
 `PushString`) may still legitimately allocate or clone at ownership boundaries.
 
-The benchmark includes program validation and VM setup in its timed interval,
-so its timings represent end-to-end execution of this public native VM entry
-point, not an isolated instruction-only cycle counter. Compare like-for-like
-results and report observed numbers rather than claiming a guaranteed speedup.
+Both modes include program validation and VM setup in the timed interval. The
+`cloning_entry_point` mode also includes the whole-program clone performed by
+`run_program`; `shared_program` receives an already-created `Arc` and only
+clones the Arc handle. Both modes still validate the program on every run.
+These timings represent end-to-end execution of the public VM entry points, not
+an isolated instruction-only cycle counter. Compare like-for-like results and
+report observed numbers rather than claiming a guaranteed speedup. Reusing an
+Arc is opt-in; callers that use the compatibility entry point retain its
+existing behavior.
 
 ## Correctness gate
 
