@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn token_budget_also_drives_eviction_and_modality_is_preserved() {
         let mut window = ContextWindow::new(budget()).unwrap();
-        window.append(segment(SegmentModality::Structured, b"a", 3)).unwrap();
+        window.append(segment(SegmentModality::Structured, b"a", 4)).unwrap();
         window.append(segment(SegmentModality::Text, b"b", 2)).unwrap();
         assert_eq!(window.segments().len(), 1);
         assert_eq!(window.segments()[0].modality, SegmentModality::Text);
