@@ -183,7 +183,7 @@ pub fn encode_embedding<const N: usize>(value: &DomainEmbedding<N>) -> Result<Ve
     let domain = value.domain.as_bytes();
     let domain_len = u32::try_from(domain.len()).map_err(|_| AiTypeError::ResourceLimit { requested: domain.len(), limit: u32::MAX as usize })?;
     let dimension = u32::try_from(N).map_err(|_| AiTypeError::ResourceLimit { requested: N, limit: u32::MAX as usize })?;
-    let mut out = b"ARDISA-AIE\\x01".to_vec();
+    let mut out = b"ARDISA-AIE\x01".to_vec();
     out.extend_from_slice(&domain_len.to_le_bytes());
     out.extend_from_slice(domain);
     out.extend_from_slice(&dimension.to_le_bytes());
@@ -193,7 +193,7 @@ pub fn encode_embedding<const N: usize>(value: &DomainEmbedding<N>) -> Result<Ve
 
 /// Canonical encoding of a validated probability value.
 pub fn encode_probability(value: Probability) -> Vec<u8> {
-    let mut out = b"ARDISA-AIP\\x01".to_vec();
+    let mut out = b"ARDISA-AIP\x01".to_vec();
     out.extend_from_slice(&value.0.to_bits().to_le_bytes());
     out
 }
@@ -202,7 +202,7 @@ pub fn encode_probability(value: Probability) -> Vec<u8> {
 pub fn encode_quantized_tensor(value: &QuantizedTensor) -> Result<Vec<u8>, AiTypeError> {
     let rank = u8::try_from(value.shape.rank()).map_err(|_| AiTypeError::ResourceLimit { requested: value.shape.rank(), limit: u8::MAX as usize })?;
     let elements = u32::try_from(value.values.len()).map_err(|_| AiTypeError::ResourceLimit { requested: value.values.len(), limit: u32::MAX as usize })?;
-    let mut out = b"ARDISA-AIQ\\x01".to_vec();
+    let mut out = b"ARDISA-AIQ\x01".to_vec();
     out.push(rank);
     for d in value.shape.dimensions() { out.extend_from_slice(&u64::try_from(*d).map_err(|_| AiTypeError::ShapeOverflow)?.to_le_bytes()); }
     out.extend_from_slice(&value.scale.0.to_bits().to_le_bytes());
