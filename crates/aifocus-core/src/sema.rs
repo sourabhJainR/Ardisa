@@ -594,6 +594,31 @@ impl Checker {
                     self.inferred_types.insert(expr.id, ty.clone());
                     return Some(ty);
                 }
+                if name == "quantized_tensor" {
+                    if args.len() != 4 { self.error("AIF350", "quantized_tensor expects shape, scale, zero point, and values", expr.span); return None; }
+                    let shape = self.check_expr(&args[0], locals)?;
+                    let scale = self.check_expr(&args[1], locals)?;
+                    let zero_point = self.check_expr(&args[2], locals)?;
+                    let values = self.check_expr(&args[3], locals)?;
+                    if !is_int_list(&shape) { self.error("AIF351", "quantized tensor shape must be a List<Int>", args[0].span); }
+                    if !matches!(&scale.kind, TypeKind::Named(name) if name == "F32") && !is_kind(&scale, &TypeKind::Int) {
+                        self.error("AIF352", "quantization scale must be an F32 or positive Int", args[1].span);
+                    }
+                    if !is_kind(&zero_point, &TypeKind::Int) { self.error("AIF353", "quantized tensor zero point must be an Int in [-128, 127]", args[2].span); }
+                    if !is_int_list(&values) { self.error("AIF354", "quantized tensor values must be a List<Int> in [-128, 127]", args[3].span); }
+                    let ty = type_node(TypeKind::Generic("QuantizedTensor".into(), vec![type_node(TypeKind::Named("I8".into()), expr.span)]), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
+                }
+                if name == "dequantize" {
+                    if args.len() != 1 { self.error("AIF355", "dequantize expects one QuantizedTensor argument", expr.span); return None; }
+                    let actual = self.check_expr(&args[0], locals)?;
+                    let expected = TypeKind::Generic("QuantizedTensor".into(), vec![type_node(TypeKind::Named("I8".into()), expr.span)]);
+                    if !same_type_kind(&actual.kind, &expected) { self.error("AIF356", "dequantize requires a QuantizedTensor<I8> value", args[0].span); }
+                    let ty = type_node(TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
+                }
                 if name == "tensor_add" || name == "tensor_matmul" {
                     if args.len() != 2 { self.error("AIF343", format!("{name} expects two Tensor<F32> arguments"), expr.span); return None; }
                     let expected = TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]);

@@ -267,6 +267,53 @@ fn main() -> F32
     }
 
     #[test]
+    fn source_quantized_tensor_dequantizes_through_native_execution() {
+        let source = r#"module quantized_ai
+fn main() -> Tensor<F32>
+  let packed = quantized_tensor([2], 0.5, 0, [2, 4])
+  return dequantize(packed)
+"#;
+        let artifact = compile_source(source).expect("quantized tensor source should compile");
+        let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("dequantization should execute"),
+            native::NativeValue::Tensor {
+                shape: vec![2],
+                values: [1.0f32, 2.0].iter().map(|v| v.to_bits()).collect(),
+            }
+        );
+        let repeated = compile_source(source).expect("repeat compilation should succeed");
+        assert_eq!(artifact.artifact, repeated.artifact, "quantized tensor artifact must be deterministic");
+    }
+
+    #[test]
+    fn source_quantized_tensor_invalid_metadata_and_payload_fail_closed() {
+        let invalid_sources = [
+            r#"module bad_scale
+fn main() -> Tensor<F32>
+  return dequantize(quantized_tensor([1], 0.0, 0, [1]))
+"#,
+            r#"module bad_zero_point
+fn main() -> Tensor<F32>
+  return dequantize(quantized_tensor([1], 1.0, 128, [1]))
+"#,
+            r#"module bad_value
+fn main() -> Tensor<F32>
+  return dequantize(quantized_tensor([1], 1.0, 0, [128]))
+"#,
+            r#"module bad_shape
+fn main() -> Tensor<F32>
+  return dequantize(quantized_tensor([2], 1.0, 0, [1]))
+"#,
+        ];
+        for source in invalid_sources {
+            let artifact = compile_source(source).expect("metadata and payload are runtime-validated");
+            let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+            assert!(native::run_program(&program, "main", &[]).is_err(), "invalid quantized input must fail closed");
+        }
+    }
+
+    #[test]
     fn pipeline_artifact_executes() {
         let compiled = compile_source(SOURCE).expect("compile");
         let program = native::decode_program(&compiled.artifact).expect("decode");
