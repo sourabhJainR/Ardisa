@@ -479,6 +479,7 @@ fn typed_op_to_legacy(op: &TypedIrOp) -> crate::ir::IrOp {
 fn typed_value_to_legacy(value: &TypedValue) -> crate::ir::IrValue {
     match &value.kind {
         TypedValueKind::Int(v) => crate::ir::IrValue::Int(*v),
+        TypedValueKind::Float(bits) => crate::ir::IrValue::Float(*bits),
         TypedValueKind::Bool(v) => crate::ir::IrValue::Bool(*v),
         TypedValueKind::String(v) => crate::ir::IrValue::String(v.clone()),
         TypedValueKind::Name(v) => crate::ir::IrValue::Name(v.clone()),
