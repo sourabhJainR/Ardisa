@@ -497,6 +497,24 @@ fn typed_value_to_legacy(value: &TypedValue) -> crate::ir::IrValue {
 mod tests {
     use super::*;
     #[test]
+    fn lowers_structurally_validated_constructs_to_typed_ir_without_enabling_execution() {
+        let module = crate::parse(
+            "module constructs\ncell State\n  value: Int\n  invariant: valid\nphase Lifecycle\n  Ready -> Done\n",
+        ).unwrap();
+        let constructs = lower_constructs(&module).unwrap();
+        assert_eq!(constructs.len(), 2);
+        assert!(matches!(
+            constructs[0].members.first(),
+            Some(TypedIrConstructMember::Field { name, ty: TypeKind::Int, .. }) if name == "value"
+        ));
+        assert!(matches!(
+            constructs[1].members.first(),
+            Some(TypedIrConstructMember::Transition { from, to, .. }) if from == "Ready" && to == "Done"
+        ));
+        assert!(lower(&module).is_err(), "regular compiler lowering must remain fail-closed");
+    }
+
+    #[test]
     fn lowers_typed_function() {
         let m=crate::parse("module x\nfn main(a: Int) -> Int\n  a + 1\n").unwrap();
         let ir=lower(&m).unwrap();
