@@ -54,6 +54,7 @@ pub enum IrOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IrValue {
     Int(i64),
+    Float(u32),
     Bool(bool),
     String(String),
     List(Vec<IrValue>),
@@ -184,6 +185,7 @@ fn block_to_ops(block: &crate::Block) -> Vec<IrOp> {
 fn value_to_ir(expr: &Expr) -> IrValue {
     match &expr.kind {
         ExprKind::Int(value) => IrValue::Int(*value),
+        ExprKind::Float(bits) => IrValue::Float(*bits),
         ExprKind::Bool(value) => IrValue::Bool(*value),
         ExprKind::String(value) => IrValue::String(value.clone()),
         ExprKind::List(values) => IrValue::List(values.iter().map(value_to_ir).collect()),
