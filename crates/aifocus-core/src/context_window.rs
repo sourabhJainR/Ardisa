@@ -4,7 +4,12 @@
 //! Token counts are supplied by the caller; this module does not pretend to
 //! implement tokenization or multimodal device paging.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Hard runtime ceilings prevent caller-supplied budgets from disabling bounds.
+pub const MAX_CONTEXT_WINDOW_SEGMENTS: usize = 16_384;
+pub const MAX_CONTEXT_WINDOW_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_CONTEXT_WINDOW_TOKENS: usize = 4_194_304;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentModality {
     Text,
     Image,
@@ -31,6 +36,7 @@ pub struct ContextBudget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextWindowError {
     ZeroBudget,
+    BudgetTooLarge { segments: usize, bytes: usize, tokens: usize },
     EmptyPayload,
     SegmentExceedsBudget { bytes: usize, tokens: usize },
     ArithmeticOverflow,
@@ -48,6 +54,16 @@ impl ContextWindow {
     pub fn new(budget: ContextBudget) -> Result<Self, ContextWindowError> {
         if budget.max_segments == 0 || budget.max_bytes == 0 || budget.max_tokens == 0 {
             return Err(ContextWindowError::ZeroBudget);
+        }
+        if budget.max_segments > MAX_CONTEXT_WINDOW_SEGMENTS
+            || budget.max_bytes > MAX_CONTEXT_WINDOW_BYTES
+            || budget.max_tokens > MAX_CONTEXT_WINDOW_TOKENS
+        {
+            return Err(ContextWindowError::BudgetTooLarge {
+                segments: budget.max_segments,
+                bytes: budget.max_bytes,
+                tokens: budget.max_tokens,
+            });
         }
         Ok(Self { budget, segments: Vec::new(), bytes: 0, tokens: 0 })
     }
@@ -101,6 +117,46 @@ mod tests {
         assert_eq!(ContextWindow::new(ContextBudget { max_segments: 0, max_bytes: 1, max_tokens: 1 }).unwrap_err(), ContextWindowError::ZeroBudget);
         let mut window = ContextWindow::new(budget()).unwrap();
         assert_eq!(window.append(segment(SegmentModality::Text, b"", 0)), Err(ContextWindowError::EmptyPayload));
+    }
+
+    #[test]
+    fn rejects_budgets_above_hard_runtime_ceilings() {
+        assert_eq!(
+            ContextWindow::new(ContextBudget {
+                max_segments: MAX_CONTEXT_WINDOW_SEGMENTS + 1,
+                max_bytes: 1,
+                max_tokens: 1,
+            }),
+            Err(ContextWindowError::BudgetTooLarge {
+                segments: MAX_CONTEXT_WINDOW_SEGMENTS + 1,
+                bytes: 1,
+                tokens: 1,
+            })
+        );
+        assert_eq!(
+            ContextWindow::new(ContextBudget {
+                max_segments: 1,
+                max_bytes: MAX_CONTEXT_WINDOW_BYTES + 1,
+                max_tokens: 1,
+            }),
+            Err(ContextWindowError::BudgetTooLarge {
+                segments: 1,
+                bytes: MAX_CONTEXT_WINDOW_BYTES + 1,
+                tokens: 1,
+            })
+        );
+        assert_eq!(
+            ContextWindow::new(ContextBudget {
+                max_segments: 1,
+                max_bytes: 1,
+                max_tokens: MAX_CONTEXT_WINDOW_TOKENS + 1,
+            }),
+            Err(ContextWindowError::BudgetTooLarge {
+                segments: 1,
+                bytes: 1,
+                tokens: MAX_CONTEXT_WINDOW_TOKENS + 1,
+            })
+        );
     }
 
     #[test]
