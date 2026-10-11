@@ -312,6 +312,11 @@ fn display_value(value: &ardisa_core::NativeValue) -> String {
         ardisa_core::NativeValue::Int(value) => value.to_string(),
         ardisa_core::NativeValue::Bool(value) => value.to_string(),
         ardisa_core::NativeValue::Probability(bits) => f32::from_bits(*bits).to_string(),
+        ardisa_core::NativeValue::Tensor { shape, values } => {
+            let dimensions = shape.iter().map(usize::to_string).collect::<Vec<_>>().join("x");
+            let rendered = values.iter().map(|bits| f32::from_bits(*bits).to_string()).collect::<Vec<_>>().join(", ");
+            format!("Tensor<{dimensions}>[{rendered}]")
+        }
         ardisa_core::NativeValue::String(value) => value.clone(),
         ardisa_core::NativeValue::List(values) => {
             let rendered = values.iter().map(display_value).collect::<Vec<_>>();
