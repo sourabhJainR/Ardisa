@@ -195,7 +195,7 @@ fn collect_expr(expr: &Expr, effects: &mut FunctionEffects) {
                 collect_block(else_branch, effects);
             }
         }
-        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
     }
 }
 
