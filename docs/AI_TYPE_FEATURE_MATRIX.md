@@ -17,11 +17,11 @@ A feature counts as implemented only when the .ardisa source is parsed into a st
 | GraphTensor | GraphTensor<Schema>, schema declarations, graph open/build, node/edge operations | Schema and domain compatibility; valid references and index ranges; sparse structure invariants | Validate CSR/graph metadata, bounded allocation and indices; explicit graph operations; no claim of GPU/SpMM acceleration without evidence | Runtime graph/tensor metadata API exists; source schema semantics and native graph operations are not established |
 | Quantization | f16, bf16, int8, int4, quant4 and explicit conversions | Defined ranges, scale compatibility, overflow mode and conversion rules | Canonical storage/encoding; checked, wrapping or saturating behavior specified per type; no scale mismatch | Some numeric support may exist in runtime APIs; Rev. 2.0 storage/arithmetic and native ABI are not established |
 | Stream (proposed) | Stream<T, Bounded(N)> and Stream<T, Unbounded> with push/pop/window/eviction | Capacity and mode validation, ownership, boundedness and effect checks | Explicit overflow/underflow errors, bounded resource use, concurrency and cancellation semantics; deterministic behavior where promised | Proposed only; not to be treated as normative or implemented |
-| Trace | Typed, redacted provenance records with source/build digests and optional attestation metadata | Schema, redaction policy, evidence status and provenance linkage | Canonical digest generation; configured signer verification; bounded runtime events; never capture raw prompts/secrets by default | Construct metadata work in PR #135; native encoding/runtime enforcement not established |
-| Cell | Typed values with predicates/invariants | Predicate validity, static proof when possible, ownership and mutation checks | Validate construction, mutation, and FFI boundaries; explicit failure policy | Construct metadata work in PR #135; native enforcement not established |
-| Vault | Explicit capability/effect declarations | Reject undeclared effects and ambient authority where statically visible | Explicit non-forgeable capability handles and checks at actual effect boundaries; no automatic OS sandbox claim | Construct metadata work in PR #135; capability runtime enforcement not established |
-| Proof | Preconditions, postconditions, invariants, resource bounds | Distinguish proved, runtime_checked, unknown, failed; fail closed on required unknowns | Emit assertions for dynamic checks; evidence report must not equate tests with formal proof | Construct metadata work in PR #135; proof engine/evidence report enforcement not established |
-| Phase | Named state graph and transitions | Duplicate/unknown state checks, reachability and transition validity | Validate untrusted/serialized states and reject illegal transitions; authorization remains separate | Construct metadata work in PR #135; native transition operations not established |
+| Trace | Typed, redacted provenance records with source/build digests and optional attestation metadata | Schema, redaction policy, evidence status and provenance linkage | Canonical digest generation; configured signer verification; bounded runtime events; never capture raw prompts/secrets by default | Construct metadata validation exists; native encoding/runtime enforcement is not established |
+| Cell | Typed values with predicates/invariants | Predicate validity, static proof when possible, ownership and mutation checks | Validate construction, mutation, and FFI boundaries; explicit failure policy | Construct metadata validation exists; native enforcement is not established |
+| Vault | Explicit capability/effect declarations | Reject undeclared effects and ambient authority where statically visible | Explicit non-forgeable capability handles and checks at actual effect boundaries; no automatic OS sandbox claim | Construct metadata validation is implemented, but capability runtime enforcement is not established |
+| Proof | Preconditions, postconditions, invariants, resource bounds | Distinguish proved, runtime_checked, unknown, failed; fail closed on required unknowns | Emit assertions for dynamic checks; evidence report must not equate tests with formal proof | Construct metadata validation is implemented; proof engine/evidence report enforcement is not established |
+| Phase | Named state graph and transitions | Duplicate/unknown state checks, reachability and transition validity | Validate untrusted/serialized states and reject illegal transitions; authorization remains separate | Construct metadata validation is implemented; native transition operations are not established |
 
 ## Normative semantics that must be resolved before claiming conformance
 
@@ -38,14 +38,19 @@ A feature counts as implemented only when the .ardisa source is parsed into a st
 
 ## Required implementation sequence
 
-1. Finish the existing typed semantic and typed-IR construct work in PR #135 without removing fail-closed behavior.
-2. Extend the AST and type system with a minimal, deliberately scoped set of AI types. Add parse/format and semantic positive/negative tests before backend support.
-3. Add typed IR and deterministic native encoding for each supported type/operation. Unsupported operations must produce explicit diagnostics rather than being dropped.
+1. Preserve the existing fail-closed construct validation. Typed construct metadata and deterministic encoding are tooling foundations, not executable language semantics.
+2. Complete KVCache and ContextWindow source-to-runtime integration: parser/AST, semantic rules, typed IR, native instruction encoding/verifier, runtime behavior, and end-to-end positive/negative tests.
+3. Then implement MoERouter and VectorIndex, followed by MCTSTree, AttentionBlock and LoRAAdapter, GradientTape and ActivationCache, and TokenizerState. Each construct must add typed IR and deterministic native encoding; unsupported operations must fail explicitly.
 4. Implement bounded native runtime representations and resource checks for the selected subset.
-5. Add one .ardisa end-to-end executable fixture per supported primitive, with observable assertions and adversarial invalid cases.
+5. Add .ardisa end-to-end executable fixtures for each newly supported construct, with observable assertions and adversarial invalid cases.
 6. Add quantization and numeric edge-case tests, domain-isolation tests, sampling reproducibility tests, resource-limit tests, and mutation tests.
 7. Expand the supported set only after CI passes for workspace/all targets, native phases, generated differential/holdout corpus, and bootstrap stage-2/stage-3 reproducibility.
 
 ## Acceptance rule
 
 Until a row has source syntax, AST, semantic rules, typed IR, native encoding, runtime enforcement, and passing end-to-end tests, label it **partial** or **unsupported**. Do not label the specification as fully incorporated, and do not claim general AI capability or accelerator support based on Rust APIs alone.
+
+
+## Rust language parity audit
+
+The current Rust capability inventory is maintained separately in [RUST_CAPABILITY_COMPATIBILITY_MATRIX.md](RUST_CAPABILITY_COMPATIBILITY_MATRIX.md). Rust interoperability, generated Rust output, and native Ardisa language support are separate capabilities; none should be used as evidence for the others.
