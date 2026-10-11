@@ -170,6 +170,53 @@ fn main() -> Int
     }
 
     #[test]
+    fn source_ai_tensor_constructors_and_ops_compile_and_execute() {
+        let source = r#"module ai
+fn main() -> Tensor<F32>
+  let left = tensor([2], [1, 2])
+  let right = tensor([2], [3, 4])
+  return tensor_add(left, right)
+"#;
+        let artifact = compile_source(source).expect("AI tensor source should compile through the full pipeline");
+        let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+        let value = native::run_program(&program, "main", &[]).expect("tensor addition should execute");
+        assert_eq!(value, native::NativeValue::Tensor { shape: vec![2], values: [4.0f32, 6.0].iter().map(|v| v.to_bits()).collect() });
+    }
+
+    #[test]
+    fn source_ai_embedding_construction_and_dot_execute_with_domain_guard() {
+        let source = r#"module ai
+fn main() -> F32
+  let left = embedding("text", [1, 2])
+  let right = embedding("text", [3, 4])
+  return embedding_dot(left, right)
+"#;
+        let artifact = compile_source(source).expect("AI embedding source should compile through the full pipeline");
+        let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+        assert_eq!(native::run_program(&program, "main", &[]).unwrap(), native::NativeValue::Float(11.0f32.to_bits()));
+    }
+
+    #[test]
+    fn source_ai_tensor_and_embedding_invalid_inputs_fail_closed() {
+        let bad_shape = r#"module ai
+fn main() -> Tensor<F32>
+  return tensor([0], [1])
+"#;
+        let artifact = compile_source(bad_shape).expect("shape is runtime-validated");
+        let program = native::decode_program(&artifact.artifact).unwrap();
+        assert!(native::run_program(&program, "main", &[]).is_err());
+
+        let mismatch = r#"module ai
+fn main() -> F32
+  let left = embedding("text", [1, 2])
+  let right = embedding("image", [3, 4])
+  return embedding_dot(left, right)
+"#;
+        let artifact = compile_source(mismatch).expect("domain comparison is runtime-validated");
+        let program = native::decode_program(&artifact.artifact).unwrap();
+        assert!(matches!(native::run_program(&program, "main", &[]), Err(native::NativeError::Type(_))));
+    }
+    #[test]
     fn pipeline_artifact_executes() {
         let compiled = compile_source(SOURCE).expect("compile");
         let program = native::decode_program(&compiled.artifact).expect("decode");
