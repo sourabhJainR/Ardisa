@@ -13,6 +13,7 @@ const MAX_TENSOR_ELEMENTS: usize = 16_384;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeInstr {
     PushInt(i64),
+    PushFloat(u32),
     PushBool(bool),
     /// Push a validated IEEE-754 f32 probability encoded as its raw bits.
     PushProbability(u32),
@@ -509,6 +510,7 @@ fn emit_branch(ops: &[IrOp], code: &mut Vec<NativeInstr>) -> Result<(), NativeEr
 fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), NativeError> {
     match value {
         IrValue::Int(value) => code.push(NativeInstr::PushInt(*value)),
+        IrValue::Float(bits) => code.push(NativeInstr::PushFloat(*bits)),
         IrValue::String(value) => code.push(NativeInstr::PushString(value.clone())),
         IrValue::List(values) => {
             for value in values {
@@ -898,6 +900,10 @@ fn run_function(
                 stack.push(value);
             }
             NativeInstr::PushInt(value) => stack.push(NativeValue::Int(*value)),
+            NativeInstr::PushFloat(bits) => {
+                if !f32::from_bits(*bits).is_finite() { return Err(NativeError::Type("float literal must be finite".into())); }
+                stack.push(NativeValue::Float(*bits));
+            }
             NativeInstr::PushBool(value) => stack.push(NativeValue::Bool(*value)),
             NativeInstr::PushProbability(bits) => {
                 validate_probability_bits(*bits)?;
@@ -976,7 +982,8 @@ fn run_function(
                 }).collect::<Result<Vec<_>, _>>()?;
                 let values = values.into_iter().map(|value| match value {
                     NativeValue::Int(number) => { let converted = number as f32; if converted.is_finite() { Ok(converted.to_bits()) } else { Err(NativeError::Type("tensor value is not finite in f32".into())) } },
-                    _ => Err(NativeError::Type("tensor values must be Int values in this source-level slice".into())),
+                    NativeValue::Float(bits) if f32::from_bits(bits).is_finite() => Ok(bits),
+                    _ => Err(NativeError::Type("tensor values must be finite numeric values".into())),
                 }).collect::<Result<Vec<_>, _>>()?;
                 validate_tensor_parts(&shape, &values, state.limits.max_collection_items)?;
                 stack.push(NativeValue::Tensor { shape, values });
@@ -986,7 +993,8 @@ fn run_function(
                 let domain = match stack.pop() { Some(NativeValue::String(domain)) => domain, _ => return Err(NativeError::Type("embedding domain must be a String".into())) };
                 let values = values.into_iter().map(|value| match value {
                     NativeValue::Int(number) => { let converted = number as f32; if converted.is_finite() { Ok(converted.to_bits()) } else { Err(NativeError::Type("embedding coordinate is not finite in f32".into())) } },
-                    _ => Err(NativeError::Type("embedding coordinates must be Int values in this source-level slice".into())),
+                    NativeValue::Float(bits) if f32::from_bits(bits).is_finite() => Ok(bits),
+                    _ => Err(NativeError::Type("embedding coordinates must be finite numeric values".into())),
                 }).collect::<Result<Vec<_>, _>>()?;
                 validate_embedding_parts(&domain, &values, state.limits.max_collection_items)?;
                 stack.push(NativeValue::Embedding { domain, values });
@@ -1483,6 +1491,7 @@ fn unescape_artifact(value: &str) -> Result<String, NativeError> {
 fn encode_instr(instr: &NativeInstr) -> String {
     match instr {
         NativeInstr::PushInt(v) => format!("PushInt:{v}"),
+        NativeInstr::PushFloat(bits) => format!("PushFloat:{bits}"),
         NativeInstr::PushBool(v) => format!("PushBool:{v}"),
         NativeInstr::PushProbability(bits) => format!("PushProbability:{bits}"),
         NativeInstr::ProbabilityAnd => "ProbabilityAnd".into(),
@@ -1532,6 +1541,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
     let int=|v:&str|v.parse::<usize>().map_err(|_|bad());
     Ok(match op {
         "PushInt"=>NativeInstr::PushInt(arg.parse().map_err(|_|bad())?),
+        "PushFloat"=>{let bits=arg.parse::<u32>().map_err(|_|bad())?;if !f32::from_bits(bits).is_finite(){return Err(bad());}NativeInstr::PushFloat(bits)},
         "PushBool"=>NativeInstr::PushBool(arg=="true"),
         "PushProbability"=>NativeInstr::PushProbability(arg.parse::<u32>().map_err(|_|bad())?),
         "ProbabilityAnd"=>NativeInstr::ProbabilityAnd,
