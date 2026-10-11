@@ -12,8 +12,9 @@ The implementation is evidence-gated. A phase is complete only after its executa
 - Mutation/adversarial verification with deterministic generated cases, malformed corpus coverage, compiler error/crash invariants, and native/reference mismatch checks.
 - Versioned AI-native compiler protocol with AST/type/effect queries, structured responses, atomic edits, source/evidence mapping, deterministic wire framing, and bounded stdio transport.
 - Persistent compiler learning with observed/verified-repair states plus deterministic repair, replay, regression, promotion and rollback provenance. V1/V2 learning files remain readable.
-- Dependency-free native execution across the supported IR operation/value surface, including aggregate List/Result parameters and deterministic benchmark measurements.
+- Dependency-free native execution across the supported IR operation/value surface, including aggregate List/Result parameters and deterministic compile/runtime/size measurements.
 - Reproducible stage2 Ardisa-authored compiler-pipeline replay with explicit bootstrap evidence.
+- Native VM dispatch borrows immutable instructions rather than cloning the instruction enum at every dispatch; a repeatable workload benchmark now reports throughput and a clearly labeled static estimate of avoided embedded-payload copying.
 
 ## Production evidence status
 
@@ -44,6 +45,7 @@ The implementation is evidence-gated. A phase is complete only after its executa
 - Backend-independent IR operations are lowered to native instructions.
 - Aggregate native values and parameters are executable.
 - Differential/generated corpus and deterministic compile/runtime/size measurements are retained.
+- Native dispatch benchmark covers arithmetic/branch control flow, short string operands, and 4 KiB embedded string operands. CI checks that it builds and returns correct results; performance is reported without a brittle timing threshold. The static avoided-copy estimate is not an allocator measurement.
 
 ### F. Bootstrap — deterministic replay complete; true self-hosting remains open
 - Ardisa-authored lexer/parser/AST/semantic/IR sources execute on the native backend.
