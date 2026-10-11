@@ -594,7 +594,7 @@ impl Checker {
                 if name == "tensor_add" || name == "tensor_matmul" {
                     if args.len() != 2 { self.error("AIF343", format!("{name} expects two Tensor<F32> arguments"), expr.span); return None; }
                     let expected = TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]);
-                    for arg in args { if let Some(actual) = self.check_expr(arg, locals) { if actual.kind != expected { self.error("AIF344", format!("{name} requires Tensor<F32> arguments"), arg.span); } } }
+                    for arg in args { if let Some(actual) = self.check_expr(arg, locals) { if !same_type_kind(&actual.kind, &expected) { self.error("AIF344", format!("{name} requires Tensor<F32> arguments"), arg.span); } } }
                     return Some(type_node(expected, expr.span));
                 }
                 if name == "embedding" {
@@ -608,7 +608,7 @@ impl Checker {
                 if name == "embedding_dot" {
                     if args.len() != 2 { self.error("AIF348", "embedding_dot expects two Embedding arguments", expr.span); return None; }
                     let expected = TypeKind::Generic("Embedding".into(), vec![type_node(TypeKind::Named("DynamicDomain".into()), expr.span)]);
-                    for arg in args { if let Some(actual) = self.check_expr(arg, locals) { if actual.kind != expected { self.error("AIF349", "embedding_dot requires Embedding values created by embedding(...)", arg.span); } } }
+                    for arg in args { if let Some(actual) = self.check_expr(arg, locals) { if !same_type_kind(&actual.kind, &expected) { self.error("AIF349", "embedding_dot requires Embedding values created by embedding(...)", arg.span); } } }
                     return Some(type_node(TypeKind::Named("F32".into()), expr.span));
                 }
                 if name == "chr" {
@@ -770,6 +770,21 @@ impl Checker {
     fn error(&mut self, code: &'static str, message: impl Into<String>, span: Span) {
         self.errors
             .push(Diagnostic::error(code, message, Some(span)));
+    }
+}
+
+fn same_type_kind(left: &TypeKind, right: &TypeKind) -> bool {
+    match (left, right) {
+        (TypeKind::Generic(left_name, left_args), TypeKind::Generic(right_name, right_args)) => {
+            left_name == right_name
+                && left_args.len() == right_args.len()
+                && left_args.iter().zip(right_args).all(|(left, right)| same_type_kind(&left.kind, &right.kind))
+        }
+        (TypeKind::List(left), TypeKind::List(right)) => same_type_kind(&left.kind, &right.kind),
+        (TypeKind::Result(left_ok, left_err), TypeKind::Result(right_ok, right_err)) => {
+            same_type_kind(&left_ok.kind, &right_ok.kind) && same_type_kind(&left_err.kind, &right_err.kind)
+        }
+        _ => left == right,
     }
 }
 
