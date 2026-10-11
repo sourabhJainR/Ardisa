@@ -9,6 +9,7 @@ pub mod ast;
 pub mod benchmark;
 pub mod bootstrap;
 pub mod concurrency;
+pub mod context_window;
 pub mod compiler_engine;
 pub mod diagnostic_memory;
 pub mod differential;
@@ -44,6 +45,7 @@ pub use ai::{
 };
 pub use arena::{Arena, ArenaId, RecordField, RecordSchema, RecordValue};
 pub use compiler_engine::{AstArena,BackendReport,CompilerEvidence,SafetyGraph,SymbolTables,TokenArena};
+pub use context_window::{ContextBudget, ContextSegment, ContextWindow, ContextWindowError, SegmentModality};
 pub use concurrency::{
     CancellationToken, ScopeEvent, ScopeReport, StructuredScope, TaskHandle, TaskSpec, TaskTerminal,
 };
