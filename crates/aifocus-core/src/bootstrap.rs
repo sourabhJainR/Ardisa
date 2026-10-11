@@ -499,6 +499,7 @@ fn token_kind_name(kind: &crate::token::TokenKind) -> String {
         crate::token::TokenKind::False => "False".into(),
         crate::token::TokenKind::Ident => "Ident".into(),
         crate::token::TokenKind::Int => "Int".into(),
+        crate::token::TokenKind::Float => "Float".into(),
         crate::token::TokenKind::String => "String".into(),
         crate::token::TokenKind::Arrow => "Arrow".into(),
         crate::token::TokenKind::Equal => "Equal".into(),
