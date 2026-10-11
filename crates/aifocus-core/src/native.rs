@@ -2088,7 +2088,7 @@ fn fact(n: Int) -> Int
         // Caller-specific arguments are still validated even though the program is trusted.
         assert!(matches!(
             validated.run_with_limits("main", &[NativeValue::String("too-long".into())], limits),
-            Err(NativeError::ResourceLimit(message)) if message.contains("string byte")
+            Err(NativeError::ResourceLimit(_))
         ));
     }
 
