@@ -589,13 +589,17 @@ impl Checker {
                     let values = self.check_expr(&args[1], locals)?;
                     if !is_int_list(&shape) { self.error("AIF341", "tensor shape must be a List<Int>", args[0].span); }
                     if !is_int_list(&values) { self.error("AIF342", "tensor values must be a List<Int> in this source-level slice", args[1].span); }
-                    return Some(type_node(TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]), expr.span));
+                    let ty = type_node(TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
                 }
                 if name == "tensor_add" || name == "tensor_matmul" {
                     if args.len() != 2 { self.error("AIF343", format!("{name} expects two Tensor<F32> arguments"), expr.span); return None; }
                     let expected = TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]);
                     for arg in args { if let Some(actual) = self.check_expr(arg, locals) { if !same_type_kind(&actual.kind, &expected) { self.error("AIF344", format!("{name} requires Tensor<F32> arguments"), arg.span); } } }
-                    return Some(type_node(expected, expr.span));
+                    let ty = type_node(expected, expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
                 }
                 if name == "embedding" {
                     if args.len() != 2 { self.error("AIF345", "embedding expects a domain string and a value list", expr.span); return None; }
@@ -603,13 +607,17 @@ impl Checker {
                     let values = self.check_expr(&args[1], locals)?;
                     if !is_kind(&domain, &TypeKind::String) { self.error("AIF346", "embedding domain must be a String", args[0].span); }
                     if !is_int_list(&values) { self.error("AIF347", "embedding coordinates must be a List<Int> in this source-level slice", args[1].span); }
-                    return Some(type_node(TypeKind::Generic("Embedding".into(), vec![type_node(TypeKind::Named("DynamicDomain".into()), expr.span)]), expr.span));
+                    let ty = type_node(TypeKind::Generic("Embedding".into(), vec![type_node(TypeKind::Named("DynamicDomain".into()), expr.span)]), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
                 }
                 if name == "embedding_dot" {
                     if args.len() != 2 { self.error("AIF348", "embedding_dot expects two Embedding arguments", expr.span); return None; }
                     let expected = TypeKind::Generic("Embedding".into(), vec![type_node(TypeKind::Named("DynamicDomain".into()), expr.span)]);
                     for arg in args { if let Some(actual) = self.check_expr(arg, locals) { if !same_type_kind(&actual.kind, &expected) { self.error("AIF349", "embedding_dot requires Embedding values created by embedding(...)", arg.span); } } }
-                    return Some(type_node(TypeKind::Named("F32".into()), expr.span));
+                    let ty = type_node(TypeKind::Named("F32".into()), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
                 }
                 if name == "chr" {
                     if args.len() != 1 {
