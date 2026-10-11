@@ -434,7 +434,7 @@ fn main() -> F32
     fn source_dequantize_rejects_non_finite_results() {
         let source = r#"module dequantize_overflow
 fn main() -> Tensor<F32>
-  return dequantize(quantized_tensor([1], 3.4, -128, [127]))
+  return dequantize(quantized_tensor([1], 340282300000000000000000000000000000000.0, 0, [127]))
 "#;
         let artifact = compile_source(source).expect("finite quantization scale should compile");
         let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
