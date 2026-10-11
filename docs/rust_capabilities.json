@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "supported_requires": [
+      "source_syntax",
+      "semantic_checks",
+      "typed_ir",
+      "native_encoding",
+      "runtime_behavior",
+      "positive_tests",
+      "adversarial_tests",
+      "differential_holdout"
+    ],
+    "self_hosting_requires_stage_0_to_3_reproducibility": true
+  },
+  "capabilities": [
+    {
+      "id": "functions-and-scalars",
+      "label": "Functions, parameters, return types, and scalar arithmetic",
+      "status": "partial",
+      "evidence": {
+        "source_syntax": ["crates/aifocus-core/src/ast.rs"],
+        "semantic_checks": ["crates/aifocus-core/src/sema.rs"],
+        "typed_ir": ["crates/aifocus-core/src/typed_ir.rs"],
+        "native_encoding": ["crates/aifocus-core/src/native.rs"],
+        "runtime_behavior": ["crates/aifocus-core/src/pipeline.rs"],
+        "positive_tests": ["crates/aifocus-core/src/pipeline.rs"],
+        "adversarial_tests": ["crates/aifocus-core/src/pipeline.rs"],
+        "differential_holdout": [".github/workflows/ci.yml"]
+      },
+      "limitations": "Subset only; not Rust numeric or type-system parity."
+    },
+    {
+      "id": "user-defined-structs-enums-patterns",
+      "label": "User-defined structs, enums, and exhaustive pattern matching",
+      "status": "unsupported",
+      "evidence": {},
+      "tracking": "https://github.com/sourabhJainR/Ardisa/issues/156"
+    },
+    {
+      "id": "traits-generics",
+      "label": "Trait constraints, impl blocks, and generic function/type checking",
+      "status": "unsupported",
+      "evidence": {},
+      "tracking": "https://github.com/sourabhJainR/Ardisa/issues/157"
+    },
+    {
+      "id": "ownership-borrow-lifetimes",
+      "label": "Flow-sensitive ownership, borrowing, lifetime regions, and drop",
+      "status": "partial",
+      "evidence": {
+        "semantic_checks": ["crates/aifocus-core/src/ownership.rs"],
+        "positive_tests": ["crates/aifocus-core/src/ownership.rs"],
+        "adversarial_tests": ["crates/aifocus-core/src/ownership.rs"]
+      },
+      "limitations": "Existing analysis does not establish full Rust-compatible soundness."
+    },
+    {
+      "id": "option-result-propagation",
+      "label": "Option, Result, propagation, and error conversions",
+      "status": "partial",
+      "evidence": {
+        "source_syntax": ["crates/aifocus-core/src/ast.rs"],
+        "semantic_checks": ["crates/aifocus-core/src/sema.rs"],
+        "native_encoding": ["crates/aifocus-core/src/native.rs"]
+      },
+      "limitations": "Full Option and propagation/conversion semantics are not established."
+    },
+    {
+      "id": "closures-iterators",
+      "label": "Closures, capture modes, iterators, and for loops",
+      "status": "unsupported",
+      "evidence": {},
+      "tracking": "https://github.com/sourabhJainR/Ardisa/issues/160"
+    },
+    {
+      "id": "async-await",
+      "label": "Rust async/await and Future semantics",
+      "status": "unsupported",
+      "evidence": {},
+      "tracking": "https://github.com/sourabhJainR/Ardisa/issues/161"
+    },
+    {
+      "id": "modules-packages",
+      "label": "Modules, visibility, package resolution, and reproducible dependencies",
+      "status": "partial",
+      "evidence": {
+        "source_syntax": ["crates/aifocus-core/src/ast.rs"],
+        "semantic_checks": ["crates/aifocus-core/src/sema.rs"]
+      },
+      "limitations": "Rust crate and Cargo compatibility is not established."
+    },
+    {
+      "id": "advanced-rust-features",
+      "label": "Macros, const generics, attributes/cfg, unsafe, broad FFI, and custom targets",
+      "status": "unsupported",
+      "evidence": {},
+      "tracking": "https://github.com/sourabhJainR/Ardisa/issues/163"
+    }
+  ]
+}
