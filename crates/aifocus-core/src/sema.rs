@@ -289,6 +289,33 @@ fn validate_construct_declarations(module: &Module, checker: &mut Checker) {
                 }
             }
         }
+
+        let required_members: &[&str] = match declaration.kind {
+            ConstructKind::Trace => &["signature"],
+            ConstructKind::Cell => &["invariant"],
+            ConstructKind::Vault => &["capabilities"],
+            ConstructKind::Proof => &["requires", "ensures", "on_unknown", "required"],
+            ConstructKind::Phase => &[],
+        };
+        for required in required_members {
+            if !member_names.contains(required) {
+                checker.error(
+                    "AIF617",
+                    format!(
+                        "{:?} declaration '{}' is missing required member '{}'",
+                        declaration.kind, declaration.name, required
+                    ),
+                    declaration.span,
+                );
+            }
+        }
+        if declaration.kind == ConstructKind::Phase && transitions.is_empty() {
+            checker.error(
+                "AIF617",
+                format!("phase '{}' must declare at least one transition", declaration.name),
+                declaration.span,
+            );
+        }
     }
 }
 
@@ -938,6 +965,23 @@ mod tests {
 
         let errors = analyze(&module).expect_err("constructs must remain fail-closed until runtime enforcement exists");
         assert!(errors.iter().any(|error| error.code == "AIF610"));
+    }
+
+    #[test]
+    fn construct_analysis_rejects_missing_required_members() {
+        let module = parse(
+            "module missing_construct_members\ntrace MissingTrace\n  value: Int\ncell MissingCell\n  value: Int\nvault MissingVault\n  denies: network\nproof MissingProof\n  requires: valid\nphase PresentPhase\n  ready -> done\n",
+        )
+        .expect("constructs with valid syntax should parse for semantic diagnostics");
+
+        let errors = analyze_constructs(&module)
+            .expect_err("every construct must declare its minimum required members");
+        let required_errors = errors.iter().filter(|error| error.code == "AIF617").count();
+        assert!(
+            required_errors >= 6,
+            "expected missing signature, invariant, capabilities, and three proof clauses; got {:?}",
+            errors
+        );
     }
 
     #[test]
