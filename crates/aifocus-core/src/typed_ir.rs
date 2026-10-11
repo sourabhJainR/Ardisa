@@ -428,7 +428,8 @@ fn optimize_value(value: &mut TypedValue) {
             then_ops.iter_mut().for_each(optimize_op);
             else_ops.iter_mut().for_each(optimize_op);
         }
-        TypedValueKind::Int(_)
+        TypedValueKind::Float(_)
+        | TypedValueKind::Int(_)
         | TypedValueKind::Bool(_)
         | TypedValueKind::String(_)
         | TypedValueKind::Name(_) => {}
