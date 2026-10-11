@@ -6,6 +6,43 @@ use std::collections::{BTreeMap, HashMap};
 pub struct TypedIrModule {
     pub name: String,
     pub functions: Vec<TypedIrFunction>,
+    /// Typed declaration metadata. The executable backend must not ignore
+    /// non-empty constructs; compile_source still rejects them until runtime
+    /// operations and effect enforcement are implemented.
+    pub constructs: Vec<TypedIrConstruct>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedIrConstruct {
+    pub kind: crate::ast::ConstructKind,
+    pub name: String,
+    pub members: Vec<TypedIrConstructMember>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedIrConstructMember {
+    Field { name: String, ty: TypeKind, span: Span },
+    Clause { name: String, value: String, span: Span },
+    Transition { from: String, to: String, span: Span },
+}
+
+/// Lower only construct declarations for compiler tooling and focused tests.
+/// The regular function lowerer remains fail-closed through sema::analyze.
+pub fn lower_constructs(module: &Module) -> Result<Vec<TypedIrConstruct>, Vec<String>> {
+    let constructs = crate::sema::analyze_constructs(module).map_err(|errors| {
+        errors.into_iter().map(|error| format!("{}: {}", error.code, error.message)).collect::<Vec<_>>()
+    })?;
+    Ok(constructs.into_iter().map(|construct| TypedIrConstruct {
+        kind: construct.kind,
+        name: construct.name,
+        span: construct.span,
+        members: construct.members.into_iter().map(|member| match member {
+            crate::sema::TypedConstructMember::Field { name, ty, span } => TypedIrConstructMember::Field { name, ty, span },
+            crate::sema::TypedConstructMember::Clause { name, value, span } => TypedIrConstructMember::Clause { name, value, span },
+            crate::sema::TypedConstructMember::Transition { from, to, span } => TypedIrConstructMember::Transition { from, to, span },
+        }).collect(),
+    }).collect())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,7 +130,16 @@ pub fn lower(module: &Module) -> Result<TypedIrModule, Vec<String>> {
             blocks: vec![TypedBasicBlock { id: 0, ops, terminator }],
         });
     }
-    if errors.is_empty() { Ok(TypedIrModule { name: module.name.clone(), functions }) } else { Err(errors) }
+    if errors.is_empty() { Ok(TypedIrModule { name: module.name.clone(), functions, constructs: analysis.constructs.iter().map(|construct| TypedIrConstruct {
+        kind: construct.kind,
+        name: construct.name.clone(),
+        span: construct.span,
+        members: construct.members.iter().map(|member| match member {
+            crate::sema::TypedConstructMember::Field { name, ty, span } => TypedIrConstructMember::Field { name: name.clone(), ty: ty.clone(), span: *span },
+            crate::sema::TypedConstructMember::Clause { name, value, span } => TypedIrConstructMember::Clause { name: name.clone(), value: value.clone(), span: *span },
+            crate::sema::TypedConstructMember::Transition { from, to, span } => TypedIrConstructMember::Transition { from: from.clone(), to: to.clone(), span: *span },
+        }).collect(),
+    }).collect() }) } else { Err(errors) }
 }
 
 fn lower_stmt(
@@ -208,7 +254,7 @@ pub fn lower_cfg(module: &Module) -> Result<TypedIrModule, Vec<String>> {
             blocks,
         });
     }
-    if errors.is_empty() { Ok(TypedIrModule { name: module.name.clone(), functions }) } else { Err(errors) }
+    if errors.is_empty() { Ok(TypedIrModule { name: module.name.clone(), functions, constructs: Vec::new() }) } else { Err(errors) }
 }
 
 fn new_cfg_block(blocks: &mut Vec<TypedBasicBlock>) -> u32 {
@@ -302,7 +348,7 @@ pub fn optimize(module: TypedIrModule) -> TypedIrModule {
         }
         function
     }).collect();
-    TypedIrModule { name: module.name, functions }
+    TypedIrModule { name: module.name, functions, constructs: module.constructs }
 }
 
 fn optimize_op(op: &mut TypedIrOp) {
@@ -450,6 +496,24 @@ fn typed_value_to_legacy(value: &TypedValue) -> crate::ir::IrValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lowers_structurally_validated_constructs_to_typed_ir_without_enabling_execution() {
+        let module = crate::parse(
+            "module constructs\ncell State\n  value: Int\n  invariant: valid\nphase Lifecycle\n  Ready -> Done\n",
+        ).unwrap();
+        let constructs = lower_constructs(&module).unwrap();
+        assert_eq!(constructs.len(), 2);
+        assert!(matches!(
+            constructs[0].members.first(),
+            Some(TypedIrConstructMember::Field { name, ty: TypeKind::Int, .. }) if name == "value"
+        ));
+        assert!(matches!(
+            constructs[1].members.first(),
+            Some(TypedIrConstructMember::Transition { from, to, .. }) if from == "Ready" && to == "Done"
+        ));
+        assert!(lower(&module).is_err(), "regular compiler lowering must remain fail-closed");
+    }
+
     #[test]
     fn lowers_typed_function() {
         let m=crate::parse("module x\nfn main(a: Int) -> Int\n  a + 1\n").unwrap();

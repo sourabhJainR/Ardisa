@@ -2,6 +2,7 @@
 
 pub mod ai;
 pub mod ai_types;
+pub mod ai_primitives;
 pub mod ai_mode;
 pub mod arena;
 pub mod ast;
@@ -35,6 +36,7 @@ pub mod token;
 
 pub use ai_mode::{AiModePolicy, Capability, PolicyViolation, ProofPolicy, ProofRequirement, ProofStatus, TracePolicy, UnknownProofPolicy, VaultPolicy};
 pub use ai_types::{Alternative, Guaranteed, GraphConflictPolicy, GraphTensor, GraphTensorEdge, GraphTensorNode, Probabilistic};
+pub use ai_primitives::{AiNumericType, AiTypeError, DomainEmbedding, Probability as AiProbability, QuantizationScale, QuantizedTensor, TensorShape, TensorValue, encode_tensor_descriptor, encode_embedding, encode_probability, encode_quantized_tensor};
 pub use ai::{
     Distribution, Embedding, Modality, Probability, Quantization, RuntimeError, SemanticValue,
     Tensor, TraceBuffer, TraceEvent, TraceLevel,
@@ -897,5 +899,47 @@ mod ai_mode_declaration_parser_tests {
         assert!(errors.iter().any(|error| error.code == "AIF615"));
         assert!(errors.iter().any(|error| error.code == "AIF616"));
         assert!(errors.iter().any(|error| error.code == "AIF610"));
+    }
+}
+
+#[cfg(test)]
+mod ai_type_pipeline_regression_tests {
+    use super::compile_source;
+
+    #[test]
+    fn ai_type_signatures_pass_through_native_compile_pipeline() {
+        let source = r#"module ai_pipeline
+fn identity(value: Tensor<F32>) -> Int
+  1
+fn embedding(value: Embedding<TextDomain>) -> Int
+  1
+fn confidence(value: Probability) -> Int
+  1
+fn packed(value: QuantizedTensor<I8>) -> Int
+  1
+"#;
+        let module = crate::parse(source).expect("fixture parses");
+        crate::sema::check(&module).expect("well-formed AI type signatures should pass semantic analysis");
+
+        // Native VM parameter layouts intentionally remain restricted until
+        // first-class AI runtime values are implemented. Keep the executable
+        // pipeline assertion on a supported scalar signature.
+        let compiled = compile_source("module ai_pipeline_runtime\nfn main() -> Int\n  1\n")
+            .expect("supported scalar fixture should pass the native pipeline");
+        assert!(compiled.evidence.phase_order.contains(&"semantic_type"));
+        assert!(compiled.evidence.phase_order.contains(&"typed_ir"));
+        assert!(compiled.evidence.phase_order.contains(&"instruction_selection"));
+        assert!(!compiled.artifact.is_empty());
+    }
+
+    #[test]
+    fn invalid_ai_type_signatures_fail_before_native_emission() {
+        let source = r#"module bad_ai_pipeline
+fn invalid(value: Tensor<String>) -> Tensor<String>
+  value
+"#;
+        let module = crate::parse(source).expect("fixture parses");
+        let errors = crate::sema::analyze(&module).expect_err("invalid tensor element type must fail closed");
+        assert!(errors.iter().any(|item| item.code == "AIF320"));
     }
 }
