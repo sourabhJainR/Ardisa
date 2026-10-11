@@ -175,7 +175,7 @@ fn main() -> Int
 fn main() -> Tensor<F32>
   let left = tensor([2], [1, 2])
   let right = tensor([2], [3, 4])
-  tensor_add(left, right)
+  return tensor_add(left, right)
 "#;
         let artifact = compile_source(source).expect("AI tensor source should compile through the full pipeline");
         let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
@@ -189,7 +189,7 @@ fn main() -> Tensor<F32>
 fn main() -> F32
   let left = embedding("text", [1, 2])
   let right = embedding("text", [3, 4])
-  embedding_dot(left, right)
+  return embedding_dot(left, right)
 "#;
         let artifact = compile_source(source).expect("AI embedding source should compile through the full pipeline");
         let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
@@ -200,7 +200,7 @@ fn main() -> F32
     fn source_ai_tensor_and_embedding_invalid_inputs_fail_closed() {
         let bad_shape = r#"module ai
 fn main() -> Tensor<F32>
-  tensor([0], [1])
+  return tensor([0], [1])
 "#;
         let artifact = compile_source(bad_shape).expect("shape is runtime-validated");
         let program = native::decode_program(&artifact.artifact).unwrap();
@@ -210,7 +210,7 @@ fn main() -> Tensor<F32>
 fn main() -> F32
   let left = embedding("text", [1, 2])
   let right = embedding("image", [3, 4])
-  embedding_dot(left, right)
+  return embedding_dot(left, right)
 "#;
         let artifact = compile_source(mismatch).expect("domain comparison is runtime-validated");
         let program = native::decode_program(&artifact.artifact).unwrap();
