@@ -34,6 +34,48 @@ pub enum TypedConstructMember {
     Transition { from: String, to: String, span: Span },
 }
 
+
+/// Validate built-in AI type constructor signatures at source level. This does
+/// not claim runtime values or executable VM instructions are implemented.
+fn validate_ai_type(ty: &Type, checker: &mut Checker) {
+    match &ty.kind {
+        TypeKind::Generic(name, args) if matches!(name.as_str(), "Tensor" | "Embedding" | "QuantizedTensor" | "Probabilistic" | "Guaranteed") => {
+            if args.len() != 1 {
+                checker.error("AIF320", format!("AI type '{}' expects one type argument", name), ty.span);
+                return;
+            }
+            if name == "Tensor" || name == "QuantizedTensor" {
+                let TypeKind::Named(element) = &args[0].kind else {
+                    checker.error("AIF320", format!("AI type '{}' requires a named numeric element type", name), args[0].span);
+                    return;
+                };
+                let allowed = if name == "Tensor" {
+                    matches!(element.as_str(), "F32" | "F16" | "BF16" | "I8" | "I4" | "Quant4")
+                } else {
+                    matches!(element.as_str(), "I8" | "I4" | "Quant4")
+                };
+                if !allowed {
+                    checker.error("AIF320", format!("unsupported element type '{}' for {}", element, name), args[0].span);
+                }
+            } else if name == "Embedding" && !matches!(&args[0].kind, TypeKind::Named(_)) {
+                checker.error("AIF320", "Embedding domain must be a named domain type", args[0].span);
+            }
+            for arg in args { validate_ai_type(arg, checker); }
+        }
+        TypeKind::Generic(name, args) if matches!(name.as_str(), "Probability" | "GraphTensor") => {
+            checker.error("AIF320", format!("AI type '{}' does not accept type arguments", name), ty.span);
+            for arg in args { validate_ai_type(arg, checker); }
+        }
+        TypeKind::Generic(_, args) => for arg in args { validate_ai_type(arg, checker); },
+        TypeKind::List(element) => validate_ai_type(element, checker),
+        TypeKind::Result(ok, err) => {
+            validate_ai_type(ok, checker);
+            validate_ai_type(err, checker);
+        }
+        _ => {}
+    }
+}
+
 /// Validate declaration structure and produce a typed semantic representation.
 /// This inspection API omits AIF610; normal analyze() still rejects compilation.
 pub fn analyze_constructs(module: &Module) -> Result<Vec<TypedConstructDeclaration>, Vec<Diagnostic>> {
@@ -90,6 +132,12 @@ pub fn analyze(module: &Module) -> Result<SemanticModel, Vec<Diagnostic>> {
 
     for item in &module.items {
         let Item::Function(function) = item;
+        for parameter in &function.params {
+            validate_ai_type(&parameter.ty, &mut checker);
+        }
+        if let Some(return_type) = &function.return_type {
+            validate_ai_type(return_type, &mut checker);
+        }
         let signature = FunctionSignature {
             params: function.params.iter().map(|p| p.ty.clone()).collect(),
             return_type: function.return_type.clone(),
@@ -770,6 +818,16 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn validates_ai_native_type_constructor_arity_and_numeric_elements() {
+        let valid = parse("module ai\nfn tensor(value: Tensor<F32>) -> Tensor<F32>\n  value\nfn embed(value: Embedding<TextDomain>) -> Embedding<TextDomain>\n  value\nfn prob(value: Probability) -> Probability\n  value\nfn quant(value: QuantizedTensor<I8>) -> QuantizedTensor<I8>\n  value\n").unwrap();
+        assert!(check(&valid).is_ok(), "valid AI type signatures should pass: {:?}", check(&valid).err());
+
+        let invalid = parse("module bad_ai\nfn tensor(value: Tensor<String>) -> Tensor<String>\n  value\nfn embed(value: Embedding<TextDomain, ImageDomain>) -> Embedding<TextDomain, ImageDomain>\n  value\nfn quant(value: QuantizedTensor<F32>) -> QuantizedTensor<F32>\n  value\n").unwrap();
+        let errors = check(&invalid).expect_err("invalid AI type parameters must be rejected");
+        assert!(errors.iter().filter(|error| error.code == "AIF320").count() >= 3);
     }
 
     #[test]
