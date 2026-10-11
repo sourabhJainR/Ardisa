@@ -313,6 +313,11 @@ fn display_value(value: &ardisa_core::NativeValue) -> String {
         ardisa_core::NativeValue::Float(bits) => f32::from_bits(*bits).to_string(),
         ardisa_core::NativeValue::Bool(value) => value.to_string(),
         ardisa_core::NativeValue::Probability(bits) => f32::from_bits(*bits).to_string(),
+        ardisa_core::NativeValue::QuantizedTensor { shape, scale_bits, zero_point, values } => {
+            let dimensions = shape.iter().map(usize::to_string).collect::<Vec<_>>().join("x");
+            let scale = f32::from_bits(*scale_bits);
+            format!("QuantizedTensor<{dimensions}; scale={scale}; zero_point={zero_point}>[{}]", values.iter().map(i8::to_string).collect::<Vec<_>>().join(", "))
+        }
         ardisa_core::NativeValue::Tensor { shape, values } => {
             let dimensions = shape.iter().map(usize::to_string).collect::<Vec<_>>().join("x");
             let rendered = values.iter().map(|bits| f32::from_bits(*bits).to_string()).collect::<Vec<_>>().join(", ");
