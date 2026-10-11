@@ -74,7 +74,7 @@ impl ContextWindow {
             || self.bytes + segment_bytes > self.budget.max_bytes
             || self.tokens + segment.token_count > self.budget.max_tokens
         {
-            let removed = self.segments.remove(0).expect("budget loop only runs when at least one segment exists");
+            let removed = self.segments.remove(0);
             self.bytes -= removed.payload.len();
             self.tokens -= removed.token_count;
         }
