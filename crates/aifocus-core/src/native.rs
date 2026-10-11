@@ -12,6 +12,12 @@ use crate::ir::{IrFunction, IrModule, IrOp, IrValue};
 pub enum NativeInstr {
     PushInt(i64),
     PushBool(bool),
+    /// Push a validated IEEE-754 f32 probability encoded as its raw bits.
+    PushProbability(u32),
+    ProbabilityAnd,
+    ProbabilityOr,
+    ProbabilityNot,
+    ProbabilityMeets,
     PushUnit,
     PushString(String),
     PushList(usize),
@@ -115,6 +121,8 @@ pub struct NativeFunction {
 pub enum NativeValue {
     Int(i64),
     Bool(bool),
+    /// A probability is stored as f32 bits to preserve Eq and deterministic artifacts.
+    Probability(u32),
     String(String),
     List(Vec<NativeValue>),
     ResultOk(Box<NativeValue>),
@@ -698,6 +706,11 @@ fn run_function(
             instr,
             NativeInstr::PushInt(_)
                 | NativeInstr::PushBool(_)
+                | NativeInstr::PushProbability(_)
+                | NativeInstr::ProbabilityAnd
+                | NativeInstr::ProbabilityOr
+                | NativeInstr::ProbabilityNot
+                | NativeInstr::ProbabilityMeets
                 | NativeInstr::PushUnit
                 | NativeInstr::PushString(_)
                 | NativeInstr::PushList(_)
@@ -830,6 +843,33 @@ fn run_function(
             }
             NativeInstr::PushInt(value) => stack.push(NativeValue::Int(*value)),
             NativeInstr::PushBool(value) => stack.push(NativeValue::Bool(*value)),
+            NativeInstr::PushProbability(bits) => {
+                validate_probability_bits(*bits)?;
+                stack.push(NativeValue::Probability(*bits));
+            }
+            NativeInstr::ProbabilityAnd | NativeInstr::ProbabilityOr => {
+                let right = pop_probability(&mut stack)?;
+                let left = pop_probability(&mut stack)?;
+                let value = if matches!(instr, NativeInstr::ProbabilityAnd) {
+                    left * right
+                } else {
+                    left + right - left * right
+                };
+                let bits = value.to_bits();
+                validate_probability_bits(bits)?;
+                stack.push(NativeValue::Probability(bits));
+            }
+            NativeInstr::ProbabilityNot => {
+                let value = pop_probability(&mut stack)?;
+                let bits = (1.0f32 - value).to_bits();
+                validate_probability_bits(bits)?;
+                stack.push(NativeValue::Probability(bits));
+            }
+            NativeInstr::ProbabilityMeets => {
+                let threshold = pop_probability(&mut stack)?;
+                let value = pop_probability(&mut stack)?;
+                stack.push(NativeValue::Bool(value >= threshold));
+            }
             NativeInstr::PushUnit => stack.push(NativeValue::Unit),
             NativeInstr::PushString(value) => {
                 if value.len() > state.limits.max_string_bytes {
@@ -1165,6 +1205,7 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
         for param in &function.params { add_bytes(param)?; }
         for instr in &function.code {
             match instr {
+                NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
                 NativeInstr::PushString(s) | NativeInstr::Append(s) |
                 NativeInstr::Load(s) | NativeInstr::Store(s) |
                 NativeInstr::AddAssign(s) | NativeInstr::StoreIndex(s) |
@@ -1277,6 +1318,11 @@ fn encode_instr(instr: &NativeInstr) -> String {
     match instr {
         NativeInstr::PushInt(v) => format!("PushInt:{v}"),
         NativeInstr::PushBool(v) => format!("PushBool:{v}"),
+        NativeInstr::PushProbability(bits) => format!("PushProbability:{bits}"),
+        NativeInstr::ProbabilityAnd => "ProbabilityAnd".into(),
+        NativeInstr::ProbabilityOr => "ProbabilityOr".into(),
+        NativeInstr::ProbabilityNot => "ProbabilityNot".into(),
+        NativeInstr::ProbabilityMeets => "ProbabilityMeets".into(),
         NativeInstr::PushUnit => "PushUnit".into(),
         NativeInstr::PushString(v) => format!("PushString:{}", escape_artifact(v)),
         NativeInstr::PushList(v) => format!("PushList:{v}"),
@@ -1312,6 +1358,11 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
     Ok(match op {
         "PushInt"=>NativeInstr::PushInt(arg.parse().map_err(|_|bad())?),
         "PushBool"=>NativeInstr::PushBool(arg=="true"),
+        "PushProbability"=>NativeInstr::PushProbability(arg.parse::<u32>().map_err(|_|bad())?),
+        "ProbabilityAnd"=>NativeInstr::ProbabilityAnd,
+        "ProbabilityOr"=>NativeInstr::ProbabilityOr,
+        "ProbabilityNot"=>NativeInstr::ProbabilityNot,
+        "ProbabilityMeets"=>NativeInstr::ProbabilityMeets,
         "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Len"=>NativeInstr::Len,
         "PushString"=>NativeInstr::PushString(unescape_artifact(arg)?),
         "PushList"=>NativeInstr::PushList(int(arg)?),"Append"=>NativeInstr::Append(unescape_artifact(arg)?),
@@ -1330,6 +1381,21 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "Join"=>NativeInstr::Join{name:unescape_artifact(arg)?},"Cancel"=>NativeInstr::Cancel{name:unescape_artifact(arg)?},
         _=>return Err(bad()),
     })
+}
+
+fn validate_probability_bits(bits: u32) -> Result<f32, NativeError> {
+    let value = f32::from_bits(bits);
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(NativeError::InvalidProgram("probability constant must be finite and in [0, 1]".into()));
+    }
+    Ok(value)
+}
+
+fn pop_probability(stack: &mut Vec<NativeValue>) -> Result<f32, NativeError> {
+    match stack.pop() {
+        Some(NativeValue::Probability(bits)) => validate_probability_bits(bits),
+        _ => Err(NativeError::Type("expected Probability value".into())),
+    }
 }
 
 fn pop_int(stack: &mut Vec<NativeValue>) -> Result<i64, NativeError> {
@@ -1363,6 +1429,64 @@ fn main(a: String) -> String
             run_program(&decoded, "main", &[NativeValue::String("Ardisa".into())]).unwrap(),
             NativeValue::String("Ardisa!".into())
         );
+    }
+
+    #[test]
+    fn probability_instructions_execute_and_round_trip_as_ardisa_exec_v1() {
+        let half = 0.5f32.to_bits();
+        let quarter = 0.25f32.to_bits();
+        let program = NativeProgram { functions: BTreeMap::from([(
+            "main".to_string(), NativeFunction { params: vec![], code: vec![
+                NativeInstr::PushProbability(half),
+                NativeInstr::PushProbability(quarter),
+                NativeInstr::ProbabilityAnd,
+                NativeInstr::PushProbability(0.1f32.to_bits()),
+                NativeInstr::ProbabilityMeets,
+                NativeInstr::Return,
+            ] }
+        )])};
+        let encoded = encode_program(&program);
+        let decoded = decode_program(&encoded).expect("probability bytecode decodes");
+        assert_eq!(encode_program(&decoded), encoded);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Bool(true));
+
+        let or_program = NativeProgram { functions: BTreeMap::from([(
+            "main".to_string(), NativeFunction { params: vec![], code: vec![
+                NativeInstr::PushProbability(half),
+                NativeInstr::PushProbability(quarter),
+                NativeInstr::ProbabilityOr,
+                NativeInstr::PushProbability(0.6f32.to_bits()),
+                NativeInstr::ProbabilityMeets,
+                NativeInstr::Return,
+            ] }
+        )])};
+        assert_eq!(run_program(&or_program, "main", &[]).unwrap(), NativeValue::Bool(true));
+
+        let low = 0.25f32.to_bits();
+        let expected_not = 0.75f32.to_bits();
+        let not_program = NativeProgram { functions: BTreeMap::from([(
+            "main".to_string(), NativeFunction { params: vec![], code: vec![
+                NativeInstr::PushProbability(low), NativeInstr::ProbabilityNot, NativeInstr::Return,
+            ] }
+        )])};
+        assert_eq!(run_program(&not_program, "main", &[]).unwrap(), NativeValue::Probability(expected_not));
+    }
+
+    #[test]
+    fn invalid_probability_constants_and_operands_fail_closed() {
+        let invalid = NativeProgram { functions: BTreeMap::from([(
+            "main".to_string(), NativeFunction { params: vec![], code: vec![
+                NativeInstr::PushProbability(f32::NAN.to_bits()), NativeInstr::Return,
+            ] }
+        )])};
+        assert!(matches!(decode_program(&encode_program(&invalid)), Err(NativeError::InvalidProgram(_))));
+
+        let wrong_type = NativeProgram { functions: BTreeMap::from([(
+            "main".to_string(), NativeFunction { params: vec![], code: vec![
+                NativeInstr::PushInt(1), NativeInstr::ProbabilityNot, NativeInstr::Return,
+            ] }
+        )])};
+        assert!(matches!(run_program(&wrong_type, "main", &[]), Err(NativeError::Type(_))));
     }
 
     #[test]
