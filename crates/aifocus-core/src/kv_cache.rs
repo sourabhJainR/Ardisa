@@ -10,6 +10,8 @@ use std::collections::VecDeque;
 /// Hard upper bound for a single cache's entry count. This bounds both runtime
 /// work and the amount of state accepted from untrusted program inputs.
 pub const MAX_KV_CACHE_ENTRIES: usize = 16_384;
+/// Maximum number of retained key and value scalars per cache.
+pub const MAX_KV_CACHE_SCALARS: usize = 1_048_576;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheFullPolicy {
@@ -29,6 +31,7 @@ pub struct KvEntry {
 pub enum KvCacheError {
     ZeroCapacity,
     CapacityTooLarge { requested: usize, maximum: usize },
+    ScalarBudgetExceeded { requested: usize, maximum: usize },
     EmptyVector,
     KeyDimension { expected: usize, actual: usize },
     ValueDimension { expected: usize, actual: usize },
@@ -106,15 +109,29 @@ impl KvCache {
                 return Err(KvCacheError::ValueDimension { expected, actual: value.len() });
             }
         }
-        if self.entries.len() == self.capacity {
-            match policy {
-                CacheFullPolicy::Reject => {
-                    return Err(KvCacheError::CapacityExceeded { capacity: self.capacity });
-                }
-                CacheFullPolicy::EvictOldest => {
-                    self.entries.pop_front();
-                }
-            }
+        let is_full = self.entries.len() == self.capacity;
+        if is_full && policy == CacheFullPolicy::Reject {
+            return Err(KvCacheError::CapacityExceeded { capacity: self.capacity });
+        }
+
+        // Entry-count limits alone do not bound memory if each key/value vector
+        // is arbitrarily wide. Check the retained scalar budget before eviction
+        // or any other mutation so failed appends are transactional.
+        let retained_entries = if is_full { self.capacity } else { self.entries.len() + 1 };
+        let requested_scalars = key
+            .len()
+            .checked_add(value.len())
+            .and_then(|width| width.checked_mul(retained_entries))
+            .unwrap_or(usize::MAX);
+        if requested_scalars > MAX_KV_CACHE_SCALARS {
+            return Err(KvCacheError::ScalarBudgetExceeded {
+                requested: requested_scalars,
+                maximum: MAX_KV_CACHE_SCALARS,
+            });
+        }
+
+        if is_full {
+            self.entries.pop_front();
         }
         self.key_dim.get_or_insert(key.len());
         self.value_dim.get_or_insert(value.len());
@@ -141,6 +158,24 @@ mod tests {
         assert_eq!(KvCache::new(MAX_KV_CACHE_ENTRIES + 1).unwrap_err(), KvCacheError::CapacityTooLarge { requested: MAX_KV_CACHE_ENTRIES + 1, maximum: MAX_KV_CACHE_ENTRIES });
         let mut cache = KvCache::new(2).unwrap();
         assert_eq!(cache.append(vec![], vec![1.0], CacheFullPolicy::Reject), Err(KvCacheError::EmptyVector));
+    }
+
+    #[test]
+    fn rejects_appends_that_exceed_total_scalar_budget_without_mutation() {
+        let mut cache = KvCache::new(2).unwrap();
+        let key = vec![1.0; MAX_KV_CACHE_SCALARS / 2 + 1];
+        cache.append(key, vec![2.0], CacheFullPolicy::Reject).unwrap();
+        let before = cache.window(0, 1).unwrap();
+
+        assert_eq!(
+            cache.append(vec![3.0; MAX_KV_CACHE_SCALARS / 2 + 1], vec![4.0], CacheFullPolicy::Reject),
+            Err(KvCacheError::ScalarBudgetExceeded {
+                requested: (MAX_KV_CACHE_SCALARS / 2 + 2) * 2,
+                maximum: MAX_KV_CACHE_SCALARS,
+            })
+        );
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.window(0, 1).unwrap(), before);
     }
 
     #[test]
