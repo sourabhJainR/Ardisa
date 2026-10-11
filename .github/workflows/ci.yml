@@ -25,6 +25,10 @@ jobs:
         run: |
           cargo fmt --all
           cargo fmt --all -- --check
+      - name: Validate Rust capability evidence manifest
+        run: python3 scripts/validate_rust_capabilities.py
+      - name: Test Rust capability evidence validator
+        run: python3 -m unittest tests/test_rust_capability_manifest.py
       - run: cargo check --workspace --all-targets
       - run: cargo test --workspace --all-targets
 
