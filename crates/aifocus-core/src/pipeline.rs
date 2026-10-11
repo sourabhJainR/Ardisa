@@ -314,6 +314,51 @@ fn main() -> Tensor<F32>
     }
 
     #[test]
+    fn source_tensor_matmul_executes_with_rank_two_shape_contract() {
+        let source = r#"module ai_matmul
+fn main() -> Tensor<F32>
+  let left = tensor([2, 2], [1, 2, 3, 4])
+  let right = tensor([2, 2], [5, 6, 7, 8])
+  return tensor_matmul(left, right)
+"#;
+        let artifact = compile_source(source).expect("matrix multiplication source should compile");
+        let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("matrix multiplication should execute"),
+            native::NativeValue::Tensor {
+                shape: vec![2, 2],
+                values: [19.0f32, 22.0, 43.0, 50.0].iter().map(|v| v.to_bits()).collect(),
+            }
+        );
+    }
+
+    #[test]
+    fn source_tensor_matmul_rejects_incompatible_shapes() {
+        let source = r#"module ai_bad_matmul
+fn main() -> Tensor<F32>
+  let left = tensor([2, 3], [1, 2, 3, 4, 5, 6])
+  let right = tensor([2, 2], [1, 2, 3, 4])
+  return tensor_matmul(left, right)
+"#;
+        let artifact = compile_source(source).expect("shape compatibility is runtime-validated");
+        let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+        assert!(native::run_program(&program, "main", &[]).is_err(), "incompatible matrix dimensions must fail closed");
+    }
+
+    #[test]
+    fn source_embedding_dot_rejects_dimension_mismatch() {
+        let source = r#"module ai_bad_embedding
+fn main() -> F32
+  let left = embedding("text", [1.0, 2.0])
+  let right = embedding("text", [3.0])
+  return embedding_dot(left, right)
+"#;
+        let artifact = compile_source(source).expect("embedding dimensions are runtime-validated");
+        let program = native::decode_program(&artifact.artifact).expect("artifact should decode");
+        assert!(native::run_program(&program, "main", &[]).is_err(), "embedding dimensions must match");
+    }
+
+    #[test]
     fn pipeline_artifact_executes() {
         let compiled = compile_source(SOURCE).expect("compile");
         let program = native::decode_program(&compiled.artifact).expect("decode");
