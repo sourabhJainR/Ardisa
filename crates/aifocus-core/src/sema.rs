@@ -289,6 +289,33 @@ fn validate_construct_declarations(module: &Module, checker: &mut Checker) {
                 }
             }
         }
+
+        let required_members: &[&str] = match declaration.kind {
+            ConstructKind::Trace => &["signature"],
+            ConstructKind::Cell => &["invariant"],
+            ConstructKind::Vault => &["capabilities"],
+            ConstructKind::Proof => &["requires", "ensures", "on_unknown", "required"],
+            ConstructKind::Phase => &[],
+        };
+        for required in required_members {
+            if !member_names.contains(required) {
+                checker.error(
+                    "AIF617",
+                    format!(
+                        "{:?} declaration '{}' is missing required member '{}'",
+                        declaration.kind, declaration.name, required
+                    ),
+                    declaration.span,
+                );
+            }
+        }
+        if declaration.kind == ConstructKind::Phase && transitions.is_empty() {
+            checker.error(
+                "AIF617",
+                format!("phase '{}' must declare at least one transition", declaration.name),
+                declaration.span,
+            );
+        }
     }
 }
 
