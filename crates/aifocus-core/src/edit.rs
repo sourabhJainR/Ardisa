@@ -258,7 +258,7 @@ fn find_expr(expr: &Expr, target: NodeId) -> Option<Span> {
         } => find_expr(condition, target)
             .or_else(|| find_block(then_branch, target))
             .or_else(|| else_branch.as_ref().and_then(|b| find_block(b, target))),
-        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::String(_) | ExprKind::Name(_) => None,
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::String(_) | ExprKind::Name(_) => None,
     }
 }
 
