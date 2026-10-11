@@ -24,6 +24,10 @@ pub enum NativeInstr {
     PushTensor { shape: Vec<usize>, values: Vec<u32> },
     TensorAdd,
     TensorMatMul,
+    /// Push signed-int8 quantized tensor storage with finite positive scale.
+    PushQuantizedTensor { shape: Vec<usize>, scale_bits: u32, zero_point: i8, values: Vec<i8> },
+    /// Convert a quantized tensor to a finite f32 tensor.
+    DequantizeTensor,
     /// Push a domain-tagged finite embedding with deterministic f32-bit coordinates.
     PushEmbedding { domain: String, values: Vec<u32> },
     EmbeddingDot,
@@ -136,6 +140,8 @@ pub enum NativeValue {
     Probability(u32),
     /// Tensor dimensions and IEEE-754 f32 values encoded as bits.
     Tensor { shape: Vec<usize>, values: Vec<u32> },
+    /// Signed-int8 tensor payload and quantization metadata; scale is f32 bits.
+    QuantizedTensor { shape: Vec<usize>, scale_bits: u32, zero_point: i8, values: Vec<i8> },
     /// Nominal domain label plus IEEE-754 f32 coordinate bits.
     Embedding { domain: String, values: Vec<u32> },
     String(String),
@@ -248,6 +254,9 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
             }
             NativeValue::Embedding { domain, values } => {
                 validate_embedding_parts(domain, values, limits.max_collection_items)?;
+            }
+            NativeValue::QuantizedTensor { shape, scale_bits, values, .. } => {
+                validate_quantized_tensor_parts(shape, *scale_bits, values, limits.max_collection_items)?;
             }
             NativeValue::List(items) => {
                 if items.len() > limits.max_collection_items {
@@ -738,6 +747,8 @@ fn run_function(
                 | NativeInstr::PushTensor { .. }
                 | NativeInstr::TensorAdd
                 | NativeInstr::TensorMatMul
+                | NativeInstr::PushQuantizedTensor { .. }
+                | NativeInstr::DequantizeTensor
                 | NativeInstr::PushEmbedding { .. }
                 | NativeInstr::EmbeddingDot
                 | NativeInstr::PushUnit
@@ -939,6 +950,23 @@ fn run_function(
                     }
                 }
                 stack.push(NativeValue::Tensor { shape: vec![m, n], values });
+            }
+            NativeInstr::PushQuantizedTensor { shape, scale_bits, zero_point, values } => {
+                validate_quantized_tensor_parts(shape, *scale_bits, values, state.limits.max_collection_items)?;
+                stack.push(NativeValue::QuantizedTensor { shape: shape.clone(), scale_bits: *scale_bits, zero_point: *zero_point, values: values.clone() });
+            }
+            NativeInstr::DequantizeTensor => {
+                let value = stack.pop().ok_or_else(|| NativeError::Type("expected QuantizedTensor value".into()))?;
+                match value {
+                    NativeValue::QuantizedTensor { shape, scale_bits, zero_point, values } => {
+                        validate_quantized_tensor_parts(&shape, scale_bits, &values, state.limits.max_collection_items)?;
+                        let scale = f32::from_bits(scale_bits);
+                        let values = values.iter().map(|q| ((*q as i16 - zero_point as i16) as f32 * scale).to_bits()).collect::<Vec<_>>();
+                        validate_tensor_parts(&shape, &values, state.limits.max_collection_items)?;
+                        stack.push(NativeValue::Tensor { shape, values });
+                    }
+                    _ => return Err(NativeError::Type("expected QuantizedTensor value".into())),
+                }
             }
             NativeInstr::PushEmbedding { domain, values } => {
                 validate_embedding_parts(domain, values, state.limits.max_collection_items)?;
@@ -1299,6 +1327,7 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
             match instr {
                 NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
                 NativeInstr::PushTensor { shape, values } => { validate_tensor_parts(shape, values, MAX_TENSOR_ELEMENTS)?; }
+                NativeInstr::PushQuantizedTensor { shape, scale_bits, values, .. } => { validate_quantized_tensor_parts(shape, *scale_bits, values, MAX_TENSOR_ELEMENTS)?; }
                 NativeInstr::PushEmbedding { domain, values } => {
                     validate_embedding_parts(domain, values, MAX_TENSOR_ELEMENTS)?;
                     add_bytes(domain)?;
@@ -1423,6 +1452,8 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::PushTensor { shape, values } => format!("PushTensor:{}/{}", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(","), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
         NativeInstr::TensorAdd => "TensorAdd".into(),
         NativeInstr::TensorMatMul => "TensorMatMul".into(),
+        NativeInstr::PushQuantizedTensor { shape, scale_bits, zero_point, values } => format!("PushQuantizedTensor:{}/{}/{}/{}", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(","), scale_bits, zero_point, values.iter().map(i8::to_string).collect::<Vec<_>>().join(",")),
+        NativeInstr::DequantizeTensor => "DequantizeTensor".into(),
         NativeInstr::PushEmbedding { domain, values } => format!("PushEmbedding:{}/{}", encode_hex(domain.as_bytes()), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
         NativeInstr::EmbeddingDot => "EmbeddingDot".into(),
         NativeInstr::PushUnit => "PushUnit".into(),
@@ -1468,6 +1499,8 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "PushTensor"=>{let (shape, values)=arg.split_once('/').ok_or_else(bad)?; let shape=shape.split(',').map(|v|v.parse::<usize>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushTensor{shape,values}},
         "TensorAdd"=>NativeInstr::TensorAdd,
         "TensorMatMul"=>NativeInstr::TensorMatMul,
+        "PushQuantizedTensor"=>{let mut parts=arg.split('/'); let shape=parts.next().ok_or_else(bad)?.split(',').map(|v|v.parse::<usize>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; let scale_bits=parts.next().ok_or_else(bad)?.parse::<u32>().map_err(|_|bad())?; let zero_point=parts.next().ok_or_else(bad)?.parse::<i8>().map_err(|_|bad())?; let values=parts.next().ok_or_else(bad)?.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<i8>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; if parts.next().is_some(){return Err(bad());} NativeInstr::PushQuantizedTensor{shape,scale_bits,zero_point,values}},
+        "DequantizeTensor"=>NativeInstr::DequantizeTensor,
         "PushEmbedding"=>{let (domain, values)=arg.split_once('/').ok_or_else(bad)?; let domain=String::from_utf8(decode_hex(domain).map_err(|_|bad())?).map_err(|_|bad())?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushEmbedding{domain,values}},
         "EmbeddingDot"=>NativeInstr::EmbeddingDot,
         "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Len"=>NativeInstr::Len,
@@ -1505,6 +1538,19 @@ fn validate_tensor_parts(shape: &[usize], values: &[u32], max_elements: usize) -
     if values.iter().any(|bits| !f32::from_bits(*bits).is_finite()) {
         return Err(NativeError::InvalidProgram("tensor values must be finite".into()));
     }
+    Ok(())
+}
+
+fn validate_quantized_tensor_parts(shape: &[usize], scale_bits: u32, values: &[i8], max_elements: usize) -> Result<(), NativeError> {
+    if shape.is_empty() || shape.len() > 2 || shape.iter().any(|dimension| *dimension == 0) {
+        return Err(NativeError::InvalidProgram("quantized tensor shape must have rank 1 or 2 and positive dimensions".into()));
+    }
+    let expected = shape.iter().try_fold(1usize, |n, d| n.checked_mul(*d).ok_or_else(|| NativeError::ResourceLimit("quantized tensor shape overflow".into())))?;
+    let limit = max_elements.min(MAX_TENSOR_ELEMENTS);
+    if expected > limit || values.len() > limit { return Err(NativeError::ResourceLimit(format!("quantized tensor element limit exceeded (limit {limit})"))); }
+    if expected != values.len() { return Err(NativeError::InvalidProgram(format!("quantized tensor shape expects {expected} values but received {}", values.len()))); }
+    let scale = f32::from_bits(scale_bits);
+    if !scale.is_finite() || scale <= 0.0 { return Err(NativeError::InvalidProgram("quantization scale must be finite and positive".into())); }
     Ok(())
 }
 
@@ -1696,6 +1742,28 @@ fn main(a: String) -> String
             embedding("text", &[1.0]), embedding("image", &[1.0]), NativeInstr::EmbeddingDot, NativeInstr::Return,
         ] })])};
         assert!(matches!(run_program(&mismatched, "main", &[]), Err(NativeError::Type(_))));
+    }
+
+    #[test]
+    fn quantized_tensor_runtime_round_trips_and_dequantizes_safely() {
+        let program = NativeProgram { functions: BTreeMap::from([("main".to_string(), NativeFunction { params: vec![], code: vec![
+            NativeInstr::PushQuantizedTensor { shape: vec![3], scale_bits: 0.5f32.to_bits(), zero_point: 0, values: vec![-2, 0, 4] },
+            NativeInstr::DequantizeTensor, NativeInstr::Return,
+        ] })])};
+        let encoded = encode_program(&program);
+        let decoded = decode_program(&encoded).unwrap();
+        assert_eq!(encode_program(&decoded), encoded);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Tensor { shape: vec![3], values: [-1.0f32, 0.0, 2.0].iter().map(|v| v.to_bits()).collect() });
+
+        let invalid_scale = NativeProgram { functions: BTreeMap::from([("main".to_string(), NativeFunction { params: vec![], code: vec![
+            NativeInstr::PushQuantizedTensor { shape: vec![1], scale_bits: 0.0f32.to_bits(), zero_point: 0, values: vec![1] }, NativeInstr::Return,
+        ] })])};
+        assert!(matches!(decode_program(&encode_program(&invalid_scale)), Err(NativeError::InvalidProgram(_))));
+
+        let malformed_shape = NativeProgram { functions: BTreeMap::from([("main".to_string(), NativeFunction { params: vec![], code: vec![
+            NativeInstr::PushQuantizedTensor { shape: vec![2], scale_bits: 1.0f32.to_bits(), zero_point: 0, values: vec![1] }, NativeInstr::Return,
+        ] })])};
+        assert!(matches!(decode_program(&encode_program(&malformed_shape)), Err(NativeError::InvalidProgram(_))));
     }
 
     #[test]
