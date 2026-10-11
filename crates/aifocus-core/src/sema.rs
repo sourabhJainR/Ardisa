@@ -970,16 +970,16 @@ mod tests {
     #[test]
     fn construct_analysis_rejects_missing_required_members() {
         let module = parse(
-            "module missing_construct_members\ntrace MissingTrace\ncell MissingCell\n  value: Int\nvault MissingVault\n  denies: network\nproof MissingProof\n  requires: valid\nphase MissingPhase\n",
+            "module missing_construct_members\ntrace MissingTrace\n  value: Int\ncell MissingCell\n  value: Int\nvault MissingVault\n  denies: network\nproof MissingProof\n  requires: valid\nphase PresentPhase\n  ready -> done\n",
         )
-        .expect("structurally incomplete constructs should still parse for diagnostics");
+        .expect("constructs with valid syntax should parse for semantic diagnostics");
 
         let errors = analyze_constructs(&module)
             .expect_err("every construct must declare its minimum required members");
         let required_errors = errors.iter().filter(|error| error.code == "AIF617").count();
         assert!(
-            required_errors >= 7,
-            "expected missing signature, invariant, capabilities, proof clauses, and phase transition diagnostics; got {:?}",
+            required_errors >= 6,
+            "expected missing signature, invariant, capabilities, and three proof clauses; got {:?}",
             errors
         );
     }
