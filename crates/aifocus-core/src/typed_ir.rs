@@ -607,6 +607,45 @@ mod tests {
     }
 
     #[test]
+    fn construct_metadata_encoding_is_deterministic_and_span_independent() {
+        let module = crate::parse(
+            "module constructs\\ncell State\\n  value: Int\\n  invariant: valid\\nphase Lifecycle\\n  Ready -> Done\\n",
+        ).unwrap();
+        let constructs = lower_constructs(&module).unwrap();
+        let encoded = encode_construct_metadata(&constructs).unwrap();
+        assert!(encoded.starts_with("ARDISA-CONSTRUCT-META-V1\\n"));
+        let mut relocated = constructs.clone();
+        for construct in &mut relocated {
+            construct.span = crate::source::Span::new(100, 200);
+            for member in &mut construct.members {
+                match member {
+                    TypedIrConstructMember::Field { span, .. }
+                    | TypedIrConstructMember::Clause { span, .. }
+                    | TypedIrConstructMember::Transition { span, .. } => *span = crate::source::Span::new(101, 102),
+                }
+            }
+        }
+        assert_eq!(encode_construct_metadata(&relocated).unwrap(), encoded);
+        assert_eq!(encoded, encode_construct_metadata(&constructs).unwrap());
+    }
+
+    #[test]
+    fn construct_metadata_rejects_duplicate_members_before_encoding() {
+        let module = crate::parse(
+            "module constructs\\ncell State\\n  value: Int\\n  invariant: valid\\n",
+        ).unwrap();
+        let mut constructs = lower_constructs(&module).unwrap();
+        constructs[0].members.push(TypedIrConstructMember::Field {
+            name: "value".into(),
+            ty: TypeKind::Int,
+            span: crate::source::Span::new(0, 0),
+        });
+        let errors = validate_construct_metadata(&constructs).unwrap_err();
+        assert!(errors.iter().any(|error| error.contains("duplicate member name: value")));
+        assert!(encode_construct_metadata(&constructs).is_err());
+    }
+
+    #[test]
     fn lowers_typed_function() {
         let m=crate::parse("module x\nfn main(a: Int) -> Int\n  a + 1\n").unwrap();
         let ir=lower(&m).unwrap();
