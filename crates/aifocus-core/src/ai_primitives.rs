@@ -29,10 +29,11 @@ impl std::error::Error for AiTypeError {}
 pub struct TensorShape(Vec<usize>);
 impl TensorShape {
     pub fn new(dimensions: Vec<usize>, max_elements: usize) -> Result<Self, AiTypeError> {
-        let count = dimensions.iter().try_fold(1usize, |n, d| {
-            if *d == 0 { return None; }
-            n.checked_mul(*d)
-        }).ok_or(AiTypeError::InvalidDimension)?;
+        let mut count = 1usize;
+        for dimension in &dimensions {
+            if *dimension == 0 { return Err(AiTypeError::InvalidDimension); }
+            count = count.checked_mul(*dimension).ok_or(AiTypeError::ShapeOverflow)?;
+        }
         if count > max_elements { return Err(AiTypeError::ResourceLimit { requested: count, limit: max_elements }); }
         Ok(Self(dimensions))
     }
