@@ -254,7 +254,7 @@ pub fn lower_cfg(module: &Module) -> Result<TypedIrModule, Vec<String>> {
             blocks,
         });
     }
-    if errors.is_empty() { Ok(TypedIrModule { name: module.name.clone(), functions }) } else { Err(errors) }
+    if errors.is_empty() { Ok(TypedIrModule { name: module.name.clone(), functions, constructs: Vec::new() }) } else { Err(errors) }
 }
 
 fn new_cfg_block(blocks: &mut Vec<TypedBasicBlock>) -> u32 {
@@ -348,7 +348,7 @@ pub fn optimize(module: TypedIrModule) -> TypedIrModule {
         }
         function
     }).collect();
-    TypedIrModule { name: module.name, functions }
+    TypedIrModule { name: module.name, functions, constructs: module.constructs }
 }
 
 fn optimize_op(op: &mut TypedIrOp) {
