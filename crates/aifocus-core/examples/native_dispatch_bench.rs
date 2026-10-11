@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ardisa_core::native::{NativeFunction, NativeInstr, NativeProgram, NativeValue, run_program, run_shared_program_with_limits, ExecutionLimits};
+use ardisa_core::native::{NativeFunction, NativeInstr, NativeProgram, NativeValue, run_program, run_shared_program_with_limits, run_validated_program_with_limits, ValidatedNativeProgram, ExecutionLimits};
 
 const SMALL_STRING_REPEATS: usize = 2_048;
 const LARGE_STRING_REPEATS: usize = 256;
@@ -127,28 +127,33 @@ fn workload(name: &'static str, code: Vec<NativeInstr>) -> Workload {
 }
 
 fn report(workload: &Workload, iterations: usize) {
-    report_mode(workload, iterations, false);
-    report_mode(workload, iterations, true);
+    report_mode(workload, iterations, 0);
+    report_mode(workload, iterations, 1);
+    report_mode(workload, iterations, 2);
 }
 
-fn report_mode(workload: &Workload, iterations: usize, shared: bool) {
-    // Construct the reusable Arc before timing so this compares entry-point cost.
+fn report_mode(workload: &Workload, iterations: usize, mode: u8) {
+    // Construct reusable objects before timing so each mode measures its entry point.
     let shared_program = Arc::new(workload.program.clone());
+    let validated_program = ValidatedNativeProgram::try_new(workload.program.clone())
+        .expect("benchmark workload should validate");
     let mut elapsed = Duration::ZERO;
     for _ in 0..iterations {
         let started = Instant::now();
-        let result = if shared {
-            run_shared_program_with_limits(
+        let result = match mode {
+            1 => run_shared_program_with_limits(
                 Arc::clone(&shared_program), "main", &[], ExecutionLimits::default()
-            )
-        } else {
-            run_program(&workload.program, "main", &[])
+            ),
+            2 => run_validated_program_with_limits(
+                &validated_program, "main", &[], ExecutionLimits::default()
+            ),
+            _ => run_program(&workload.program, "main", &[]),
         };
         elapsed += started.elapsed();
         assert_eq!(
             result,
             Ok(NativeValue::Int(7)),
-            "{} returned an unexpected result (shared={shared})",
+            "{} returned an unexpected result (mode={mode})",
             workload.name
         );
     }
@@ -168,7 +173,11 @@ fn report_mode(workload: &Workload, iterations: usize, shared: bool) {
     println!(
         "workload={} mode={} code_instructions={} embedded_string_bytes={} estimated_dispatch_payload_bytes_avoided_per_pass={} iterations={} elapsed_ns={} ns_per_instruction={:.2} instructions_per_second={:.0}",
         workload.name,
-        if shared { "shared_program" } else { "cloning_entry_point" },
+        match mode {
+            1 => "shared_program_revalidates_each_call",
+            2 => "validated_program_reuses_validation",
+            _ => "cloning_entry_point",
+        },
         workload.instruction_count,
         workload.embedded_string_bytes,
         workload.estimated_dispatch_payload_bytes_avoided_per_pass,
