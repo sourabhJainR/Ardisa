@@ -8,6 +8,8 @@ use std::thread::{self, JoinHandle};
 use crate::TypeKind;
 use crate::ir::{IrFunction, IrModule, IrOp, IrValue};
 
+const MAX_TENSOR_ELEMENTS: usize = 16_384;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeInstr {
     PushInt(i64),
@@ -18,6 +20,10 @@ pub enum NativeInstr {
     ProbabilityOr,
     ProbabilityNot,
     ProbabilityMeets,
+    /// Push a rank-1 or rank-2 finite f32 tensor; bits are IEEE-754 f32 payloads.
+    PushTensor { shape: Vec<usize>, values: Vec<u32> },
+    TensorAdd,
+    TensorMatMul,
     PushUnit,
     PushString(String),
     PushList(usize),
@@ -123,6 +129,8 @@ pub enum NativeValue {
     Bool(bool),
     /// A probability is stored as f32 bits to preserve Eq and deterministic artifacts.
     Probability(u32),
+    /// Tensor dimensions and IEEE-754 f32 values encoded as bits.
+    Tensor { shape: Vec<usize>, values: Vec<u32> },
     String(String),
     List(Vec<NativeValue>),
     ResultOk(Box<NativeValue>),
@@ -224,6 +232,9 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
         match value {
             NativeValue::String(s) if s.len() > limits.max_string_bytes => {
                 return Err(NativeError::ResourceLimit("string exceeds byte limit".into()));
+            }
+            NativeValue::Tensor { shape, values } => {
+                validate_tensor_parts(shape, values, limits.max_collection_items)?;
             }
             NativeValue::List(items) => {
                 if items.len() > limits.max_collection_items {
@@ -711,6 +722,9 @@ fn run_function(
                 | NativeInstr::ProbabilityOr
                 | NativeInstr::ProbabilityNot
                 | NativeInstr::ProbabilityMeets
+                | NativeInstr::PushTensor { .. }
+                | NativeInstr::TensorAdd
+                | NativeInstr::TensorMatMul
                 | NativeInstr::PushUnit
                 | NativeInstr::PushString(_)
                 | NativeInstr::PushList(_)
@@ -869,6 +883,47 @@ fn run_function(
                 let threshold = pop_probability(&mut stack)?;
                 let value = pop_probability(&mut stack)?;
                 stack.push(NativeValue::Bool(value >= threshold));
+            }
+            NativeInstr::PushTensor { shape, values } => {
+                validate_tensor_parts(shape, values, state.limits.max_collection_items)?;
+                stack.push(NativeValue::Tensor { shape: shape.clone(), values: values.clone() });
+            }
+            NativeInstr::TensorAdd => {
+                let right = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let left = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                if left.0 != right.0 {
+                    return Err(NativeError::Type("tensor addition requires identical shapes".into()));
+                }
+                let values = left.1.iter().zip(&right.1).map(|(a, b)| {
+                    let value = f32::from_bits(*a) + f32::from_bits(*b);
+                    if !value.is_finite() { return Err(NativeError::Type("tensor operation produced non-finite value".into())); }
+                    Ok(value.to_bits())
+                }).collect::<Result<Vec<_>, _>>()?;
+                stack.push(NativeValue::Tensor { shape: left.0, values });
+            }
+            NativeInstr::TensorMatMul => {
+                let right = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let left = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                if left.0.len() != 2 || right.0.len() != 2 || left.0[1] != right.0[0] {
+                    return Err(NativeError::Type("tensor matmul requires rank-2 tensors with compatible inner dimensions".into()));
+                }
+                let (m, k, n) = (left.0[0], left.0[1], right.0[1]);
+                let out_count = m.checked_mul(n).ok_or_else(|| NativeError::ResourceLimit("tensor output size overflow".into()))?;
+                if out_count > state.limits.max_collection_items || out_count > MAX_TENSOR_ELEMENTS {
+                    return Err(NativeError::ResourceLimit("tensor output exceeds element limit".into()));
+                }
+                let mut values = Vec::with_capacity(out_count);
+                for row in 0..m {
+                    for col in 0..n {
+                        let mut sum = 0.0f32;
+                        for inner in 0..k {
+                            sum += f32::from_bits(left.1[row * k + inner]) * f32::from_bits(right.1[inner * n + col]);
+                        }
+                        if !sum.is_finite() { return Err(NativeError::Type("tensor matmul produced non-finite value".into())); }
+                        values.push(sum.to_bits());
+                    }
+                }
+                stack.push(NativeValue::Tensor { shape: vec![m, n], values });
             }
             NativeInstr::PushUnit => stack.push(NativeValue::Unit),
             NativeInstr::PushString(value) => {
@@ -1206,6 +1261,7 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
         for instr in &function.code {
             match instr {
                 NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
+                NativeInstr::PushTensor { shape, values } => { validate_tensor_parts(shape, values, MAX_TENSOR_ELEMENTS)?; }
                 NativeInstr::PushString(s) | NativeInstr::Append(s) |
                 NativeInstr::Load(s) | NativeInstr::Store(s) |
                 NativeInstr::AddAssign(s) | NativeInstr::StoreIndex(s) |
@@ -1323,6 +1379,9 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::ProbabilityOr => "ProbabilityOr".into(),
         NativeInstr::ProbabilityNot => "ProbabilityNot".into(),
         NativeInstr::ProbabilityMeets => "ProbabilityMeets".into(),
+        NativeInstr::PushTensor { shape, values } => format!("PushTensor:{}/{}", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(","), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
+        NativeInstr::TensorAdd => "TensorAdd".into(),
+        NativeInstr::TensorMatMul => "TensorMatMul".into(),
         NativeInstr::PushUnit => "PushUnit".into(),
         NativeInstr::PushString(v) => format!("PushString:{}", escape_artifact(v)),
         NativeInstr::PushList(v) => format!("PushList:{v}"),
@@ -1363,6 +1422,9 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "ProbabilityOr"=>NativeInstr::ProbabilityOr,
         "ProbabilityNot"=>NativeInstr::ProbabilityNot,
         "ProbabilityMeets"=>NativeInstr::ProbabilityMeets,
+        "PushTensor"=>{let (shape, values)=arg.split_once('/').ok_or_else(bad)?; let shape=shape.split(',').map(|v|v.parse::<usize>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushTensor{shape,values}},
+        "TensorAdd"=>NativeInstr::TensorAdd,
+        "TensorMatMul"=>NativeInstr::TensorMatMul,
         "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Len"=>NativeInstr::Len,
         "PushString"=>NativeInstr::PushString(unescape_artifact(arg)?),
         "PushList"=>NativeInstr::PushList(int(arg)?),"Append"=>NativeInstr::Append(unescape_artifact(arg)?),
@@ -1381,6 +1443,31 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "Join"=>NativeInstr::Join{name:unescape_artifact(arg)?},"Cancel"=>NativeInstr::Cancel{name:unescape_artifact(arg)?},
         _=>return Err(bad()),
     })
+}
+
+fn validate_tensor_parts(shape: &[usize], values: &[u32], max_elements: usize) -> Result<(), NativeError> {
+    if shape.is_empty() || shape.len() > 2 || shape.iter().any(|dimension| *dimension == 0) {
+        return Err(NativeError::InvalidProgram("tensor shape must have rank 1 or 2 and positive dimensions".into()));
+    }
+    let expected = shape.iter().try_fold(1usize, |n, d| n.checked_mul(*d).ok_or_else(|| NativeError::ResourceLimit("tensor shape overflow".into())))?;
+    let limit = max_elements.min(MAX_TENSOR_ELEMENTS);
+    if expected > limit || values.len() > limit {
+        return Err(NativeError::ResourceLimit(format!("tensor element limit exceeded (limit {limit})")));
+    }
+    if expected != values.len() {
+        return Err(NativeError::InvalidProgram(format!("tensor shape expects {expected} values but received {}", values.len())));
+    }
+    if values.iter().any(|bits| !f32::from_bits(*bits).is_finite()) {
+        return Err(NativeError::InvalidProgram("tensor values must be finite".into()));
+    }
+    Ok(())
+}
+
+fn pop_tensor(stack: &mut Vec<NativeValue>, limit: usize) -> Result<(Vec<usize>, Vec<u32>), NativeError> {
+    match stack.pop() {
+        Some(NativeValue::Tensor { shape, values }) => { validate_tensor_parts(&shape, &values, limit)?; Ok((shape, values)) }
+        _ => Err(NativeError::Type("expected Tensor value".into())),
+    }
 }
 
 fn validate_probability_bits(bits: u32) -> Result<f32, NativeError> {
@@ -1487,6 +1574,38 @@ fn main(a: String) -> String
             ] }
         )])};
         assert!(matches!(run_program(&wrong_type, "main", &[]), Err(NativeError::Type(_))));
+    }
+
+    #[test]
+    fn tensor_instructions_execute_and_round_trip_deterministically() {
+        let tensor = |shape: Vec<usize>, values: &[f32]| NativeInstr::PushTensor { shape, values: values.iter().map(|v| v.to_bits()).collect() };
+        let program = NativeProgram { functions: BTreeMap::from([("main".to_string(), NativeFunction { params: vec![], code: vec![
+            tensor(vec![2, 2], &[1.0, 2.0, 3.0, 4.0]),
+            tensor(vec![2, 2], &[10.0, 20.0, 30.0, 40.0]),
+            NativeInstr::TensorAdd, NativeInstr::Return,
+        ] })])};
+        let encoded = encode_program(&program);
+        let decoded = decode_program(&encoded).unwrap();
+        assert_eq!(encode_program(&decoded), encoded);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Tensor { shape: vec![2,2], values: [11.0f32,22.0,33.0,44.0].iter().map(|v|v.to_bits()).collect() });
+
+        let matmul = NativeProgram { functions: BTreeMap::from([("main".to_string(), NativeFunction { params: vec![], code: vec![
+            tensor(vec![2, 2], &[1.0, 2.0, 3.0, 4.0]), tensor(vec![2, 1], &[5.0, 6.0]), NativeInstr::TensorMatMul, NativeInstr::Return,
+        ] })])};
+        assert_eq!(run_program(&matmul, "main", &[]).unwrap(), NativeValue::Tensor { shape: vec![2,1], values: [17.0f32,39.0].iter().map(|v|v.to_bits()).collect() });
+    }
+
+    #[test]
+    fn malformed_tensors_and_tensor_shapes_fail_closed() {
+        let bad = NativeProgram { functions: BTreeMap::from([("main".to_string(), NativeFunction { params: vec![], code: vec![
+            NativeInstr::PushTensor { shape: vec![2,2], values: vec![1.0f32.to_bits()] }, NativeInstr::Return,
+        ] })])};
+        assert!(matches!(decode_program(&encode_program(&bad)), Err(NativeError::InvalidProgram(_))));
+        let mismatched = NativeProgram { functions: BTreeMap::from([("main".to_string(), NativeFunction { params: vec![], code: vec![
+            NativeInstr::PushTensor { shape: vec![2], values: vec![1.0f32.to_bits(),2.0f32.to_bits()] },
+            NativeInstr::PushTensor { shape: vec![1], values: vec![3.0f32.to_bits()] }, NativeInstr::TensorAdd, NativeInstr::Return,
+        ] })])};
+        assert!(matches!(run_program(&mismatched, "main", &[]), Err(NativeError::Type(_))));
     }
 
     #[test]
