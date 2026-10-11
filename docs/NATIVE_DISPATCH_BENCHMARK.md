@@ -1,0 +1,53 @@
+# Native VM dispatch benchmark
+
+This benchmark was added after the dispatch loop was changed to borrow immutable
+`NativeInstr` values rather than clone each instruction before matching it.
+
+## Run
+
+From the repository root, with the stable Rust toolchain installed:
+
+```sh
+cargo run --release -p ardisa-core --example native_dispatch_bench -- --iterations 5
+```
+
+Use `--iterations 1` for a quick smoke run. The workload and code shape are
+fixed across runs; the number of measured passes is configurable. Run the
+release-mode command more than once on an otherwise idle machine when comparing
+revisions, and compare the same workload and toolchain.
+
+## Workloads and interpretation
+
+- `arithmetic_and_jumps`: an instruction-heavy control workload with arithmetic
+  and conditional branches.
+- `small_strings`: repeated short embedded string operands.
+- `large_embedded_strings`: repeated 4 KiB embedded string operands, exercising
+  the payload-heavy instruction case.
+
+Each workload is built before timing and must return the same integer result on
+every pass. The report includes code instruction count, embedded string bytes,
+elapsed nanoseconds, nanoseconds per executed instruction, and observed
+instructions per second. There is deliberately no hard timing threshold in CI:
+shared runners are noisy, so timings are evidence for comparison, not a flaky
+pass/fail contract.
+
+`estimated_dispatch_payload_bytes_avoided_per_pass` is a static estimate: it
+sums string/name operand bytes for the instructions in the workload that are
+executed once per pass. It estimates the payload bytes that the former
+whole-instruction clone would have copied at dispatch. It is **not** a measured
+allocator count, does not include allocator overhead, and does not imply zero
+allocations. Runtime values (including the string value pushed by
+`PushString`) may still legitimately allocate or clone at ownership boundaries.
+
+The benchmark includes program validation and VM setup in its timed interval,
+so its timings represent end-to-end execution of this public native VM entry
+point, not an isolated instruction-only cycle counter. Compare like-for-like
+results and report observed numbers rather than claiming a guaranteed speedup.
+
+## Correctness gate
+
+The benchmark asserts the result of every workload. CI compiles and runs a
+one-pass smoke invocation, while the workspace, Native Phases, bootstrap
+reproducibility, and generated differential/holdout gates remain separate
+required checks. The benchmark itself must never replace those correctness
+gates.

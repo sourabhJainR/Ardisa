@@ -55,6 +55,8 @@ jobs:
       - run: cargo test -p ardisa-core fuzz --all-targets -- --nocapture
       - run: cargo test -p ardisa-core differential --all-targets -- --nocapture
       - run: cargo test -p ardisa-core benchmark --all-targets -- --nocapture
+      - name: Smoke-test native VM dispatch benchmark
+        run: cargo run --release -p ardisa-core --example native_dispatch_bench -- --iterations 1
 
   self-hosting-status:
     name: Self-hosting evidence contract (fail-closed)
