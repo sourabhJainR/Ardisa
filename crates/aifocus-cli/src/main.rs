@@ -310,6 +310,7 @@ fn parse_value(
 fn display_value(value: &ardisa_core::NativeValue) -> String {
     match value {
         ardisa_core::NativeValue::Int(value) => value.to_string(),
+        ardisa_core::NativeValue::Float(bits) => f32::from_bits(*bits).to_string(),
         ardisa_core::NativeValue::Bool(value) => value.to_string(),
         ardisa_core::NativeValue::Probability(bits) => f32::from_bits(*bits).to_string(),
         ardisa_core::NativeValue::Tensor { shape, values } => {
