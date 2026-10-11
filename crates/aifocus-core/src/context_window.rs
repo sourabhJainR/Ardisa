@@ -9,7 +9,7 @@ pub const MAX_CONTEXT_WINDOW_SEGMENTS: usize = 16_384;
 pub const MAX_CONTEXT_WINDOW_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CONTEXT_WINDOW_TOKENS: usize = 4_194_304;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SegmentModality {
     Text,
     Image,
