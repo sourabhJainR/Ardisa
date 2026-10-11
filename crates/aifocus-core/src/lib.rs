@@ -589,6 +589,15 @@ impl Parser {
                 let value = token.lexeme.parse::<i64>().ok()?;
                 Some(self.expr(token.span, "int", ExprKind::Int(value)))
             }
+            TokenKind::Float => {
+                self.bump();
+                let value = token.lexeme.parse::<f32>().ok()?;
+                if !value.is_finite() {
+                    self.error("AIF205", "floating-point literal must be finite");
+                    return None;
+                }
+                Some(self.expr(token.span, "float", ExprKind::Float(value.to_bits())))
+            }
             TokenKind::String => {
                 self.bump();
                 Some(self.expr(token.span, "string", ExprKind::String(token.lexeme)))
@@ -773,6 +782,13 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_finite_decimal_float_literals() {
+        let module = parse("module floats\nfn main() -> F32\n  1.25\n").unwrap();
+        let Item::Function(function) = &module.items[0];
+        assert!(matches!(function.body.stmts[0].kind, StmtKind::Expr(Expr { kind: ExprKind::Float(bits), .. }) if f32::from_bits(bits) == 1.25));
+    }
 
     #[test]
     fn parses_expression_ast() {
