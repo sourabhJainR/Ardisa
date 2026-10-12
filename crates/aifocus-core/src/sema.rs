@@ -543,6 +543,16 @@ impl Checker {
                 match collection_type.kind {
                     TypeKind::List(element) => Some((*element).clone()),
                     TypeKind::String => Some(type_node(TypeKind::Int, expr.span)),
+                    TypeKind::Named(name) if matches!(name.as_str(), "ExpertWeight" | "VectorHit") => {
+                        match &index.kind {
+                            ExprKind::Int(0) => Some(type_node(TypeKind::Int, expr.span)),
+                            ExprKind::Int(1) => Some(type_node(TypeKind::Named("F32".into()), expr.span)),
+                            _ => {
+                                self.error("AIF403", format!("{} supports only tuple-style fields [0] (id/index) and [1] (weight/distance)", name), index.span);
+                                None
+                            }
+                        }
+                    }
                     _ => {
                         self.error(
                             "AIF319",
