@@ -2844,4 +2844,44 @@ fn fact(n: Int) -> Int
             Err(NativeError::ResourceLimit(message)) if message.contains("aggregate frame string byte")
         ));
     }
+
+    #[test]
+    fn source_level_kv_cache_runs_through_native_artifact_roundtrip() {
+        let source = "module kv_native\nfn main() -> Int\n  let cache = kv_cache(2)\n  kv_append(cache, [1, 2], [10], \"reject\")\n  kv_append(cache, [2, 3], [20], \"reject\")\n  kv_append(cache, [3, 4], [30], \"evict_oldest\")\n  kv_len(cache)\n";
+        let module = crate::parse(source).unwrap();
+        crate::sema::check(&module).unwrap();
+        let program = compile_program(&crate::ir::lower(&module)).unwrap();
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).unwrap();
+        assert_eq!(encode_program(&decoded), artifact);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(2));
+    }
+
+    #[test]
+    fn source_level_context_window_evicts_by_byte_and_token_budgets() {
+        let source = "module context_native\nfn main() -> Int\n  let window = context_window(3, 8, 5)\n  context_append(window, \"text\", \"hello\", 2)\n  context_append(window, \"image\", \"img\", 3)\n  context_append(window, \"audio\", \"abc\", 2)\n  context_tokens(window)\n";
+        let module = crate::parse(source).unwrap();
+        crate::sema::check(&module).unwrap();
+        let program = compile_program(&crate::ir::lower(&module)).unwrap();
+        let decoded = decode_program(&encode_program(&program)).unwrap();
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(5));
+    }
+
+    #[test]
+    fn kv_cache_rejects_shape_mismatch_without_committing_mutation() {
+        let source = "module kv_bad\nfn main() -> Int\n  let cache = kv_cache(2)\n  kv_append(cache, [1, 2], [10], \"reject\")\n  kv_append(cache, [3], [20], \"reject\")\n  kv_len(cache)\n";
+        let module = crate::parse(source).unwrap();
+        crate::sema::check(&module).unwrap();
+        let program = compile_program(&crate::ir::lower(&module)).unwrap();
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("KeyDimension")));
+    }
+
+    #[test]
+    fn native_runtime_rejects_invalid_kv_cache_capacity_and_context_modality() {
+        let cache = NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![NativeInstr::PushInt(0), NativeInstr::MakeKvCache, NativeInstr::Return] })]) };
+        assert!(matches!(run_program(&cache, "main", &[]), Err(NativeError::Type(_))));
+        let context = NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![NativeInstr::PushInt(2), NativeInstr::PushInt(8), NativeInstr::PushInt(5), NativeInstr::MakeContextWindow, NativeInstr::Store("window".into()), NativeInstr::PushString("bogus".into()), NativeInstr::PushString("payload".into()), NativeInstr::PushInt(1), NativeInstr::ContextAppend { name: "window".into() }, NativeInstr::Return] })]) };
+        assert!(matches!(run_program(&context, "main", &[]), Err(NativeError::Type(message)) if message.contains("modality")));
+    }
+
 }
