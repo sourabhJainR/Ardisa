@@ -1217,7 +1217,7 @@ mod ai_routing_semantic_tests {
 
     #[test]
     fn route_top_k_rejects_wrong_types_and_static_bounds() {
-        rejects("module bad\nfn main()\n  route_top_k([1, 2], [false, false], 1)\n", "AIF381");
+        rejects("module bad\nfn main()\n  route_top_k(["bad"], [false], 1)\n", "AIF381");
         rejects("module bad\nfn main()\n  route_top_k([1.0], [false, false], 1)\n", "AIF382");
         rejects("module bad\nfn main()\n  route_top_k([1.0], [false], 33)\n", "AIF384");
     }
