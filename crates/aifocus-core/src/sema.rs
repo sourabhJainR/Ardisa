@@ -634,6 +634,114 @@ impl Checker {
                     );
                     return None;
                 };
+                if name == "route_top_k" {
+                    if args.len() != 3 {
+                        self.error("AIF380", "route_top_k expects logits: List<F32>, masked: List<Bool>, and top_k: Int", expr.span);
+                        return None;
+                    }
+                    let logits = self.check_expr(&args[0], locals)?;
+                    let masked = self.check_expr(&args[1], locals)?;
+                    let top_k = self.check_expr(&args[2], locals)?;
+                    let expected_logits = TypeKind::List(Box::new(type_node(TypeKind::Named("F32".into()), args[0].span)));
+                    let expected_masked = TypeKind::List(Box::new(type_node(TypeKind::Bool, args[1].span)));
+                    if !same_type_kind(&logits.kind, &expected_logits) {
+                        self.error("AIF381", "route_top_k logits must be a homogeneous List<F32>", args[0].span);
+                    }
+                    if !same_type_kind(&masked.kind, &expected_masked) {
+                        self.error("AIF382", "route_top_k mask must be a homogeneous List<Bool>", args[1].span);
+                    }
+                    if !is_kind(&top_k, &TypeKind::Int) {
+                        self.error("AIF383", "route_top_k top_k must be Int", args[2].span);
+                    }
+                    if let ExprKind::Int(value) = args[2].kind {
+                        if value <= 0 || value > 32 {
+                            self.error("AIF384", "route_top_k top_k must be in 1..=32", args[2].span);
+                        }
+                    }
+                    let ty = type_node(TypeKind::List(Box::new(type_node(TypeKind::Named("ExpertWeight".into()), expr.span))), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
+                }
+                if name == "vector_index" {
+                    if args.len() != 2 {
+                        self.error("AIF385", "vector_index expects a non-empty domain String and positive dimensions Int", expr.span);
+                        return None;
+                    }
+                    let domain = self.check_expr(&args[0], locals)?;
+                    let dimensions = self.check_expr(&args[1], locals)?;
+                    if !is_kind(&domain, &TypeKind::String) {
+                        self.error("AIF386", "vector_index domain must be String", args[0].span);
+                    }
+                    if !is_kind(&dimensions, &TypeKind::Int) {
+                        self.error("AIF387", "vector_index dimensions must be Int", args[1].span);
+                    }
+                    if let ExprKind::String(value) = &args[0].kind {
+                        if value.trim().is_empty() || value.len() > 1024 {
+                            self.error("AIF388", "vector_index domain must contain 1..=1024 UTF-8 bytes", args[0].span);
+                        }
+                    }
+                    if let ExprKind::Int(value) = args[1].kind {
+                        if value <= 0 || value > 16384 {
+                            self.error("AIF389", "vector_index dimensions must be in 1..=16384", args[1].span);
+                        }
+                    }
+                    let ty = type_node(TypeKind::Named("VectorIndex".into()), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
+                }
+                if name == "vector_index_insert" {
+                    if args.len() != 3 {
+                        self.error("AIF390", "vector_index_insert expects index, non-negative id, and List<F32> coordinates", expr.span);
+                        return None;
+                    }
+                    let index = self.check_expr(&args[0], locals)?;
+                    let id = self.check_expr(&args[1], locals)?;
+                    let coordinates = self.check_expr(&args[2], locals)?;
+                    if !matches!(&index.kind, TypeKind::Named(ty) if ty == "VectorIndex") {
+                        self.error("AIF391", "vector_index_insert requires VectorIndex", args[0].span);
+                    }
+                    if !is_kind(&id, &TypeKind::Int) {
+                        self.error("AIF392", "vector_index_insert id must be Int", args[1].span);
+                    }
+                    if let ExprKind::Int(value) = args[1].kind {
+                        if value < 0 { self.error("AIF393", "vector_index_insert id must be non-negative", args[1].span); }
+                    }
+                    let expected = TypeKind::List(Box::new(type_node(TypeKind::Named("F32".into()), args[2].span)));
+                    if !same_type_kind(&coordinates.kind, &expected) {
+                        self.error("AIF394", "vector_index_insert coordinates must be List<F32>", args[2].span);
+                    }
+                    if !matches!(&args[0].kind, ExprKind::Name(_)) {
+                        self.error("AIF395", "vector_index_insert requires a named mutable VectorIndex binding", args[0].span);
+                    }
+                    return Some(type_node(TypeKind::Unit, expr.span));
+                }
+                if name == "vector_index_search" {
+                    if args.len() != 3 {
+                        self.error("AIF396", "vector_index_search expects index, List<F32> query, and non-negative Int limit", expr.span);
+                        return None;
+                    }
+                    let index = self.check_expr(&args[0], locals)?;
+                    let query = self.check_expr(&args[1], locals)?;
+                    let limit = self.check_expr(&args[2], locals)?;
+                    if !matches!(&index.kind, TypeKind::Named(ty) if ty == "VectorIndex") {
+                        self.error("AIF397", "vector_index_search requires VectorIndex", args[0].span);
+                    }
+                    let expected = TypeKind::List(Box::new(type_node(TypeKind::Named("F32".into()), args[1].span)));
+                    if !same_type_kind(&query.kind, &expected) {
+                        self.error("AIF398", "vector_index_search query must be List<F32>", args[1].span);
+                    }
+                    if !is_kind(&limit, &TypeKind::Int) {
+                        self.error("AIF399", "vector_index_search limit must be Int", args[2].span);
+                    }
+                    if let ExprKind::Int(value) = args[2].kind {
+                        if value < 0 || value > 65536 {
+                            self.error("AIF400", "vector_index_search limit must be in 0..=65536", args[2].span);
+                        }
+                    }
+                    let ty = type_node(TypeKind::List(Box::new(type_node(TypeKind::Named("VectorHit".into()), expr.span))), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
+                }
                 if name == "kv_cache" {
                     if args.len() != 1 { self.error("AIF360", "kv_cache expects one positive Int capacity", expr.span); return None; }
                     let capacity = self.check_expr(&args[0], locals)?;
