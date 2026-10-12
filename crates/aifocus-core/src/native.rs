@@ -1648,7 +1648,12 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                     validate_embedding_parts(domain, values, MAX_TENSOR_ELEMENTS)?;
                     add_bytes(domain)?;
                 }
-                NativeInstr::VectorIndexInsert { name } => add_bytes(name)?,
+                NativeInstr::VectorIndexInsert { name } => {
+                    if name.trim().is_empty() {
+                        return Err(NativeError::InvalidProgram("VectorIndexInsert binding name must not be empty".into()));
+                    }
+                    add_bytes(name)?;
+                },
                 NativeInstr::PushString(s) | NativeInstr::Append(s) |
                 NativeInstr::Load(s) | NativeInstr::Store(s) |
                 NativeInstr::AddAssign(s) | NativeInstr::StoreIndex(s) |
@@ -2031,6 +2036,10 @@ fn main() -> List<VectorHit>
     #[test]
     fn malformed_ai_artifacts_fail_closed() {
         assert!(matches!(decode_program("ARDISA-EXEC-V1\nI|RouteTopK\n"), Err(NativeError::InvalidProgram(_))));
+        let malformed_binding = NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![
+            NativeInstr::VectorIndexInsert { name: " ".into() }, NativeInstr::Return,
+        ] })])};
+        assert!(matches!(decode_program(&encode_program(&malformed_binding)), Err(NativeError::InvalidProgram(message)) if message.contains("binding name")));
         let malformed_index = NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![
             NativeInstr::PushString("".into()), NativeInstr::PushInt(1), NativeInstr::MakeVectorIndex, NativeInstr::Return,
         ] })])};
