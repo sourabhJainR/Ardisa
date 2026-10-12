@@ -634,6 +634,59 @@ impl Checker {
                     );
                     return None;
                 };
+                if name == "kv_cache" {
+                    if args.len() != 1 { self.error("AIF360", "kv_cache expects one positive Int capacity", expr.span); return None; }
+                    let capacity = self.check_expr(&args[0], locals)?;
+                    if !is_kind(&capacity, &TypeKind::Int) { self.error("AIF361", "kv_cache capacity must be Int", args[0].span); }
+                    let ty = type_node(TypeKind::Named("KvCache".into()), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
+                }
+                if name == "kv_len" || name == "kv_capacity" {
+                    if args.len() != 1 { self.error("AIF362", format!("{name} expects one KvCache"), expr.span); return None; }
+                    let actual = self.check_expr(&args[0], locals)?;
+                    if !matches!(&actual.kind, TypeKind::Named(ty) if ty == "KvCache") { self.error("AIF363", format!("{name} requires KvCache"), args[0].span); }
+                    return Some(type_node(TypeKind::Int, expr.span));
+                }
+                if name == "kv_append" {
+                    if args.len() != 4 { self.error("AIF364", "kv_append expects cache, key list, value list, and policy", expr.span); return None; }
+                    let cache = self.check_expr(&args[0], locals)?;
+                    let key = self.check_expr(&args[1], locals)?;
+                    let value = self.check_expr(&args[2], locals)?;
+                    let policy = self.check_expr(&args[3], locals)?;
+                    if !matches!(&cache.kind, TypeKind::Named(ty) if ty == "KvCache") { self.error("AIF365", "kv_append requires a KvCache binding", args[0].span); }
+                    if !is_numeric_list(&key) { self.error("AIF366", "KVCache key must be a numeric list", args[1].span); }
+                    if !is_numeric_list(&value) { self.error("AIF367", "KVCache value must be a numeric list", args[2].span); }
+                    if !is_kind(&policy, &TypeKind::String) || !matches!(&args[3].kind, ExprKind::String(value) if value == "reject" || value == "evict_oldest") { self.error("AIF368", "KVCache policy must be the literal \"reject\" or \"evict_oldest\"", args[3].span); }
+                    if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF369", "kv_append requires a named mutable KvCache binding", args[0].span); }
+                    return Some(type_node(TypeKind::Unit, expr.span));
+                }
+                if name == "context_window" {
+                    if args.len() != 3 { self.error("AIF370", "context_window expects segment, byte, and token budgets", expr.span); return None; }
+                    for arg in args { let actual = self.check_expr(arg, locals)?; if !is_kind(&actual, &TypeKind::Int) { self.error("AIF371", "ContextWindow budgets must be Int", arg.span); } }
+                    let ty = type_node(TypeKind::Named("ContextWindow".into()), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
+                }
+                if name == "context_len" || name == "context_bytes" || name == "context_tokens" {
+                    if args.len() != 1 { self.error("AIF372", format!("{name} expects one ContextWindow"), expr.span); return None; }
+                    let actual = self.check_expr(&args[0], locals)?;
+                    if !matches!(&actual.kind, TypeKind::Named(ty) if ty == "ContextWindow") { self.error("AIF373", format!("{name} requires ContextWindow"), args[0].span); }
+                    return Some(type_node(TypeKind::Int, expr.span));
+                }
+                if name == "context_append" {
+                    if args.len() != 4 { self.error("AIF374", "context_append expects window, modality, payload, and token count", expr.span); return None; }
+                    let window = self.check_expr(&args[0], locals)?;
+                    let modality = self.check_expr(&args[1], locals)?;
+                    let payload = self.check_expr(&args[2], locals)?;
+                    let tokens = self.check_expr(&args[3], locals)?;
+                    if !matches!(&window.kind, TypeKind::Named(ty) if ty == "ContextWindow") { self.error("AIF375", "context_append requires a ContextWindow binding", args[0].span); }
+                    if !is_kind(&modality, &TypeKind::String) || !matches!(&args[1].kind, ExprKind::String(value) if ["text", "image", "audio", "video", "structured"].contains(&value.as_str())) { self.error("AIF376", "context modality must be a supported string literal", args[1].span); }
+                    if !is_kind(&payload, &TypeKind::String) { self.error("AIF377", "context payload must be String bytes", args[2].span); }
+                    if !is_kind(&tokens, &TypeKind::Int) { self.error("AIF378", "context token count must be Int", args[3].span); }
+                    if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF379", "context_append requires a named mutable ContextWindow binding", args[0].span); }
+                    return Some(type_node(TypeKind::Unit, expr.span));
+                }
                 if name == "tensor" {
                     if args.len() != 2 { self.error("AIF340", "tensor expects shape and value lists", expr.span); return None; }
                     let shape = self.check_expr(&args[0], locals)?;

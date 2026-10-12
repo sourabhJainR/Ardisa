@@ -327,6 +327,8 @@ fn display_value(value: &ardisa_core::NativeValue) -> String {
             let rendered = values.iter().map(|bits| f32::from_bits(*bits).to_string()).collect::<Vec<_>>().join(", ");
             format!("Embedding<{domain}>[{rendered}]")
         }
+        ardisa_core::NativeValue::KvCache { capacity, entries, .. } => format!("KvCache(len={}, capacity={})", entries.len(), capacity),
+        ardisa_core::NativeValue::ContextWindow { max_segments, max_bytes, max_tokens, segments, bytes, tokens } => format!("ContextWindow(segments={}, bytes={}/{}, tokens={}/{}, segment_limit={})", segments.len(), bytes, max_bytes, tokens, max_tokens, max_segments),
         ardisa_core::NativeValue::String(value) => value.clone(),
         ardisa_core::NativeValue::List(values) => {
             let rendered = values.iter().map(display_value).collect::<Vec<_>>();
