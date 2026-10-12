@@ -1099,6 +1099,7 @@ fn run_function(
                 if entries.iter().any(|entry| matches!(entry, NativeValue::List(pair) if matches!(pair.first(), Some(NativeValue::Int(existing)) if *existing >= 0 && *existing as u64 == id))) { return Err(NativeError::Type("duplicate VectorIndex id".into())); }
                 let entry = NativeValue::List(vec![NativeValue::Int(id as i64), NativeValue::List(coordinates.into_iter().map(|v| NativeValue::Float(v.to_bits())).collect())]);
                 entries.push(entry);
+                stack.push(NativeValue::Unit);
             }
             NativeInstr::VectorIndexSearch => {
                 let limit = pop_int(&mut stack)?;
@@ -1960,6 +1961,78 @@ fn pop_int(stack: &mut Vec<NativeValue>) -> Result<i64, NativeError> {
     match stack.pop() {
         Some(NativeValue::Int(value)) => Ok(value),
         _ => Err(NativeError::Type("expected Int value".into())),
+    }
+}
+
+#[cfg(test)]
+mod ai_routing_language_tests {
+    use super::*;
+
+    fn compile(source: &str) -> NativeProgram {
+        let module = crate::parse(source).expect("source parses");
+        crate::sema::check(&module).expect("source passes semantic checks");
+        compile_program(&crate::ir::lower(&module)).expect("source lowers to native program")
+    }
+
+    #[test]
+    fn source_route_top_k_runs_through_artifact_roundtrip() {
+        let source = r#"module route_fixture
+fn main() -> List<ExpertWeight>
+  route_top_k([1.0, 3.0, 2.0], [false, false, false], 2)
+"#;
+        let program = compile(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("well-formed route artifact");
+        assert_eq!(encode_program(&decoded), artifact);
+        let NativeValue::List(rows) = run_program(&decoded, "main", &[]).unwrap() else { panic!("expected route rows"); };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], NativeValue::List(vec![NativeValue::Int(1), NativeValue::Float(0.66524094f32.to_bits())]));
+        assert_eq!(rows[1], NativeValue::List(vec![NativeValue::Int(2), NativeValue::Float(0.24472848f32.to_bits())]));
+    }
+
+    #[test]
+    fn source_vector_index_is_domain_isolated_and_deterministic() {
+        let source = r#"module vector_fixture
+fn main() -> List<VectorHit>
+  let index = vector_index("text", 2)
+  vector_index_insert(index, 9, "text", [1.0, 0.0])
+  vector_index_insert(index, 3, "text", [-1.0, 0.0])
+  return vector_index_search(index, "text", [0.0, 0.0], 2)
+"#;
+        let program = compile(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("well-formed vector artifact");
+        assert_eq!(encode_program(&decoded), artifact);
+        let expected = NativeValue::List(vec![
+            NativeValue::List(vec![NativeValue::Int(3), NativeValue::Float(1.0f32.to_bits())]),
+            NativeValue::List(vec![NativeValue::Int(9), NativeValue::Float(1.0f32.to_bits())]),
+        ]);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), expected);
+    }
+
+    #[test]
+    fn routing_and_vector_builtins_reject_bad_runtime_inputs() {
+        let bad_route = NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![
+            NativeInstr::PushList(0), NativeInstr::PushList(0), NativeInstr::PushInt(1), NativeInstr::RouteTopK, NativeInstr::Return,
+        ] })])};
+        assert!(matches!(run_program(&bad_route, "main", &[]), Err(NativeError::Type(_))));
+
+        let bad_insert = NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![
+            NativeInstr::PushString("text".into()), NativeInstr::PushInt(2), NativeInstr::MakeVectorIndex,
+            NativeInstr::Store("index".into()),
+            NativeInstr::PushInt(1), NativeInstr::PushString("image".into()), NativeInstr::PushList(0),
+            NativeInstr::VectorIndexInsert { name: "index".into() }, NativeInstr::Return,
+        ] })])};
+        assert!(matches!(run_program(&bad_insert, "main", &[]), Err(NativeError::Type(message)) if message.contains("domain mismatch")));
+    }
+
+    #[test]
+    fn malformed_ai_artifacts_fail_closed() {
+        assert!(matches!(decode_program("ARDISA-EXEC-V1\nI|RouteTopK\n"), Err(NativeError::InvalidProgram(_))));
+        let malformed_index = NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![
+            NativeInstr::PushString("".into()), NativeInstr::PushInt(1), NativeInstr::MakeVectorIndex, NativeInstr::Return,
+        ] })])};
+        assert!(matches!(run_program(&malformed_index, "main", &[]), Err(NativeError::Type(_))));
     }
 }
 
