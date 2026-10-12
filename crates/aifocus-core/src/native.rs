@@ -6,6 +6,8 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 
 use crate::TypeKind;
+use crate::context_window::{ContextBudget, ContextSegment, ContextWindow, SegmentModality};
+use crate::kv_cache::{CacheFullPolicy, KvCache};
 use crate::ir::{IrFunction, IrModule, IrOp, IrValue};
 
 const MAX_TENSOR_ELEMENTS: usize = 16_384;
@@ -38,6 +40,15 @@ pub enum NativeInstr {
     /// Push a domain-tagged finite embedding with deterministic f32-bit coordinates.
     PushEmbedding { domain: String, values: Vec<u32> },
     EmbeddingDot,
+    MakeKvCache,
+    KvLen,
+    KvCapacity,
+    KvAppend { name: String, evict_oldest: bool },
+    MakeContextWindow,
+    ContextLen,
+    ContextBytes,
+    ContextTokens,
+    ContextAppend { name: String },
     PushUnit,
     PushString(String),
     PushList(usize),
@@ -151,6 +162,10 @@ pub enum NativeValue {
     QuantizedTensor { shape: Vec<usize>, scale_bits: u32, zero_point: i8, values: Vec<i8> },
     /// Nominal domain label plus IEEE-754 f32 coordinate bits.
     Embedding { domain: String, values: Vec<u32> },
+    /// Bounded attention cache; float payloads are bit-encoded for deterministic equality.
+    KvCache { capacity: usize, key_dim: Option<usize>, value_dim: Option<usize>, entries: Vec<(Vec<u32>, Vec<u32>)> },
+    /// Bounded multimodal context with opaque byte payloads and explicit upstream token counts.
+    ContextWindow { max_segments: usize, max_bytes: usize, max_tokens: usize, segments: Vec<(String, Vec<u8>, usize)>, bytes: usize, tokens: usize },
     String(String),
     List(Vec<NativeValue>),
     ResultOk(Box<NativeValue>),
@@ -264,6 +279,21 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
             }
             NativeValue::QuantizedTensor { shape, scale_bits, values, .. } => {
                 validate_quantized_tensor_parts(shape, *scale_bits, values, limits.max_collection_items)?;
+            }
+            NativeValue::KvCache { capacity, entries, .. } => {
+                if *capacity == 0 || *capacity > crate::kv_cache::MAX_KV_CACHE_ENTRIES || entries.len() > *capacity || entries.len() > limits.max_collection_items {
+                    return Err(NativeError::ResourceLimit("invalid or oversized KVCache value".into()));
+                }
+                for (key, value) in entries {
+                    if key.is_empty() || value.is_empty() || key.iter().chain(value).any(|bits| !f32::from_bits(*bits).is_finite()) {
+                        return Err(NativeError::Type("KVCache entries require non-empty finite key/value vectors".into()));
+                    }
+                }
+            }
+            NativeValue::ContextWindow { max_segments, max_bytes, max_tokens, segments, bytes, tokens } => {
+                if *max_segments == 0 || *max_bytes == 0 || *max_tokens == 0 || *max_segments > crate::context_window::MAX_CONTEXT_WINDOW_SEGMENTS || *max_bytes > crate::context_window::MAX_CONTEXT_WINDOW_BYTES || *max_tokens > crate::context_window::MAX_CONTEXT_WINDOW_TOKENS || segments.len() > *max_segments || *bytes > *max_bytes || *tokens > *max_tokens || segments.len() > limits.max_collection_items {
+                    return Err(NativeError::ResourceLimit("invalid or oversized ContextWindow value".into()));
+                }
             }
             NativeValue::List(items) => {
                 if items.len() > limits.max_collection_items {
@@ -393,7 +423,8 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(_) | TypeKind::Generic(_, _) => false,
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow"),
+        TypeKind::Generic(_, _) => false,
     }
 }
 
@@ -562,8 +593,8 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
             code[jump_end] = NativeInstr::Jump(end);
         }
         IrValue::Call { callee, args } => {
-            for arg in args {
-                emit_value(arg, code)?;
+            if callee != "kv_append" && callee != "context_append" {
+                for arg in args { emit_value(arg, code)?; }
             }
             if callee == "chr" && args.len() == 1 {
                 code.push(NativeInstr::Chr);
@@ -587,6 +618,33 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::DequantizeTensor);
             } else if callee == "embedding_dot" && args.len() == 2 {
                 code.push(NativeInstr::EmbeddingDot);
+            } else if callee == "kv_cache" && args.len() == 1 {
+                code.push(NativeInstr::MakeKvCache);
+            } else if callee == "kv_len" && args.len() == 1 {
+                code.push(NativeInstr::KvLen);
+            } else if callee == "kv_capacity" && args.len() == 1 {
+                code.push(NativeInstr::KvCapacity);
+            } else if callee == "kv_append" && args.len() == 4 {
+                let IrValue::Name(name) = &args[0] else { return Err(NativeError::Unsupported("kv_append requires a named KvCache binding".into())); };
+                let IrValue::String(policy) = &args[3] else { return Err(NativeError::Unsupported("kv_append policy must be a string literal".into())); };
+                if policy != "reject" && policy != "evict_oldest" { return Err(NativeError::Unsupported("kv_append policy must be 'reject' or 'evict_oldest'".into())); }
+                emit_value(&args[1], code)?;
+                emit_value(&args[2], code)?;
+                code.push(NativeInstr::KvAppend { name: name.clone(), evict_oldest: policy == "evict_oldest" });
+            } else if callee == "context_window" && args.len() == 3 {
+                code.push(NativeInstr::MakeContextWindow);
+            } else if callee == "context_len" && args.len() == 1 {
+                code.push(NativeInstr::ContextLen);
+            } else if callee == "context_bytes" && args.len() == 1 {
+                code.push(NativeInstr::ContextBytes);
+            } else if callee == "context_tokens" && args.len() == 1 {
+                code.push(NativeInstr::ContextTokens);
+            } else if callee == "context_append" && args.len() == 4 {
+                let IrValue::Name(name) = &args[0] else { return Err(NativeError::Unsupported("context_append requires a named ContextWindow binding".into())); };
+                emit_value(&args[1], code)?;
+                emit_value(&args[2], code)?;
+                emit_value(&args[3], code)?;
+                code.push(NativeInstr::ContextAppend { name: name.clone() });
             } else if callee == "len" && args.len() == 1 {
                 code.push(NativeInstr::Len);
             } else if callee == "push" && args.len() == 2 {
@@ -978,6 +1036,63 @@ fn run_function(
                     }
                 }
                 stack.push(NativeValue::Tensor { shape: vec![m, n], values });
+            }
+            NativeInstr::MakeKvCache => {
+                let capacity = match stack.pop() { Some(NativeValue::Int(value)) if value > 0 => usize::try_from(value).map_err(|_| NativeError::ResourceLimit("KVCache capacity overflow".into()))?, _ => return Err(NativeError::Type("kv_cache capacity must be a positive Int".into())) };
+                let cache = KvCache::new(capacity).map_err(|error| NativeError::Type(format!("invalid KVCache capacity: {error:?}")))?;
+                stack.push(NativeValue::KvCache { capacity: cache.capacity(), key_dim: None, value_dim: None, entries: Vec::new() });
+            }
+            NativeInstr::KvLen | NativeInstr::KvCapacity => {
+                let value = stack.pop().ok_or_else(|| NativeError::InvalidProgram("KVCache query from empty stack".into()))?;
+                let NativeValue::KvCache { capacity, entries, .. } = value else { return Err(NativeError::Type("KVCache query requires KvCache".into())); };
+                stack.push(NativeValue::Int(if matches!(instr, NativeInstr::KvLen) { entries.len() as i64 } else { capacity as i64 }));
+            }
+            NativeInstr::KvAppend { name, evict_oldest } => {
+                let value = stack.pop().ok_or_else(|| NativeError::InvalidProgram("KVCache value argument missing".into()))?;
+                let key = stack.pop().ok_or_else(|| NativeError::InvalidProgram("KVCache key argument missing".into()))?;
+                let to_bits = |value: NativeValue| -> Result<Vec<u32>, NativeError> {
+                    let NativeValue::List(values) = value else { return Err(NativeError::Type("KVCache key and value must be numeric lists".into())); };
+                    values.into_iter().map(|item| match item { NativeValue::Int(v) => Ok((v as f32).to_bits()), NativeValue::Float(bits) if f32::from_bits(bits).is_finite() => Ok(bits), _ => Err(NativeError::Type("KVCache vectors must contain finite numeric values".into())) }).collect()
+                };
+                let key = to_bits(key)?; let value = to_bits(value)?;
+                let Some(NativeValue::KvCache { capacity, key_dim, value_dim, entries }) = locals.get_mut(name) else { return Err(NativeError::Type("kv_append requires a KvCache local binding".into())); };
+                let mut cache = KvCache::new(*capacity).map_err(|error| NativeError::Type(format!("invalid KVCache: {error:?}")))?;
+                for (old_key, old_value) in entries.iter() { cache.append(old_key.iter().map(|bits| f32::from_bits(*bits)).collect(), old_value.iter().map(|bits| f32::from_bits(*bits)).collect(), CacheFullPolicy::Reject).map_err(|error| NativeError::Type(format!("invalid KVCache state: {error:?}")))?; }
+                let policy = if *evict_oldest { CacheFullPolicy::EvictOldest } else { CacheFullPolicy::Reject };
+                cache.append(key.iter().map(|bits| f32::from_bits(*bits)).collect(), value.iter().map(|bits| f32::from_bits(*bits)).collect(), policy).map_err(|error| NativeError::Type(format!("KVCache append rejected: {error:?}")))?;
+                let retained = cache.window(0, cache.len()).map_err(|error| NativeError::Type(format!("KVCache window failed: {error:?}")))?;
+                *key_dim = retained.first().map(|entry| entry.key.len()); *value_dim = retained.first().map(|entry| entry.value.len());
+                *entries = retained.into_iter().map(|entry| (entry.key.into_iter().map(f32::to_bits).collect(), entry.value.into_iter().map(f32::to_bits).collect())).collect();
+                stack.push(NativeValue::Unit);
+            }
+            NativeInstr::MakeContextWindow => {
+                let tokens = match stack.pop() { Some(NativeValue::Int(v)) if v > 0 => usize::try_from(v).map_err(|_| NativeError::ResourceLimit("context token budget overflow".into()))?, _ => return Err(NativeError::Type("context token budget must be a positive Int".into())) };
+                let bytes = match stack.pop() { Some(NativeValue::Int(v)) if v > 0 => usize::try_from(v).map_err(|_| NativeError::ResourceLimit("context byte budget overflow".into()))?, _ => return Err(NativeError::Type("context byte budget must be a positive Int".into())) };
+                let segments = match stack.pop() { Some(NativeValue::Int(v)) if v > 0 => usize::try_from(v).map_err(|_| NativeError::ResourceLimit("context segment budget overflow".into()))?, _ => return Err(NativeError::Type("context segment budget must be a positive Int".into())) };
+                ContextWindow::new(ContextBudget { max_segments: segments, max_bytes: bytes, max_tokens: tokens }).map_err(|error| NativeError::Type(format!("invalid ContextWindow budget: {error:?}")))?;
+                stack.push(NativeValue::ContextWindow { max_segments: segments, max_bytes: bytes, max_tokens: tokens, segments: Vec::new(), bytes: 0, tokens: 0 });
+            }
+            NativeInstr::ContextLen | NativeInstr::ContextBytes | NativeInstr::ContextTokens => {
+                let value = stack.pop().ok_or_else(|| NativeError::InvalidProgram("ContextWindow query from empty stack".into()))?;
+                let NativeValue::ContextWindow { segments, bytes, tokens, .. } = value else { return Err(NativeError::Type("ContextWindow query requires ContextWindow".into())); };
+                let result = match instr { NativeInstr::ContextLen => segments.len(), NativeInstr::ContextBytes => bytes, _ => tokens };
+                stack.push(NativeValue::Int(result as i64));
+            }
+            NativeInstr::ContextAppend { name } => {
+                let token_count = match stack.pop() { Some(NativeValue::Int(v)) if v >= 0 => usize::try_from(v).map_err(|_| NativeError::ResourceLimit("context token count overflow".into()))?, _ => return Err(NativeError::Type("context_append token count must be a non-negative Int".into())) };
+                let payload = match stack.pop() { Some(NativeValue::String(v)) => v.into_bytes(), _ => return Err(NativeError::Type("context_append payload must be a String".into())) };
+                let modality = match stack.pop() { Some(NativeValue::String(v)) => v, _ => return Err(NativeError::Type("context_append modality must be a String literal".into())) };
+                let modality = match modality.as_str() { "text" => SegmentModality::Text, "image" => SegmentModality::Image, "audio" => SegmentModality::Audio, "video" => SegmentModality::Video, "structured" => SegmentModality::Structured, _ => return Err(NativeError::Type("context modality must be text, image, audio, video, or structured".into())) };
+                let Some(NativeValue::ContextWindow { max_segments, max_bytes, max_tokens, segments, bytes, tokens }) = locals.get_mut(name) else { return Err(NativeError::Type("context_append requires a ContextWindow local binding".into())); };
+                let mut window = ContextWindow::new(ContextBudget { max_segments: *max_segments, max_bytes: *max_bytes, max_tokens: *max_tokens }).map_err(|error| NativeError::Type(format!("invalid ContextWindow: {error:?}")))?;
+                for (old_modality, old_payload, old_tokens) in segments.iter() {
+                    let old_modality = match old_modality.as_str() { "text" => SegmentModality::Text, "image" => SegmentModality::Image, "audio" => SegmentModality::Audio, "video" => SegmentModality::Video, "structured" => SegmentModality::Structured, _ => return Err(NativeError::InvalidProgram("invalid stored context modality".into())) };
+                    window.append(ContextSegment { modality: old_modality, payload: old_payload.clone(), token_count: *old_tokens }).map_err(|error| NativeError::Type(format!("invalid ContextWindow state: {error:?}")))?;
+                }
+                window.append(ContextSegment { modality, payload, token_count }).map_err(|error| NativeError::Type(format!("ContextWindow append rejected: {error:?}")))?;
+                *segments = window.segments().iter().map(|segment| (match segment.modality { SegmentModality::Text => "text", SegmentModality::Image => "image", SegmentModality::Audio => "audio", SegmentModality::Video => "video", SegmentModality::Structured => "structured" }.to_string(), segment.payload.clone(), segment.token_count)).collect();
+                *bytes = window.bytes(); *tokens = window.tokens();
+                stack.push(NativeValue::Unit);
             }
             NativeInstr::MakeTensor => {
                 let values = match stack.pop() { Some(NativeValue::List(values)) => values, _ => return Err(NativeError::Type("tensor expects a List<Int> value payload".into())) };
@@ -1524,6 +1639,10 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::DequantizeTensor => "DequantizeTensor".into(),
         NativeInstr::PushEmbedding { domain, values } => format!("PushEmbedding:{}/{}", encode_hex(domain.as_bytes()), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
         NativeInstr::EmbeddingDot => "EmbeddingDot".into(),
+        NativeInstr::MakeKvCache => "MakeKvCache".into(), NativeInstr::KvLen => "KvLen".into(), NativeInstr::KvCapacity => "KvCapacity".into(),
+        NativeInstr::KvAppend { name, evict_oldest } => format!("KvAppend:{},{}", escape_artifact(name), evict_oldest),
+        NativeInstr::MakeContextWindow => "MakeContextWindow".into(), NativeInstr::ContextLen => "ContextLen".into(), NativeInstr::ContextBytes => "ContextBytes".into(), NativeInstr::ContextTokens => "ContextTokens".into(),
+        NativeInstr::ContextAppend { name } => format!("ContextAppend:{}", escape_artifact(name)),
         NativeInstr::PushUnit => "PushUnit".into(),
         NativeInstr::PushString(v) => format!("PushString:{}", escape_artifact(v)),
         NativeInstr::PushList(v) => format!("PushList:{v}"),
@@ -1575,6 +1694,10 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "DequantizeTensor"=>NativeInstr::DequantizeTensor,
         "PushEmbedding"=>{let (domain, values)=arg.split_once('/').ok_or_else(bad)?; let domain=String::from_utf8(decode_hex(domain).map_err(|_|bad())?).map_err(|_|bad())?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushEmbedding{domain,values}},
         "EmbeddingDot"=>NativeInstr::EmbeddingDot,
+        "MakeKvCache"=>NativeInstr::MakeKvCache,"KvLen"=>NativeInstr::KvLen,"KvCapacity"=>NativeInstr::KvCapacity,
+        "KvAppend"=>{let (name,policy)=arg.rsplit_once(',').ok_or_else(bad)?; let policy=policy.parse::<bool>().map_err(|_|bad())?; NativeInstr::KvAppend{name:unescape_artifact(name)?,evict_oldest:policy}},
+        "MakeContextWindow"=>NativeInstr::MakeContextWindow,"ContextLen"=>NativeInstr::ContextLen,"ContextBytes"=>NativeInstr::ContextBytes,"ContextTokens"=>NativeInstr::ContextTokens,
+        "ContextAppend"=>NativeInstr::ContextAppend{name:unescape_artifact(arg)?},
         "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Len"=>NativeInstr::Len,
         "PushString"=>NativeInstr::PushString(unescape_artifact(arg)?),
         "PushList"=>NativeInstr::PushList(int(arg)?),"Append"=>NativeInstr::Append(unescape_artifact(arg)?),
