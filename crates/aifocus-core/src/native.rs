@@ -2003,7 +2003,7 @@ fn main() -> List<ExpertWeight>
 fn main() -> List<VectorHit>
   let index = vector_index("text", 2)
   vector_index_insert(index, 9, "text", [1.0, 0.0])
-  vector_index_insert(index, 3, "text", [-1.0, 0.0])
+  vector_index_insert(index, 3, "text", [0.0, 1.0])
   return vector_index_search(index, "text", [0.0, 0.0], 2)
 "#;
         let program = compile(source);
