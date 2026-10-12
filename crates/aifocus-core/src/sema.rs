@@ -690,13 +690,14 @@ impl Checker {
                     return Some(ty);
                 }
                 if name == "vector_index_insert" {
-                    if args.len() != 3 {
-                        self.error("AIF390", "vector_index_insert expects index, non-negative id, and List<F32> coordinates", expr.span);
+                    if args.len() != 4 {
+                        self.error("AIF390", "vector_index_insert expects index, non-negative id, domain String, and List<F32> coordinates", expr.span);
                         return None;
                     }
                     let index = self.check_expr(&args[0], locals)?;
                     let id = self.check_expr(&args[1], locals)?;
-                    let coordinates = self.check_expr(&args[2], locals)?;
+                    let domain = self.check_expr(&args[2], locals)?;
+                    let coordinates = self.check_expr(&args[3], locals)?;
                     if !matches!(&index.kind, TypeKind::Named(ty) if ty == "VectorIndex") {
                         self.error("AIF391", "vector_index_insert requires VectorIndex", args[0].span);
                     }
@@ -706,9 +707,10 @@ impl Checker {
                     if let ExprKind::Int(value) = args[1].kind {
                         if value < 0 { self.error("AIF393", "vector_index_insert id must be non-negative", args[1].span); }
                     }
-                    let expected = TypeKind::List(Box::new(type_node(TypeKind::Named("F32".into()), args[2].span)));
+                    if !is_kind(&domain, &TypeKind::String) { self.error("AIF394", "vector_index_insert domain must be String", args[2].span); }
+                    let expected = TypeKind::List(Box::new(type_node(TypeKind::Named("F32".into()), args[3].span)));
                     if !same_type_kind(&coordinates.kind, &expected) {
-                        self.error("AIF394", "vector_index_insert coordinates must be List<F32>", args[2].span);
+                        self.error("AIF401", "vector_index_insert coordinates must be List<F32>", args[3].span);
                     }
                     if !matches!(&args[0].kind, ExprKind::Name(_)) {
                         self.error("AIF395", "vector_index_insert requires a named mutable VectorIndex binding", args[0].span);
@@ -716,24 +718,26 @@ impl Checker {
                     return Some(type_node(TypeKind::Unit, expr.span));
                 }
                 if name == "vector_index_search" {
-                    if args.len() != 3 {
-                        self.error("AIF396", "vector_index_search expects index, List<F32> query, and non-negative Int limit", expr.span);
+                    if args.len() != 4 {
+                        self.error("AIF396", "vector_index_search expects index, domain String, List<F32> query, and non-negative Int limit", expr.span);
                         return None;
                     }
                     let index = self.check_expr(&args[0], locals)?;
-                    let query = self.check_expr(&args[1], locals)?;
-                    let limit = self.check_expr(&args[2], locals)?;
+                    let domain = self.check_expr(&args[1], locals)?;
+                    let query = self.check_expr(&args[2], locals)?;
+                    let limit = self.check_expr(&args[3], locals)?;
                     if !matches!(&index.kind, TypeKind::Named(ty) if ty == "VectorIndex") {
                         self.error("AIF397", "vector_index_search requires VectorIndex", args[0].span);
                     }
-                    let expected = TypeKind::List(Box::new(type_node(TypeKind::Named("F32".into()), args[1].span)));
+                    if !is_kind(&domain, &TypeKind::String) { self.error("AIF398", "vector_index_search domain must be String", args[1].span); }
+                    let expected = TypeKind::List(Box::new(type_node(TypeKind::Named("F32".into()), args[2].span)));
                     if !same_type_kind(&query.kind, &expected) {
-                        self.error("AIF398", "vector_index_search query must be List<F32>", args[1].span);
+                        self.error("AIF402", "vector_index_search query must be List<F32>", args[2].span);
                     }
                     if !is_kind(&limit, &TypeKind::Int) {
                         self.error("AIF399", "vector_index_search limit must be Int", args[2].span);
                     }
-                    if let ExprKind::Int(value) = args[2].kind {
+                    if let ExprKind::Int(value) = args[3].kind {
                         if value < 0 || value > 65536 {
                             self.error("AIF400", "vector_index_search limit must be in 0..=65536", args[2].span);
                         }
