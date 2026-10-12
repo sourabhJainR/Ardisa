@@ -298,6 +298,10 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                     scalar_count = scalar_count.checked_add(key.len()).and_then(|n| n.checked_add(value.len())).ok_or_else(|| NativeError::ResourceLimit("KVCache scalar accounting overflow".into()))?;
                 }
                 if scalar_count > crate::kv_cache::MAX_KV_CACHE_SCALARS { return Err(NativeError::ResourceLimit("KVCache scalar budget exceeded".into())); }
+                let NativeValue::KvCache { key_dim, value_dim, .. } = value else { unreachable!() };
+                if *key_dim != expected_key_dim || *value_dim != expected_value_dim {
+                    return Err(NativeError::InvalidProgram("KVCache dimension metadata does not match retained entries".into()));
+                }
             }
             NativeValue::ContextWindow { max_segments, max_bytes, max_tokens, segments, bytes, tokens } => {
                 if *max_segments == 0 || *max_bytes == 0 || *max_tokens == 0 || *max_segments > crate::context_window::MAX_CONTEXT_WINDOW_SEGMENTS || *max_bytes > crate::context_window::MAX_CONTEXT_WINDOW_BYTES || *max_tokens > crate::context_window::MAX_CONTEXT_WINDOW_TOKENS || segments.len() > *max_segments || *bytes > *max_bytes || *tokens > *max_tokens || segments.len() > limits.max_collection_items {
@@ -336,6 +340,23 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
             NativeValue::String(value) => {
                 string_bytes = string_bytes.checked_add(value.len())
                     .ok_or_else(|| NativeError::ResourceLimit("string byte accounting overflow".into()))?;
+            }
+            NativeValue::KvCache { entries, .. } => {
+                for (key, value) in entries {
+                    nodes = nodes.checked_add(2)
+                        .and_then(|n| n.checked_add(key.len()))
+                        .and_then(|n| n.checked_add(value.len()))
+                        .ok_or_else(|| NativeError::ResourceLimit("KVCache footprint accounting overflow".into()))?;
+                }
+            }
+            NativeValue::ContextWindow { segments, .. } => {
+                for (modality, payload, _) in segments {
+                    nodes = nodes.checked_add(1)
+                        .ok_or_else(|| NativeError::ResourceLimit("ContextWindow footprint node accounting overflow".into()))?;
+                    string_bytes = string_bytes.checked_add(modality.len())
+                        .and_then(|n| n.checked_add(payload.len()))
+                        .ok_or_else(|| NativeError::ResourceLimit("ContextWindow footprint byte accounting overflow".into()))?;
+                }
             }
             NativeValue::List(items) => pending.extend(items.iter()),
             NativeValue::ResultOk(inner) | NativeValue::ResultErr(inner) => pending.push(inner),
@@ -2910,3 +2931,39 @@ fn fact(n: Int) -> Int
     }
 
 }
+    #[test]
+    fn ai_value_footprints_include_retained_cache_and_context_payloads() {
+        let cache = NativeValue::KvCache {
+            capacity: 2,
+            key_dim: Some(2),
+            value_dim: Some(1),
+            entries: vec![(vec![1.0f32.to_bits(), 2.0f32.to_bits()], vec![3.0f32.to_bits()])],
+        };
+        let (cache_nodes, cache_bytes) = value_footprint(&cache).unwrap();
+        assert!(cache_nodes >= 6, "cache entries and scalars count toward frame nodes");
+        assert_eq!(cache_bytes, 0);
+
+        let context = NativeValue::ContextWindow {
+            max_segments: 2,
+            max_bytes: 64,
+            max_tokens: 8,
+            segments: vec![(String::from("image"), String::from("payload-bytes"), 3)],
+            bytes: 13,
+            tokens: 3,
+        };
+        let (context_nodes, context_bytes) = value_footprint(&context).unwrap();
+        assert!(context_nodes >= 2, "context segments count toward frame nodes");
+        assert_eq!(context_bytes, "image".len() + "payload-bytes".len());
+    }
+
+    #[test]
+    fn kv_cache_dimension_metadata_must_match_entries() {
+        let invalid = NativeValue::KvCache {
+            capacity: 2,
+            key_dim: Some(3),
+            value_dim: Some(1),
+            entries: vec![(vec![1.0f32.to_bits(), 2.0f32.to_bits()], vec![3.0f32.to_bits()])],
+        };
+        assert!(matches!(validate_value(&invalid, ExecutionLimits::default()), Err(NativeError::InvalidProgram(_))));
+    }
+
