@@ -284,16 +284,31 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                 if *capacity == 0 || *capacity > crate::kv_cache::MAX_KV_CACHE_ENTRIES || entries.len() > *capacity || entries.len() > limits.max_collection_items {
                     return Err(NativeError::ResourceLimit("invalid or oversized KVCache value".into()));
                 }
+                let mut scalar_count = 0usize;
+                let mut expected_key_dim = None;
+                let mut expected_value_dim = None;
                 for (key, value) in entries {
                     if key.is_empty() || value.is_empty() || key.iter().chain(value).any(|bits| !f32::from_bits(*bits).is_finite()) {
                         return Err(NativeError::Type("KVCache entries require non-empty finite key/value vectors".into()));
                     }
+                    if expected_key_dim.is_some_and(|expected| expected != key.len()) || expected_value_dim.is_some_and(|expected| expected != value.len()) {
+                        return Err(NativeError::Type("KVCache entries have inconsistent dimensions".into()));
+                    }
+                    expected_key_dim = Some(key.len()); expected_value_dim = Some(value.len());
+                    scalar_count = scalar_count.checked_add(key.len()).and_then(|n| n.checked_add(value.len())).ok_or_else(|| NativeError::ResourceLimit("KVCache scalar accounting overflow".into()))?;
                 }
+                if scalar_count > crate::kv_cache::MAX_KV_CACHE_SCALARS { return Err(NativeError::ResourceLimit("KVCache scalar budget exceeded".into())); }
             }
             NativeValue::ContextWindow { max_segments, max_bytes, max_tokens, segments, bytes, tokens } => {
                 if *max_segments == 0 || *max_bytes == 0 || *max_tokens == 0 || *max_segments > crate::context_window::MAX_CONTEXT_WINDOW_SEGMENTS || *max_bytes > crate::context_window::MAX_CONTEXT_WINDOW_BYTES || *max_tokens > crate::context_window::MAX_CONTEXT_WINDOW_TOKENS || segments.len() > *max_segments || *bytes > *max_bytes || *tokens > *max_tokens || segments.len() > limits.max_collection_items {
                     return Err(NativeError::ResourceLimit("invalid or oversized ContextWindow value".into()));
                 }
+                let actual_bytes = segments.iter().try_fold(0usize, |sum, (modality, payload, _)| {
+                    if payload.is_empty() || !matches!(modality.as_str(), "text" | "image" | "audio" | "video" | "structured") { return Err(NativeError::Type("invalid ContextWindow segment".into())); }
+                    sum.checked_add(payload.len()).ok_or_else(|| NativeError::ResourceLimit("ContextWindow byte accounting overflow".into()))
+                })?;
+                let actual_tokens = segments.iter().try_fold(0usize, |sum, (_, _, count)| sum.checked_add(*count).ok_or_else(|| NativeError::ResourceLimit("ContextWindow token accounting overflow".into())))?;
+                if actual_bytes != *bytes || actual_tokens != *tokens { return Err(NativeError::InvalidProgram("ContextWindow counters do not match retained segments".into())); }
             }
             NativeValue::List(items) => {
                 if items.len() > limits.max_collection_items {
@@ -833,6 +848,15 @@ fn run_function(
                 | NativeInstr::DequantizeTensor
                 | NativeInstr::PushEmbedding { .. }
                 | NativeInstr::EmbeddingDot
+                | NativeInstr::MakeKvCache
+                | NativeInstr::KvLen
+                | NativeInstr::KvCapacity
+                | NativeInstr::KvAppend { .. }
+                | NativeInstr::MakeContextWindow
+                | NativeInstr::ContextLen
+                | NativeInstr::ContextBytes
+                | NativeInstr::ContextTokens
+                | NativeInstr::ContextAppend { .. }
                 | NativeInstr::PushUnit
                 | NativeInstr::PushString(_)
                 | NativeInstr::PushList(_)
@@ -1516,6 +1540,7 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                 NativeInstr::AddAssign(s) | NativeInstr::StoreIndex(s) |
                 NativeInstr::Join { name: s } | NativeInstr::Cancel { name: s } => add_bytes(s)?,
                 NativeInstr::Call { callee, .. } => add_bytes(callee)?,
+                NativeInstr::KvAppend { name, .. } | NativeInstr::ContextAppend { name } => add_bytes(name)?,
                 NativeInstr::Spawn { name, callee, .. } => { add_bytes(name)?; add_bytes(callee)?; }
                 _ => {}
             }
