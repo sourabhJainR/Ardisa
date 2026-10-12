@@ -24,6 +24,7 @@ pub enum AiRoutingError {
     NonFiniteCoordinate,
     DomainMismatch,
     IndexFull,
+    DuplicateId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,7 +103,7 @@ impl VectorIndex {
         self.validate(&vector)?;
         if self.entries.len() >= MAX_INDEX_ENTRIES { return Err(AiRoutingError::IndexFull); }
         if self.entries.iter().any(|entry| entry.id == id) {
-            return Err(AiRoutingError::LengthMismatch);
+            return Err(AiRoutingError::DuplicateId);
         }
         self.entries.push(Entry { id, vector });
         Ok(())
@@ -166,4 +167,40 @@ mod tests {
         assert_eq!(index.search(&DomainVector { domain: "text".into(), coordinates: vec![0.0] }, 1), Err(AiRoutingError::InvalidDimension));
         assert_eq!(index.search(&DomainVector { domain: "text".into(), coordinates: vec![0.0, f32::INFINITY] }, 1), Err(AiRoutingError::NonFiniteCoordinate));
     }
+
+    #[test]
+    fn adversarial_routing_bounds_and_masks_fail_closed() {
+        assert_eq!(route_top_k(&[], &[], 1), Err(AiRoutingError::EmptyExperts));
+        assert_eq!(route_top_k(&[1.0], &[], 1), Err(AiRoutingError::LengthMismatch));
+        assert_eq!(route_top_k(&[1.0], &[false], 0), Err(AiRoutingError::InvalidTopK));
+        assert_eq!(route_top_k(&[1.0], &[false], MAX_TOP_K + 1), Err(AiRoutingError::InvalidTopK));
+        assert_eq!(route_top_k(&vec![0.0; MAX_EXPERTS + 1], &vec![false; MAX_EXPERTS + 1], 1), Err(AiRoutingError::TooManyExperts));
+        assert_eq!(route_top_k(&[f32::NEG_INFINITY], &[false], 1), Err(AiRoutingError::NonFiniteLogit));
+        assert_eq!(route_top_k(&[f32::MAX, f32::MAX], &[false, false], 2).unwrap().len(), 2);
+        assert_eq!(route_top_k(&[1.0, 2.0], &[true, false], 2).unwrap().iter().map(|x| x.expert).collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn adversarial_vector_index_rejects_duplicate_ids_and_invalid_limits() {
+        assert_eq!(VectorIndex::new("text", 0), Err(AiRoutingError::InvalidDimension));
+        assert_eq!(VectorIndex::new("text", MAX_VECTOR_DIMENSIONS + 1), Err(AiRoutingError::InvalidDimension));
+        assert_eq!(VectorIndex::new("", 1), Err(AiRoutingError::DomainMismatch));
+        let mut index = VectorIndex::new("text", 1).unwrap();
+        let first = DomainVector { domain: "text".into(), coordinates: vec![0.0] };
+        index.insert(7, first.clone()).unwrap();
+        assert_eq!(index.insert(7, first), Err(AiRoutingError::DuplicateId));
+        assert_eq!(index.search(&DomainVector { domain: "text".into(), coordinates: vec![0.0] }, MAX_INDEX_ENTRIES + 1), Err(AiRoutingError::IndexFull));
+        assert_eq!(index.search(&DomainVector { domain: "text".into(), coordinates: vec![f32::NAN] }, 1), Err(AiRoutingError::NonFiniteCoordinate));
+    }
+
+    #[test]
+    fn vector_index_keeps_domain_and_distance_ordering_deterministic() {
+        let mut index = VectorIndex::new("text", 1).unwrap();
+        index.insert(4, DomainVector { domain: "text".into(), coordinates: vec![f32::MAX] }).unwrap();
+        index.insert(2, DomainVector { domain: "text".into(), coordinates: vec![-f32::MAX] }).unwrap();
+        let hits = index.search(&DomainVector { domain: "text".into(), coordinates: vec![0.0] }, 2).unwrap();
+        assert_eq!(hits.iter().map(|h| h.id).collect::<Vec<_>>(), vec![2, 4]);
+        assert!(hits.iter().all(|h| h.distance.is_finite()));
+    }
+
 }
