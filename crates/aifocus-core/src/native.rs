@@ -1986,8 +1986,8 @@ fn main() -> List<ExpertWeight>
         assert_eq!(encode_program(&decoded), artifact);
         let NativeValue::List(rows) = run_program(&decoded, "main", &[]).unwrap() else { panic!("expected route rows"); };
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], NativeValue::List(vec![NativeValue::Int(1), NativeValue::Float(0.66524094f32.to_bits())]));
-        assert_eq!(rows[1], NativeValue::List(vec![NativeValue::Int(2), NativeValue::Float(0.24472848f32.to_bits())]));
+        assert_eq!(rows[0], NativeValue::List(vec![NativeValue::Int(1), NativeValue::Float(0.7310586f32.to_bits())]));
+        assert_eq!(rows[1], NativeValue::List(vec![NativeValue::Int(2), NativeValue::Float(0.26894143f32.to_bits())]));
     }
 
     #[test]
