@@ -1095,7 +1095,7 @@ fn run_function(
                 if supplied_domain != domain { return Err(NativeError::Type("vector index domain mismatch".into())); }
                 let Some(NativeValue::List(entries)) = index.get_mut(2) else { return Err(NativeError::InvalidProgram("malformed VectorIndex entries".into())); };
                 if coordinates.len() != dimensions { return Err(NativeError::Type("vector dimension mismatch".into())); }
-                if entries.len() >= crate::ai_routing::MAX_INDEX_ENTRIES { return Err(NativeError::ResourceLimit("VectorIndex entry limit exceeded".into())); }
+                if entries.len() >= crate::ai_routing::MAX_INDEX_ENTRIES.min(state.limits.max_collection_items) { return Err(NativeError::ResourceLimit("VectorIndex entry limit exceeded".into())); }
                 if entries.iter().any(|entry| matches!(entry, NativeValue::List(pair) if matches!(pair.first(), Some(NativeValue::Int(existing)) if *existing >= 0 && *existing as u64 == id))) { return Err(NativeError::Type("duplicate VectorIndex id".into())); }
                 let entry = NativeValue::List(vec![NativeValue::Int(id as i64), NativeValue::List(coordinates.into_iter().map(|v| NativeValue::Float(v.to_bits())).collect())]);
                 entries.push(entry);
@@ -1114,6 +1114,8 @@ fn run_function(
                 if supplied_domain != *domain { return Err(NativeError::Type("vector index domain mismatch".into())); }
                 if query.len() != dimensions { return Err(NativeError::Type("vector query dimension mismatch".into())); }
                 let Some(NativeValue::List(entries)) = index.get(2) else { return Err(NativeError::InvalidProgram("malformed VectorIndex entries".into())); };
+                let distance_ops = entries.len().checked_mul(dimensions).ok_or_else(|| NativeError::ResourceLimit("VectorIndex search work overflow".into()))?;
+                if distance_ops > 1_000_000 { return Err(NativeError::ResourceLimit("VectorIndex search work limit exceeded".into())); }
                 let mut hits = Vec::new();
                 for entry in entries {
                     let NativeValue::List(pair) = entry else { return Err(NativeError::InvalidProgram("malformed VectorIndex entry".into())); };
