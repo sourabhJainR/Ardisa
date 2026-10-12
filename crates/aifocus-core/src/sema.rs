@@ -1217,7 +1217,7 @@ mod ai_routing_semantic_tests {
 
     #[test]
     fn route_top_k_rejects_wrong_types_and_static_bounds() {
-        rejects("module bad\nfn main()\n  route_top_k(["bad"], [false], 1)\n", "AIF381");
+        rejects("module bad\nfn main()\n  route_top_k([true], [false], 1)\n", "AIF381");
         rejects("module bad\nfn main()\n  route_top_k([1.0], [false, false], 1)\n", "AIF382");
         rejects("module bad\nfn main()\n  route_top_k([1.0], [false], 33)\n", "AIF384");
     }
@@ -1230,7 +1230,7 @@ mod ai_routing_semantic_tests {
 
     #[test]
     fn vector_index_insert_and_search_reject_wrong_types() {
-        rejects("module bad\nfn main()\n  let index = vector_index(\"text\", 2)\n  vector_index_insert(index, -1, \"text\", [1.0, 2.0])\n", "AIF393");
+        rejects("module bad\nfn main()\n  let index = vector_index(\"text\", 2)\n  vector_index_insert(index, true, \"text\", [1.0, 2.0])\n", "AIF392");
         rejects("module bad\nfn main()\n  let index = vector_index(\"text\", 2)\n  vector_index_search(index, 7, [1.0, 2.0], 1)\n", "AIF398");
     }
 }
