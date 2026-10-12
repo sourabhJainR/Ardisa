@@ -666,12 +666,13 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::RouteTopK);
             } else if callee == "vector_index" && args.len() == 2 {
                 code.push(NativeInstr::MakeVectorIndex);
-            } else if callee == "vector_index_insert" && args.len() == 3 {
+            } else if callee == "vector_index_insert" && args.len() == 4 {
                 let IrValue::Name(name) = &args[0] else { return Err(NativeError::Unsupported("vector_index_insert requires a named VectorIndex binding".into())); };
                 emit_value(&args[1], code)?;
                 emit_value(&args[2], code)?;
+                emit_value(&args[3], code)?;
                 code.push(NativeInstr::VectorIndexInsert { name: name.clone() });
-            } else if callee == "vector_index_search" && args.len() == 3 {
+            } else if callee == "vector_index_search" && args.len() == 4 {
                 code.push(NativeInstr::VectorIndexSearch);
             } else if callee == "kv_cache" && args.len() == 1 {
                 code.push(NativeInstr::MakeKvCache);
@@ -1083,6 +1084,7 @@ fn run_function(
             }
             NativeInstr::VectorIndexInsert { name } => {
                 let coordinates = match stack.pop() { Some(NativeValue::List(values)) => values, _ => return Err(NativeError::Type("vector coordinates must be List<F32>".into())) };
+                let supplied_domain = match stack.pop() { Some(NativeValue::String(value)) => value, _ => return Err(NativeError::Type("vector insert domain must be String".into())) };
                 let id = pop_int(&mut stack)?;
                 let id = u64::try_from(id).map_err(|_| NativeError::Type("vector id must be non-negative".into()))?;
                 let coordinates = coordinates.into_iter().map(|v| match v { NativeValue::Float(bits) if f32::from_bits(bits).is_finite() => Ok(f32::from_bits(bits)), _ => Err(NativeError::Type("vector coordinates must be finite F32 values".into())) }).collect::<Result<Vec<_>,_>>()?;
@@ -1090,23 +1092,25 @@ fn run_function(
                 if index.len() != 3 { return Err(NativeError::InvalidProgram("malformed VectorIndex value".into())); }
                 let domain = match &index[0] { NativeValue::String(value) => value.clone(), _ => return Err(NativeError::InvalidProgram("malformed VectorIndex domain".into())) };
                 let dimensions = match index[1] { NativeValue::Int(value) if value > 0 => value as usize, _ => return Err(NativeError::InvalidProgram("malformed VectorIndex dimensions".into())) };
+                if supplied_domain != domain { return Err(NativeError::Type("vector index domain mismatch".into())); }
                 let Some(NativeValue::List(entries)) = index.get_mut(2) else { return Err(NativeError::InvalidProgram("malformed VectorIndex entries".into())); };
                 if coordinates.len() != dimensions { return Err(NativeError::Type("vector dimension mismatch".into())); }
                 if entries.len() >= crate::ai_routing::MAX_INDEX_ENTRIES { return Err(NativeError::ResourceLimit("VectorIndex entry limit exceeded".into())); }
                 if entries.iter().any(|entry| matches!(entry, NativeValue::List(pair) if matches!(pair.first(), Some(NativeValue::Int(existing)) if *existing >= 0 && *existing as u64 == id))) { return Err(NativeError::Type("duplicate VectorIndex id".into())); }
                 let entry = NativeValue::List(vec![NativeValue::Int(id as i64), NativeValue::List(coordinates.into_iter().map(|v| NativeValue::Float(v.to_bits())).collect())]);
                 entries.push(entry);
-                let _ = domain;
             }
             NativeInstr::VectorIndexSearch => {
                 let limit = pop_int(&mut stack)?;
                 let limit = usize::try_from(limit).map_err(|_| NativeError::Type("vector_index_search limit must be non-negative".into()))?;
                 if limit > crate::ai_routing::MAX_INDEX_ENTRIES { return Err(NativeError::ResourceLimit("VectorIndex search limit exceeded".into())); }
                 let query = match stack.pop() { Some(NativeValue::List(values)) => values.into_iter().map(|v| match v { NativeValue::Float(bits) if f32::from_bits(bits).is_finite() => Ok(f32::from_bits(bits)), _ => Err(NativeError::Type("vector query must contain finite F32 values".into())) }).collect::<Result<Vec<_>,_>>()?, _ => return Err(NativeError::Type("vector query must be List<F32>".into())) };
+                let supplied_domain = match stack.pop() { Some(NativeValue::String(value)) => value, _ => return Err(NativeError::Type("vector search domain must be String".into())) };
                 let index = match stack.pop() { Some(NativeValue::List(value)) => value, _ => return Err(NativeError::Type("vector_index_search requires VectorIndex".into())) };
                 if index.len() != 3 { return Err(NativeError::InvalidProgram("malformed VectorIndex value".into())); }
                 let domain = match &index[0] { NativeValue::String(value) => value, _ => return Err(NativeError::InvalidProgram("malformed VectorIndex domain".into())) };
                 let dimensions = match index[1] { NativeValue::Int(value) if value > 0 => value as usize, _ => return Err(NativeError::InvalidProgram("malformed VectorIndex dimensions".into())) };
+                if supplied_domain != *domain { return Err(NativeError::Type("vector index domain mismatch".into())); }
                 if query.len() != dimensions { return Err(NativeError::Type("vector query dimension mismatch".into())); }
                 let Some(NativeValue::List(entries)) = index.get(2) else { return Err(NativeError::InvalidProgram("malformed VectorIndex entries".into())); };
                 let mut hits = Vec::new();
