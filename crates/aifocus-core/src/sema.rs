@@ -745,11 +745,11 @@ impl Checker {
                         self.error("AIF402", "vector_index_search query must be List<F32>", args[2].span);
                     }
                     if !is_kind(&limit, &TypeKind::Int) {
-                        self.error("AIF399", "vector_index_search limit must be Int", args[2].span);
+                        self.error("AIF399", "vector_index_search limit must be Int", args[3].span);
                     }
                     if let ExprKind::Int(value) = args[3].kind {
                         if value < 0 || value > 65536 {
-                            self.error("AIF400", "vector_index_search limit must be in 0..=65536", args[2].span);
+                            self.error("AIF400", "vector_index_search limit must be in 0..=65536", args[3].span);
                         }
                     }
                     let ty = type_node(TypeKind::List(Box::new(type_node(TypeKind::Named("VectorHit".into()), expr.span))), expr.span);
