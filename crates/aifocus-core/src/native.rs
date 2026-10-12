@@ -2947,7 +2947,7 @@ fn fact(n: Int) -> Int
             max_segments: 2,
             max_bytes: 64,
             max_tokens: 8,
-            segments: vec![(String::from("image"), String::from("payload-bytes"), 3)],
+            segments: vec![(String::from("image"), b"payload-bytes".to_vec(), 3)],
             bytes: 13,
             tokens: 3,
         };
