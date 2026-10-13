@@ -694,4 +694,37 @@ fn main() -> Tensor<F32>
         assert!(matches!(&attention.kind, TypedValueKind::Call { callee, args } if callee == "attention_block" && matches!(args[3].kind, TypedValueKind::Bool(true))));
     }
 
+
+    #[test]
+    fn nominal_attention_and_lora_types_and_runtime_metadata_survive_typed_ir() {
+        let module = crate::parse(r#"module nominal_typed_ir
+fn make_attention() -> AttentionBlock
+  attention_block_new(4, 2, 2, true)
+fn make_adapter() -> LoRAAdapter
+  let a = tensor([1, 2], [1.0, 1.0])
+  let b = tensor([3, 1], [1.0, 2.0, 3.0])
+  lora_adapter_new(a, b, 2.0, 1)
+"#).unwrap();
+        let typed = lower(&module).expect("nominal types lower to typed IR");
+        assert_eq!(typed.functions[0].return_type, TypeKind::Named("AttentionBlock".into()));
+        assert_eq!(typed.functions[1].return_type, TypeKind::Named("LoRAAdapter".into()));
+        let attention = match &typed.functions[0].blocks[0].ops[0] {
+            TypedIrOp::Expr(value) => value,
+            other => panic!("expected AttentionBlock constructor expression, got {other:?}"),
+        };
+        assert_eq!(attention.ty, TypeKind::Named("AttentionBlock".into()));
+        assert!(matches!(&attention.kind, TypedValueKind::Call { callee, args }
+            if callee == "attention_block_new"
+            && matches!(args[0].kind, TypedValueKind::Int(4))
+            && matches!(args[1].kind, TypedValueKind::Int(2))
+            && matches!(args[2].kind, TypedValueKind::Int(2))
+            && matches!(args[3].kind, TypedValueKind::Bool(true))));
+        let adapter = match &typed.functions[1].blocks[0].ops[2] {
+            TypedIrOp::Expr(value) => value,
+            other => panic!("expected LoRAAdapter constructor expression, got {other:?}"),
+        };
+        assert_eq!(adapter.ty, TypeKind::Named("LoRAAdapter".into()));
+        assert!(matches!(&adapter.kind, TypedValueKind::Call { callee, args }
+            if callee == "lora_adapter_new" && matches!(args[3].kind, TypedValueKind::Int(1))));
+    }
 }
