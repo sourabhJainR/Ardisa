@@ -195,13 +195,18 @@ mod tests {
     #[test]
     fn rejects_bounds_duplicate_edges_invalid_indices_and_non_finite_rewards() {
         assert_eq!(MctsTree::new(0, 1), Err(MctsError::InvalidCapacity));
-        let mut tree = MctsTree::new(2, 1).unwrap();
+        let mut tree = MctsTree::new(4, 2).unwrap();
         tree.create_root(1).unwrap();
         assert_eq!(tree.expand(0, 2), Ok(1));
-        assert_eq!(tree.expand(0, 2), Err(MctsError::BranchLimit));
-        assert_eq!(tree.expand(0, 3), Err(MctsError::BranchLimit));
+        assert_eq!(tree.expand(0, 2), Err(MctsError::DuplicateChildState));
+        assert_eq!(tree.expand(0, 3), Ok(2));
+        assert_eq!(tree.expand(0, 4), Err(MctsError::BranchLimit));
         assert_eq!(tree.expand(9, 3), Err(MctsError::InvalidNode));
         assert_eq!(tree.child(0, 9), Err(MctsError::InvalidNode));
+        let mut full = MctsTree::new(2, 2).unwrap();
+        full.create_root(1).unwrap();
+        full.expand(0, 2).unwrap();
+        assert_eq!(full.expand(0, 3), Err(MctsError::NodeLimit));
         assert_eq!(tree.update(1, f64::NAN), Err(MctsError::InvalidReward));
         assert_eq!(tree.backpropagate(1, f64::INFINITY), Err(MctsError::InvalidReward));
         assert_eq!(tree.nodes()[0].visits, 0);
