@@ -29,6 +29,7 @@ pub enum NativeInstr {
     TensorMatMul,
     MakeActivationCache, ActivationStore { name: String }, ActivationRestore, ActivationCacheLen,
     MakeGradientTape,
+    MakeTokenizerState, TokenizerFeed { name: String }, TokenizerFlush { name: String }, TokenizerTokenCount, TokenizerToken,
     GradientInput { name: String }, GradientAdd { name: String }, GradientMul { name: String }, GradientBackward { name: String }, GradientValue, GradientGet,
     /// Construct a validated nominal multi-head attention configuration.
     MakeAttentionBlock,
@@ -204,6 +205,8 @@ pub enum NativeValue {
     Tensor { shape: Vec<usize>, values: Vec<u32> },
     ActivationCache { capacity: usize, checkpoint_stride: usize, max_bytes: usize, retained_bytes: usize, entries: Vec<(i64, Vec<usize>, Vec<u32>)> },
     GradientTape { capacity: usize, slots: Vec<GradientSlot>, gradients: Vec<u32>, backward_ready: bool },
+    /// Incremental UTF-8 tokenizer with a one-scalar explicit vocabulary and bounded pending bytes/output.
+    TokenizerState { vocabulary: Vec<String>, pending: Vec<u8>, tokens: Vec<i64>, max_pending: usize, max_tokens: usize, unknown_id: Option<i64> },
     /// Signed-int8 tensor payload and quantization metadata; scale is f32 bits.
     QuantizedTensor { shape: Vec<usize>, scale_bits: u32, zero_point: i8, values: Vec<i8> },
     /// Nominal domain label plus IEEE-754 f32 coordinate bits.
@@ -376,6 +379,16 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                 let mut ids=std::collections::BTreeSet::new(); let mut bytes=0usize;
                 for (step,shape,values) in entries { if *step<0 || (*step as usize)%*checkpoint_stride!=0 || !ids.insert(*step) { return Err(NativeError::InvalidProgram("invalid or duplicate ActivationCache checkpoint id".into())); } validate_tensor_parts(shape,values,MAX_TENSOR_ELEMENTS)?; if values.iter().any(|bits|!f32::from_bits(*bits).is_finite()) { return Err(NativeError::Type("ActivationCache values must be finite".into())); } bytes=bytes.checked_add(values.len().checked_mul(4).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?).and_then(|n|n.checked_add(shape.len().checked_mul(std::mem::size_of::<usize>())?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?; }
                 if bytes!=*retained_bytes || bytes>*max_bytes { return Err(NativeError::InvalidProgram("ActivationCache retained-byte accounting mismatch".into())); }
+            }
+            NativeValue::TokenizerState { vocabulary, pending, tokens, max_pending, max_tokens, unknown_id } => {
+                if vocabulary.is_empty() || vocabulary.len() > limits.max_collection_items || *max_pending == 0 || *max_pending > 4 || *max_tokens == 0 || *max_tokens > limits.max_collection_items || tokens.len() > *max_tokens || pending.len() > *max_pending {
+                    return Err(NativeError::InvalidProgram("invalid TokenizerState capacity or buffer state".into()));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for piece in vocabulary { if piece.chars().count()!=1 || !seen.insert(piece) { return Err(NativeError::InvalidProgram("TokenizerState vocabulary must contain unique single Unicode scalars".into())); } }
+                if unknown_id.is_some_and(|id| id < 0) { return Err(NativeError::InvalidProgram("TokenizerState unknown token id must be non-negative".into())); }
+                if std::str::from_utf8(pending).is_ok() { /* complete but possibly not yet tokenized scalar */ }
+                else if std::str::from_utf8(pending).err().is_none_or(|e| e.error_len().is_some() || e.valid_up_to()!=0) { return Err(NativeError::InvalidProgram("TokenizerState pending bytes must be an incomplete UTF-8 suffix".into())); }
             }
             NativeValue::GradientTape { capacity, slots, gradients, backward_ready } => {
                 if *capacity == 0 || *capacity > 4096 || slots.len() > *capacity || (*backward_ready && gradients.len() != slots.len()) || (!*backward_ready && !gradients.is_empty()) { return Err(NativeError::InvalidProgram("invalid GradientTape capacity or gradient state".into())); }
@@ -580,7 +593,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape" | "ActivationCache"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape" | "ActivationCache" | "TokenizerState"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -772,6 +785,11 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
             else if callee == "activation_restore" && args.len() == 2 { code.push(NativeInstr::ActivationRestore); }
             else if callee == "activation_cache_len" && args.len() == 1 { code.push(NativeInstr::ActivationCacheLen); }
             else if callee == "gradient_tape" && args.len() == 1 { code.push(NativeInstr::MakeGradientTape); }
+            else if callee == "tokenizer_state" && args.len() == 4 { code.push(NativeInstr::MakeTokenizerState); }
+            else if callee == "tokenizer_feed" && args.len() == 2 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("tokenizer_feed requires named TokenizerState".into()));}; emit_value(&args[1],code)?; code.push(NativeInstr::TokenizerFeed{name:name.clone()}); }
+            else if callee == "tokenizer_flush" && args.len() == 1 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("tokenizer_flush requires named TokenizerState".into()));}; code.push(NativeInstr::TokenizerFlush{name:name.clone()}); }
+            else if callee == "tokenizer_token_count" && args.len() == 1 { code.push(NativeInstr::TokenizerTokenCount); }
+            else if callee == "tokenizer_token" && args.len() == 2 { emit_value(&args[1],code)?; code.push(NativeInstr::TokenizerToken); }
             else if callee == "gradient_input" && args.len() == 2 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_input requires named GradientTape".into()));}; emit_value(&args[1],code)?; code.push(NativeInstr::GradientInput{name:name.clone()}); }
             else if callee == "gradient_add" && args.len() == 3 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_add requires named GradientTape".into()));}; emit_value(&args[1],code)?;emit_value(&args[2],code)?;code.push(NativeInstr::GradientAdd{name:name.clone()}); }
             else if callee == "gradient_mul" && args.len() == 3 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_mul requires named GradientTape".into()));}; emit_value(&args[1],code)?;emit_value(&args[2],code)?;code.push(NativeInstr::GradientMul{name:name.clone()}); }
@@ -1046,7 +1064,7 @@ fn run_function(
                 | NativeInstr::TensorAdd
                 | NativeInstr::TensorMatMul
                 | NativeInstr::MakeActivationCache | NativeInstr::ActivationStore { .. } | NativeInstr::ActivationRestore | NativeInstr::ActivationCacheLen
-                | NativeInstr::MakeGradientTape | NativeInstr::GradientInput { .. } | NativeInstr::GradientAdd { .. } | NativeInstr::GradientMul { .. } | NativeInstr::GradientBackward { .. } | NativeInstr::GradientValue | NativeInstr::GradientGet
+                | NativeInstr::MakeGradientTape | NativeInstr::MakeTokenizerState | NativeInstr::TokenizerFeed { .. } | NativeInstr::TokenizerFlush { .. } | NativeInstr::TokenizerTokenCount | NativeInstr::TokenizerToken | NativeInstr::GradientInput { .. } | NativeInstr::GradientAdd { .. } | NativeInstr::GradientMul { .. } | NativeInstr::GradientBackward { .. } | NativeInstr::GradientValue | NativeInstr::GradientGet
                 | NativeInstr::MakeAttentionBlock
                 | NativeInstr::AttentionBlockApply
                 | NativeInstr::AttentionBlockCached
@@ -2240,7 +2258,8 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::TensorAdd => "TensorAdd".into(),
         NativeInstr::TensorMatMul => "TensorMatMul".into(),
         NativeInstr::MakeActivationCache=>"MakeActivationCache".into(), NativeInstr::ActivationStore{name}=>format!("ActivationStore:{}",escape_artifact(name)), NativeInstr::ActivationRestore=>"ActivationRestore".into(), NativeInstr::ActivationCacheLen=>"ActivationCacheLen".into(),
-        NativeInstr::MakeGradientTape => "MakeGradientTape".into(), NativeInstr::GradientInput{name}=>format!("GradientInput:{}",escape_artifact(name)), NativeInstr::GradientAdd{name}=>format!("GradientAdd:{}",escape_artifact(name)), NativeInstr::GradientMul{name}=>format!("GradientMul:{}",escape_artifact(name)), NativeInstr::GradientBackward{name}=>format!("GradientBackward:{}",escape_artifact(name)), NativeInstr::GradientValue=>"GradientValue".into(), NativeInstr::GradientGet=>"GradientGet".into(),
+        NativeInstr::MakeGradientTape => "MakeGradientTape".into(),
+        NativeInstr::MakeTokenizerState => "MakeTokenizerState".into(), NativeInstr::TokenizerFeed{name}=>format!("TokenizerFeed:{}",escape_artifact(name)), NativeInstr::TokenizerFlush{name}=>format!("TokenizerFlush:{}",escape_artifact(name)), NativeInstr::TokenizerTokenCount=>"TokenizerTokenCount".into(), NativeInstr::TokenizerToken=>"TokenizerToken".into(), NativeInstr::GradientInput{name}=>format!("GradientInput:{}",escape_artifact(name)), NativeInstr::GradientAdd{name}=>format!("GradientAdd:{}",escape_artifact(name)), NativeInstr::GradientMul{name}=>format!("GradientMul:{}",escape_artifact(name)), NativeInstr::GradientBackward{name}=>format!("GradientBackward:{}",escape_artifact(name)), NativeInstr::GradientValue=>"GradientValue".into(), NativeInstr::GradientGet=>"GradientGet".into(),
         NativeInstr::MakeAttentionBlock => "MakeAttentionBlock".into(),
         NativeInstr::AttentionBlockApply => "AttentionBlockApply".into(),
         NativeInstr::AttentionBlockCached => "AttentionBlockCached".into(),
@@ -2318,7 +2337,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "TensorAdd"=>NativeInstr::TensorAdd,
         "TensorMatMul"=>NativeInstr::TensorMatMul,
         "MakeActivationCache"=>NativeInstr::MakeActivationCache, "ActivationStore"=>NativeInstr::ActivationStore{name:unescape_artifact(arg)?}, "ActivationRestore"=>NativeInstr::ActivationRestore, "ActivationCacheLen"=>NativeInstr::ActivationCacheLen,
-        "MakeGradientTape"=>NativeInstr::MakeGradientTape, "GradientInput"=>NativeInstr::GradientInput{name:unescape_artifact(arg)?}, "GradientAdd"=>NativeInstr::GradientAdd{name:unescape_artifact(arg)?}, "GradientMul"=>NativeInstr::GradientMul{name:unescape_artifact(arg)?}, "GradientBackward"=>NativeInstr::GradientBackward{name:unescape_artifact(arg)?}, "GradientValue"=>NativeInstr::GradientValue, "GradientGet"=>NativeInstr::GradientGet,
+        "MakeGradientTape"=>NativeInstr::MakeGradientTape, "MakeTokenizerState"=>NativeInstr::MakeTokenizerState, "TokenizerFeed"=>NativeInstr::TokenizerFeed{name:unescape_artifact(arg)?}, "TokenizerFlush"=>NativeInstr::TokenizerFlush{name:unescape_artifact(arg)?}, "TokenizerTokenCount"=>NativeInstr::TokenizerTokenCount, "TokenizerToken"=>NativeInstr::TokenizerToken, "GradientInput"=>NativeInstr::GradientInput{name:unescape_artifact(arg)?}, "GradientAdd"=>NativeInstr::GradientAdd{name:unescape_artifact(arg)?}, "GradientMul"=>NativeInstr::GradientMul{name:unescape_artifact(arg)?}, "GradientBackward"=>NativeInstr::GradientBackward{name:unescape_artifact(arg)?}, "GradientValue"=>NativeInstr::GradientValue, "GradientGet"=>NativeInstr::GradientGet,
         "MakeAttentionBlock"=>NativeInstr::MakeAttentionBlock,
         "AttentionBlockApply"=>NativeInstr::AttentionBlockApply,
         "AttentionBlockCached"=>NativeInstr::AttentionBlockCached,
