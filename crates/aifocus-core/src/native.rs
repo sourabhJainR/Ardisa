@@ -748,7 +748,7 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
             code[jump_end] = NativeInstr::Jump(end);
         }
         IrValue::Call { callee, args } => {
-            if callee != "kv_append" && callee != "context_append" && callee != "vector_index_insert" && !matches!(callee.as_str(), "mcts_root" | "mcts_expand" | "mcts_update" | "mcts_backpropagate") {
+            if callee != "kv_append" && callee != "context_append" && callee != "vector_index_insert" && !matches!(callee.as_str(), "mcts_root" | "mcts_expand" | "mcts_update" | "mcts_backpropagate" | "grad_input" | "grad_add" | "grad_mul" | "grad_backward") {
                 for arg in args { emit_value(arg, code)?; }
             }
             if callee == "chr" && args.len() == 1 {
@@ -805,6 +805,26 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::VectorIndexInsert { name: name.clone() });
             } else if callee == "vector_index_search" && args.len() == 4 {
                 code.push(NativeInstr::VectorIndexSearch);
+            } else if callee == "gradient_tape" && args.len() == 1 {
+                code.push(NativeInstr::MakeGradientTape);
+            } else if callee == "grad_input" && args.len() == 2 {
+                let IrValue::Name(name) = &args[0] else { return Err(NativeError::Unsupported("grad_input requires a named GradientTape binding".into())); };
+                emit_value(&args[1], code)?; code.push(NativeInstr::GradInput { name: name.clone() });
+            } else if callee == "grad_add" && args.len() == 3 {
+                let IrValue::Name(name) = &args[0] else { return Err(NativeError::Unsupported("grad_add requires a named GradientTape binding".into())); };
+                emit_value(&args[1], code)?; emit_value(&args[2], code)?; code.push(NativeInstr::GradAdd { name: name.clone() });
+            } else if callee == "grad_mul" && args.len() == 3 {
+                let IrValue::Name(name) = &args[0] else { return Err(NativeError::Unsupported("grad_mul requires a named GradientTape binding".into())); };
+                emit_value(&args[1], code)?; emit_value(&args[2], code)?; code.push(NativeInstr::GradMul { name: name.clone() });
+            } else if callee == "grad_backward" && args.len() == 3 {
+                let IrValue::Name(name) = &args[0] else { return Err(NativeError::Unsupported("grad_backward requires a named GradientTape binding".into())); };
+                emit_value(&args[1], code)?; emit_value(&args[2], code)?; code.push(NativeInstr::GradBackward { name: name.clone() });
+            } else if callee == "grad_value" && args.len() == 2 {
+                code.push(NativeInstr::GradValue);
+            } else if callee == "grad_derivative" && args.len() == 2 {
+                code.push(NativeInstr::GradDerivative);
+            } else if callee == "grad_len" && args.len() == 1 {
+                code.push(NativeInstr::GradLen);
             } else if callee == "mcts_tree" && args.len() == 2 {
                 code.push(NativeInstr::MakeMctsTree);
             } else if callee == "mcts_root" && args.len() == 2 {
