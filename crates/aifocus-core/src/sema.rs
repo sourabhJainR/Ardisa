@@ -870,6 +870,19 @@ impl Checker {
                     let ty = type_node(TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]), expr.span);
                     self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
                 }
+                if name == "attention_cached" {
+                    if args.len() != 2 { self.error("AIF448", "attention_cached expects query Tensor<F32> and a KvCache", expr.span); return None; }
+                    let query = self.check_expr(&args[0], locals)?;
+                    let cache = self.check_expr(&args[1], locals)?;
+                    if !matches!(&query.kind, TypeKind::Generic(name, args) if name == "Tensor" && args.len() == 1 && matches!(&args[0].kind, TypeKind::Named(element) if element == "F32")) {
+                        self.error("AIF449", "attention_cached query must be Tensor<F32>", args[0].span);
+                    }
+                    if !matches!(&cache.kind, TypeKind::Named(name) if name == "KvCache") {
+                        self.error("AIF450", "attention_cached requires a KvCache", args[1].span);
+                    }
+                    let ty = type_node(TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
                 if name == "lora_apply" {
                     if args.len() != 5 { self.error("AIF443", "lora_apply expects input, A, B Tensor<F32>, alpha F32, and rank Int", expr.span); return None; }
                     let input = self.check_expr(&args[0], locals)?;
