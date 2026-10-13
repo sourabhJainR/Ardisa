@@ -3907,12 +3907,14 @@ fn main() -> Tensor<F32>
 
     #[test]
     fn lora_adapter_rejects_nonfinite_alpha_and_aggregate_storage_over_budget() {
-        let a = vec![0.0f32.to_bits(); 10_000];
-        let b = vec![0.0f32.to_bits(); 10_000];
+        let small_a = vec![0.0f32.to_bits(); 2];
+        let small_b = vec![0.0f32.to_bits(); 2];
         assert!(matches!(
-            validate_lora_parts(&[100, 100], &a, &[100, 100], &b, f32::NAN.to_bits(), 100, MAX_TENSOR_ELEMENTS),
+            validate_lora_parts(&[1, 2], &small_a, &[2, 1], &small_b, f32::NAN.to_bits(), 1, MAX_TENSOR_ELEMENTS),
             Err(NativeError::Type(_))
         ));
+        let a = vec![0.0f32.to_bits(); 10_000];
+        let b = vec![0.0f32.to_bits(); 10_000];
         assert!(matches!(
             validate_lora_parts(&[100, 100], &a, &[100, 100], &b, 1.0f32.to_bits(), 100, MAX_TENSOR_ELEMENTS),
             Err(NativeError::ResourceLimit(message)) if message.contains("aggregate")
