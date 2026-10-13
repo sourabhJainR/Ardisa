@@ -27,6 +27,7 @@ pub enum NativeInstr {
     PushTensor { shape: Vec<usize>, values: Vec<u32> },
     TensorAdd,
     TensorMatMul,
+    MakeActivationCache, ActivationStore { name: String }, ActivationRestore, ActivationCacheLen,
     /// Construct a validated nominal multi-head attention configuration.
     MakeAttentionBlock,
     /// Apply a nominal attention configuration to rank-2 Q/K/V tensors.
@@ -193,6 +194,7 @@ pub enum NativeValue {
     Probability(u32),
     /// Tensor dimensions and IEEE-754 f32 values encoded as bits.
     Tensor { shape: Vec<usize>, values: Vec<u32> },
+    ActivationCache { capacity: usize, checkpoint_stride: usize, max_bytes: usize, retained_bytes: usize, entries: Vec<(i64, Vec<usize>, Vec<u32>)> },
     /// Signed-int8 tensor payload and quantization metadata; scale is f32 bits.
     QuantizedTensor { shape: Vec<usize>, scale_bits: u32, zero_point: i8, values: Vec<i8> },
     /// Nominal domain label plus IEEE-754 f32 coordinate bits.
@@ -360,6 +362,12 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
             NativeValue::LoRAAdapter { a_shape, a_values, b_shape, b_values, alpha_bits, rank } => {
                 validate_lora_parts(a_shape, a_values, b_shape, b_values, *alpha_bits, *rank, limits.max_collection_items)?;
             }
+            NativeValue::ActivationCache { capacity, checkpoint_stride, max_bytes, retained_bytes, entries } => {
+                if *capacity==0 || *capacity>4096 || *checkpoint_stride==0 || *checkpoint_stride>4096 || *max_bytes==0 || *max_bytes>16_777_216 || entries.len()>*capacity { return Err(NativeError::InvalidProgram("invalid ActivationCache limits".into())); }
+                let mut ids=std::collections::BTreeSet::new(); let mut bytes=0usize;
+                for (step,shape,values) in entries { if *step<0 || (*step as usize)%*checkpoint_stride!=0 || !ids.insert(*step) { return Err(NativeError::InvalidProgram("invalid or duplicate ActivationCache checkpoint id".into())); } validate_tensor_parts(shape,values,MAX_TENSOR_ELEMENTS)?; if values.iter().any(|bits|!f32::from_bits(*bits).is_finite()) { return Err(NativeError::Type("ActivationCache values must be finite".into())); } bytes=bytes.checked_add(values.len().checked_mul(4).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?).and_then(|n|n.checked_add(shape.len().checked_mul(std::mem::size_of::<usize>())?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?; }
+                if bytes!=*retained_bytes || bytes>*max_bytes { return Err(NativeError::InvalidProgram("ActivationCache retained-byte accounting mismatch".into())); }
+            }
             NativeValue::Embedding { domain, values } => {
                 validate_embedding_parts(domain, values, limits.max_collection_items)?;
             }
@@ -427,6 +435,7 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
                 string_bytes = string_bytes.checked_add(value.len())
                     .ok_or_else(|| NativeError::ResourceLimit("string byte accounting overflow".into()))?;
             }
+            NativeValue::ActivationCache { entries, .. } => { for (_,shape,values) in entries { nodes=nodes.checked_add(shape.len()).and_then(|n|n.checked_add(values.len())).ok_or_else(||NativeError::ResourceLimit("ActivationCache footprint accounting overflow".into()))?; } }
             NativeValue::LoRAAdapter { a_values, b_values, .. } => {
                 nodes = nodes.checked_add(a_values.len()).and_then(|n| n.checked_add(b_values.len()))
                     .ok_or_else(|| NativeError::ResourceLimit("LoRAAdapter footprint accounting overflow".into()))?;
@@ -556,7 +565,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "ActivationCache"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -726,7 +735,7 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
             code[jump_end] = NativeInstr::Jump(end);
         }
         IrValue::Call { callee, args } => {
-            if callee != "kv_append" && callee != "context_append" && callee != "vector_index_insert" && !matches!(callee.as_str(), "mcts_root" | "mcts_expand" | "mcts_update" | "mcts_backpropagate") {
+            if callee != "kv_append" && callee != "context_append" && callee != "vector_index_insert" && !matches!(callee.as_str(), "mcts_root" | "mcts_expand" | "mcts_update" | "mcts_backpropagate" | "activation_store") {
                 for arg in args { emit_value(arg, code)?; }
             }
             if callee == "chr" && args.len() == 1 {
@@ -1010,6 +1019,7 @@ fn run_function(
                 | NativeInstr::PushTensor { .. }
                 | NativeInstr::TensorAdd
                 | NativeInstr::TensorMatMul
+                | NativeInstr::MakeActivationCache | NativeInstr::ActivationStore { .. } | NativeInstr::ActivationRestore | NativeInstr::ActivationCacheLen
                 | NativeInstr::MakeAttentionBlock
                 | NativeInstr::AttentionBlockApply
                 | NativeInstr::AttentionBlockCached
@@ -1520,6 +1530,10 @@ fn run_function(
                 if output.iter().any(|v|!v.is_finite()){return Err(NativeError::Type("LoRA output is non-finite".into()));}
                 stack.push(NativeValue::Tensor{shape:vec![batch,output_dim],values:output.into_iter().map(f32::to_bits).collect()});
             }
+            NativeInstr::MakeActivationCache => { let max_bytes=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("ActivationCache byte budget must be positive".into()))?;let stride=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("ActivationCache stride must be positive".into()))?;let capacity=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("ActivationCache capacity must be positive".into()))?;if capacity==0||capacity>4096||stride==0||stride>4096||max_bytes==0||max_bytes>16_777_216{return Err(NativeError::ResourceLimit("ActivationCache limits exceed supported bounds".into()));}stack.push(NativeValue::ActivationCache{capacity,checkpoint_stride:stride,max_bytes,retained_bytes:0,entries:Vec::new()}); }
+            NativeInstr::ActivationStore{name} => { let (shape,values)=pop_tensor(&mut stack,state.limits.max_collection_items)?;let step=pop_int(&mut stack)?;let step_usize=usize::try_from(step).map_err(|_|NativeError::Type("ActivationCache checkpoint id must be non-negative".into()))?;let cache=locals.get_mut(name).ok_or_else(||NativeError::Type("ActivationCache binding not found".into()))?;let NativeValue::ActivationCache{capacity,checkpoint_stride,max_bytes,retained_bytes,entries}=cache else{return Err(NativeError::Type("activation_store requires ActivationCache".into()));};if step_usize%*checkpoint_stride!=0{return Err(NativeError::Type("ActivationCache checkpoint id must align to checkpoint_stride".into()));}if entries.iter().any(|(id,_,_)|*id==step){return Err(NativeError::Type("duplicate ActivationCache checkpoint id".into()));}if entries.len()>=*capacity{return Err(NativeError::ResourceLimit("ActivationCache checkpoint capacity exhausted".into()));}let bytes=values.len().checked_mul(4).and_then(|n|n.checked_add(shape.len().checked_mul(std::mem::size_of::<usize>())?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte accounting overflow".into()))?;let new_bytes=retained_bytes.checked_add(bytes).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte accounting overflow".into()))?;if new_bytes>*max_bytes{return Err(NativeError::ResourceLimit("ActivationCache retained-byte budget exceeded".into()));}entries.push((step,shape,values));entries.sort_by_key(|(id,_,_)|*id);*retained_bytes=new_bytes;stack.push(NativeValue::Unit); }
+            NativeInstr::ActivationRestore => {let step=pop_int(&mut stack)?;let cache=stack.pop().ok_or_else(||NativeError::InvalidProgram("ActivationCache operand missing".into()))?;let NativeValue::ActivationCache{entries,..}=cache else{return Err(NativeError::Type("activation_restore requires ActivationCache".into()));};let (_,shape,values)=entries.iter().find(|(id,_,_)|*id==step).ok_or_else(||NativeError::Type("ActivationCache checkpoint id not found".into()))?;stack.push(NativeValue::Tensor{shape:shape.clone(),values:values.clone()});}
+            NativeInstr::ActivationCacheLen => {let cache=stack.pop().ok_or_else(||NativeError::InvalidProgram("ActivationCache operand missing".into()))?;let NativeValue::ActivationCache{entries,..}=cache else{return Err(NativeError::Type("activation_cache_len requires ActivationCache".into()));};stack.push(NativeValue::Int(entries.len() as i64));}
             NativeInstr::MakeMctsTree => {
                 let branches = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS branch bound must be positive".into()))?;
                 let nodes = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS node bound must be positive".into()))?;
@@ -2063,6 +2077,7 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                     add_bytes(domain)?;
                 }
                 NativeInstr::MctsRoot { name } | NativeInstr::MctsExpand { name } | NativeInstr::MctsUpdate { name } | NativeInstr::MctsBackpropagate { name } => { if name.trim().is_empty() { return Err(NativeError::InvalidProgram("MCTS binding name must not be empty".into())); } add_bytes(name)?; },
+                NativeInstr::ActivationStore { name } => { if name.trim().is_empty(){return Err(NativeError::InvalidProgram("ActivationCache binding name must not be empty".into()));} add_bytes(name)?; },
                 NativeInstr::VectorIndexInsert { name } => {
                     if name.trim().is_empty() {
                         return Err(NativeError::InvalidProgram("VectorIndexInsert binding name must not be empty".into()));
@@ -2191,6 +2206,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::PushTensor { shape, values } => format!("PushTensor:{}/{}", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(","), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
         NativeInstr::TensorAdd => "TensorAdd".into(),
         NativeInstr::TensorMatMul => "TensorMatMul".into(),
+        NativeInstr::MakeActivationCache=>"MakeActivationCache".into(), NativeInstr::ActivationStore{name}=>format!("ActivationStore:{}",escape_artifact(name)), NativeInstr::ActivationRestore=>"ActivationRestore".into(), NativeInstr::ActivationCacheLen=>"ActivationCacheLen".into(),
         NativeInstr::MakeAttentionBlock => "MakeAttentionBlock".into(),
         NativeInstr::AttentionBlockApply => "AttentionBlockApply".into(),
         NativeInstr::AttentionBlockCached => "AttentionBlockCached".into(),
@@ -2267,6 +2283,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "PushTensor"=>{let (shape, values)=arg.split_once('/').ok_or_else(bad)?; let shape=shape.split(',').map(|v|v.parse::<usize>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushTensor{shape,values}},
         "TensorAdd"=>NativeInstr::TensorAdd,
         "TensorMatMul"=>NativeInstr::TensorMatMul,
+        "MakeActivationCache"=>NativeInstr::MakeActivationCache, "ActivationStore"=>NativeInstr::ActivationStore{name:unescape_artifact(arg)?}, "ActivationRestore"=>NativeInstr::ActivationRestore, "ActivationCacheLen"=>NativeInstr::ActivationCacheLen,
         "MakeAttentionBlock"=>NativeInstr::MakeAttentionBlock,
         "AttentionBlockApply"=>NativeInstr::AttentionBlockApply,
         "AttentionBlockCached"=>NativeInstr::AttentionBlockCached,
