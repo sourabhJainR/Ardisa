@@ -2162,7 +2162,9 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                 NativeInstr::AddAssign(s) | NativeInstr::StoreIndex(s) |
                 NativeInstr::Join { name: s } | NativeInstr::Cancel { name: s } => add_bytes(s)?,
                 NativeInstr::Call { callee, .. } => add_bytes(callee)?,
-                NativeInstr::KvAppend { name, .. } | NativeInstr::ContextAppend { name } => add_bytes(name)?,
+                NativeInstr::KvAppend { name, .. } | NativeInstr::ContextAppend { name }
+                | NativeInstr::GradInput { name } | NativeInstr::GradAdd { name }
+                | NativeInstr::GradMul { name } | NativeInstr::GradBackward { name } => add_bytes(name)?,
                 NativeInstr::Spawn { name, callee, .. } => { add_bytes(name)?; add_bytes(callee)?; }
                 _ => {}
             }
