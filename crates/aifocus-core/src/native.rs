@@ -310,7 +310,7 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                 validate_tensor_parts(shape, values, limits.max_collection_items)?;
             }
             NativeValue::AttentionBlock { hidden, heads, head_dim, .. } => {
-                if *hidden == 0 || *heads == 0 || *head_dim == 0 || *heads > 256 || *heads.checked_mul(*head_dim) != Some(*hidden) {
+                if *hidden == 0 || *heads == 0 || *head_dim == 0 || *heads > 256 || heads.checked_mul(*head_dim) != Some(*hidden) {
                     return Err(NativeError::Type("invalid AttentionBlock hidden/head configuration".into()));
                 }
             }
