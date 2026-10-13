@@ -4181,7 +4181,7 @@ fn main() -> Int
         let function = program.functions.get_mut("main").unwrap();
         let index = function.code.iter().position(|instruction| matches!(instruction, NativeInstr::PushFloat(_))).unwrap();
         function.code[index] = NativeInstr::PushFloat(f32::INFINITY.to_bits());
-        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("finite")));
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::InvalidProgram(message)) if message.contains("finite")));
     }
 }
 
@@ -4260,7 +4260,7 @@ fn main() -> Int
         let function = program.functions.get_mut("main").unwrap();
         let index = function.code.iter().position(|instruction| matches!(instruction, NativeInstr::PushFloat(_))).unwrap();
         function.code[index] = NativeInstr::PushFloat(f32::INFINITY.to_bits());
-        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("finite")));
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::InvalidProgram(message)) if message.contains("finite")));
 
         let overflow = r#"module vector_distance_overflow
 fn main() -> Int
@@ -4433,7 +4433,7 @@ fn main() -> F32
         let code=&mut p.functions.get_mut("main").unwrap().code;
         let index=code.iter().position(|op|matches!(op,NativeInstr::PushFloat(_))).unwrap();
         code[index]=NativeInstr::PushFloat(f32::INFINITY.to_bits());
-        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::Type(message)) if message.contains("finite")));
+        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::InvalidProgram(message)) if message.contains("finite")));
     }
 }
 
@@ -4517,7 +4517,7 @@ mod activation_cache_adversarial_hardening_tests {
         assert_eq!(cache,initial,"duplicate rejection must leave checkpoint state unchanged");
         assert!(matches!(store_activation_checkpoint(&mut cache,1,vec![1],vec![2.0f32.to_bits()]),Err(NativeError::ResourceLimit(message)) if message.contains("byte budget")));
         assert_eq!(cache,initial,"budget rejection must leave checkpoint state unchanged");
-        assert!(matches!(store_activation_checkpoint(&mut cache,1,vec![1],vec![f32::INFINITY.to_bits()]),Err(NativeError::Type(message)) if message.contains("finite")));
+        assert!(matches!(store_activation_checkpoint(&mut cache,1,vec![1],vec![f32::INFINITY.to_bits()]),Err(NativeError::InvalidProgram(message)) if message.contains("finite")));
         assert_eq!(cache,initial,"non-finite rejection must leave checkpoint state unchanged");
         assert!(matches!(store_activation_checkpoint(&mut cache,1,vec![2],vec![2.0f32.to_bits()]),Err(NativeError::InvalidProgram(_))));
         assert_eq!(cache,initial,"shape rejection must leave checkpoint state unchanged");
@@ -4527,7 +4527,7 @@ mod activation_cache_adversarial_hardening_tests {
         let duplicate=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:1024,retained_bytes:24,entries:vec![(0,vec![1],vec![1.0f32.to_bits()]),(0,vec![1],vec![2.0f32.to_bits()])]};
         assert!(matches!(validate_value(&duplicate,ExecutionLimits::default()),Err(NativeError::InvalidProgram(message)) if message.contains("duplicate")));
         let nonfinite=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:1024,retained_bytes:12,entries:vec![(0,vec![1],vec![f32::NAN.to_bits()])]};
-        assert!(matches!(validate_value(&nonfinite,ExecutionLimits::default()),Err(NativeError::Type(message)) if message.contains("finite")));
+        assert!(matches!(validate_value(&nonfinite,ExecutionLimits::default()),Err(NativeError::InvalidProgram(message)) if message.contains("finite")));
         let shape_mismatch=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:1024,retained_bytes:12,entries:vec![(0,vec![2],vec![1.0f32.to_bits()])]};
         assert!(matches!(validate_value(&shape_mismatch,ExecutionLimits::default()),Err(NativeError::InvalidProgram(_))));
         let program=NativeProgram{functions:BTreeMap::from([("main".into(),NativeFunction{params:vec![],code:vec![NativeInstr::PushInt(2),NativeInstr::PushInt(1),NativeInstr::PushInt(1024),NativeInstr::MakeActivationCache,NativeInstr::Return]})])};
