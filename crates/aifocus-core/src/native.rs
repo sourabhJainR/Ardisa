@@ -3297,3 +3297,43 @@ fn fact(n: Int) -> Int
         assert!(matches!(validate_value(&invalid, ExecutionLimits::default()), Err(NativeError::InvalidProgram(_))));
     }
 
+
+#[cfg(test)]
+mod mcts_native_integration_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn source_mcts_compiles_runs_and_roundtrips_ardisa_exec_v1() {
+        let source = "module mcts_native\\nfn main() -> Int\\n  let tree = mcts_tree(8, 3)\\n  let root = mcts_root(tree, 10)\\n  let child = mcts_expand(tree, root, 11)\\n  mcts_backpropagate(tree, child, 0.75)\\n  mcts_child(tree, root, 0)\\n";
+        let module = crate::parse(source).unwrap();
+        crate::sema::check(&module).unwrap();
+        let program = compile_program(&crate::ir::lower(&module)).unwrap();
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).unwrap();
+        assert_eq!(encode_program(&decoded), artifact);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(1));
+    }
+
+    #[test]
+    fn mcts_runtime_rejects_invalid_indices_bounds_nonfinite_rewards_and_bad_artifacts() {
+        let source = "module mcts_bad\\nfn main() -> Int\\n  let tree = mcts_tree(2, 1)\\n  let root = mcts_root(tree, 1)\\n  mcts_expand(tree, 99, 2)\\n  mcts_len(tree)\\n";
+        let module = crate::parse(source).unwrap();
+        crate::sema::check(&module).unwrap();
+        let program = compile_program(&crate::ir::lower(&module)).unwrap();
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("parent index")));
+
+        let invalid = NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![NativeInstr::MakeMctsTree, NativeInstr::Return] })]) };
+        let artifact = encode_program(&invalid).replace("MakeMctsTree", "MakeMctsTree:unexpected");
+        assert!(decode_program(&artifact).is_err());
+    }
+
+    #[test]
+    fn mcts_native_mutation_is_atomic_on_reward_rejection() {
+        let source = "module mcts_atomic\\nfn main() -> Int\\n  let tree = mcts_tree(4, 2)\\n  let root = mcts_root(tree, 1)\\n  mcts_update(tree, root, 1000001.0)\\n  mcts_len(tree)\\n";
+        let module = crate::parse(source).unwrap();
+        crate::sema::check(&module).unwrap();
+        let program = compile_program(&crate::ir::lower(&module)).unwrap();
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("reward")));
+    }
+}
