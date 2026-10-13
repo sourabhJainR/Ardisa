@@ -3502,3 +3502,76 @@ mod mcts_native_integration_tests {
     }
 
 }
+
+
+#[cfg(test)]
+mod attention_lora_source_tests {
+    use super::*;
+
+    fn compile_source(source: &str) -> NativeProgram {
+        let module = crate::parse(source).expect("source parses");
+        crate::sema::check(&module).expect("source passes semantic validation");
+        compile_program(&crate::ir::lower(&module)).expect("source lowers to native code")
+    }
+
+    #[test]
+    fn attention_block_is_deterministic_through_ardisa_exec_v1() {
+        let source = r#"module attention_fixture
+fn main() -> Tensor<F32>
+  let q = tensor([1, 2], [1.0, 0.0])
+  let k = tensor([2, 2], [1.0, 0.0, 0.0, 1.0])
+  let v = tensor([2, 1], [2.0, 4.0])
+  attention_block(q, k, v, false)
+"#;
+        let program = compile_source(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("valid deterministic artifact");
+        assert_eq!(encode_program(&decoded), artifact);
+        let NativeValue::Tensor { shape, values } = run_program(&decoded, "main", &[]).unwrap() else { panic!("expected tensor output"); };
+        assert_eq!(shape, vec![1, 1]);
+        let result = f32::from_bits(values[0]);
+        assert!((result - 2.660476f32).abs() < 0.001, "unexpected attention result {result}");
+    }
+
+    #[test]
+    fn lora_apply_computes_low_rank_delta_without_materializing_full_delta() {
+        let source = r#"module lora_fixture
+fn main() -> Tensor<F32>
+  let input = tensor([1, 2], [1.0, 2.0])
+  let a = tensor([1, 2], [1.0, 1.0])
+  let b = tensor([2, 1], [2.0, 3.0])
+  lora_apply(input, a, b, 2.0, 1)
+"#;
+        let program = compile_source(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).unwrap();
+        assert_eq!(encode_program(&decoded), artifact);
+        let NativeValue::Tensor { shape, values } = run_program(&decoded, "main", &[]).unwrap() else { panic!("expected tensor output"); };
+        assert_eq!(shape, vec![1, 2]);
+        assert_eq!(values.iter().map(|bits| f32::from_bits(*bits)).collect::<Vec<_>>(), vec![12.0, 18.0]);
+    }
+
+    #[test]
+    fn attention_and_lora_reject_shape_mismatches_and_nonfinite_results() {
+        let bad_attention = r#"module bad_attention
+fn main() -> Tensor<F32>
+  let q = tensor([1, 2], [1.0, 0.0])
+  let k = tensor([1, 3], [1.0, 0.0, 0.0])
+  let v = tensor([1, 1], [1.0])
+  attention_block(q, k, v, false)
+"#;
+        let program = compile_source(bad_attention);
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("attention_block")));
+        let bad_lora = r#"module bad_lora
+fn main() -> Tensor<F32>
+  let input = tensor([1, 2], [1.0, 2.0])
+  let a = tensor([2, 3], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+  let b = tensor([1, 2], [1.0, 1.0])
+  lora_apply(input, a, b, 1.0, 2)
+"#;
+        let program = compile_source(bad_lora);
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(_))));
+        let malformed = encode_program(&NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![NativeInstr::AttentionBlock, NativeInstr::Return] })]) }).replace("AttentionBlock", "AttentionBlock:unexpected");
+        assert!(decode_program(&malformed).is_err());
+    }
+}
