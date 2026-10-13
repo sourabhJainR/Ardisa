@@ -310,7 +310,7 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                 validate_tensor_parts(shape, values, limits.max_collection_items)?;
             }
             NativeValue::AttentionBlock { hidden, heads, head_dim, .. } => {
-                if *hidden == 0 || *heads == 0 || *head_dim == 0 || *heads > 256 || *hidden != heads.checked_mul(*head_dim).unwrap_or(usize::MAX) {
+                if *hidden == 0 || *heads == 0 || *head_dim == 0 || *heads > 256 || *heads.checked_mul(*head_dim) != Some(*hidden) {
                     return Err(NativeError::Type("invalid AttentionBlock hidden/head configuration".into()));
                 }
             }
@@ -1255,7 +1255,7 @@ fn run_function(
                 let head_dim = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("AttentionBlock head_dim must be positive".into()))?;
                 let heads = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("AttentionBlock heads must be positive".into()))?;
                 let hidden = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("AttentionBlock hidden must be positive".into()))?;
-                if hidden == 0 || heads == 0 || head_dim == 0 || heads > 256 || hidden != heads.checked_mul(head_dim).unwrap_or(usize::MAX) {
+                if hidden == 0 || heads == 0 || head_dim == 0 || heads > 256 || heads.checked_mul(head_dim) != Some(hidden) {
                     return Err(NativeError::Type("AttentionBlock requires hidden == heads * head_dim, positive dimensions, and heads <= 256".into()));
                 }
                 stack.push(NativeValue::AttentionBlock { hidden, heads, head_dim, causal });
@@ -2368,7 +2368,7 @@ fn attention_multihead(
     validate_tensor_parts(q_shape, q, limits.max_collection_items)?;
     validate_tensor_parts(k_shape, k, limits.max_collection_items)?;
     validate_tensor_parts(v_shape, v, limits.max_collection_items)?;
-    if hidden == 0 || heads == 0 || head_dim == 0 || hidden != heads.checked_mul(head_dim).unwrap_or(usize::MAX)
+    if hidden == 0 || heads == 0 || head_dim == 0 || heads.checked_mul(head_dim) != Some(hidden)
         || q_shape.len() != 2 || k_shape.len() != 2 || v_shape.len() != 2
         || q_shape[1] != hidden || k_shape[1] != hidden || v_shape[1] != hidden
         || k_shape[0] != v_shape[0] || q_shape[0] == 0 || k_shape[0] == 0 {
