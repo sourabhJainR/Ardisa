@@ -447,6 +447,13 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
                         .ok_or_else(|| NativeError::ResourceLimit("ContextWindow footprint byte accounting overflow".into()))?;
                 }
             }
+            NativeValue::VectorIndex { domain, dimensions, entries } => {
+                nodes = nodes.checked_add(entries.len().checked_mul(dimensions.checked_add(1).ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?)
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?)
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?;
+                string_bytes = string_bytes.checked_add(domain.len())
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex domain byte accounting overflow".into()))?;
+            }
             NativeValue::List(items) => pending.extend(items.iter()),
             NativeValue::ResultOk(inner) | NativeValue::ResultErr(inner) => pending.push(inner),
             _ => {}
@@ -4094,11 +4101,4 @@ fn main() -> Int
         function.code[index] = NativeInstr::PushFloat(f32::INFINITY.to_bits());
         assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("finite")));
     }
-}            NativeValue::VectorIndex { domain, dimensions, entries } => {
-                nodes = nodes.checked_add(entries.len().checked_mul(dimensions.checked_add(1).ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?)
-                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?)
-                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?;
-                string_bytes = string_bytes.checked_add(domain.len())
-                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex domain byte accounting overflow".into()))?;
-            }
-
+}
