@@ -2428,11 +2428,13 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
 fn gradient_error_to_native(error: crate::ai_autograd::GradientError) -> NativeError {
     use crate::ai_autograd::GradientError::*;
     match error {
-        ResourceLimit => NativeError::ResourceLimit("GradientTape slot or value budget exceeded".into()),
+        InvalidCapacity => NativeError::Type("GradientTape max_slots must be in 1..=4096".into()),
+        SlotLimit => NativeError::ResourceLimit("GradientTape slot budget exceeded".into()),
         InvalidSlot => NativeError::Type("GradientTape slot is invalid or refers forward".into()),
-        NonFinite => NativeError::Type("GradientTape input or intermediate must be finite F32".into()),
+        NonFiniteValue => NativeError::Type("GradientTape input, intermediate, seed, or gradient must be finite F32".into()),
         BackwardNotRun => NativeError::Type("GradientTape backward pass has not run".into()),
-        InvalidTape => NativeError::InvalidProgram("invalid GradientTape state".into()),
+        CorruptTape => NativeError::InvalidProgram("invalid GradientTape state".into()),
+        ResourceLimit => NativeError::ResourceLimit("GradientTape footprint exceeds runtime bounds".into()),
     }
 }
 
