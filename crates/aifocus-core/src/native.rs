@@ -384,6 +384,10 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
                 string_bytes = string_bytes.checked_add(value.len())
                     .ok_or_else(|| NativeError::ResourceLimit("string byte accounting overflow".into()))?;
             }
+            NativeValue::LoRAAdapter { a_values, b_values, .. } => {
+                nodes = nodes.checked_add(a_values.len()).and_then(|n| n.checked_add(b_values.len()))
+                    .ok_or_else(|| NativeError::ResourceLimit("LoRAAdapter footprint accounting overflow".into()))?;
+            }
             NativeValue::KvCache { entries, .. } => {
                 for (key, value) in entries {
                     nodes = nodes.checked_add(2)
@@ -2339,6 +2343,11 @@ fn validate_quantized_tensor_parts(shape: &[usize], scale_bits: u32, values: &[i
 fn validate_lora_parts(a_shape: &[usize], a_values: &[u32], b_shape: &[usize], b_values: &[u32], alpha_bits: u32, rank: usize, limit: usize) -> Result<(), NativeError> {
     validate_tensor_parts(a_shape, a_values, limit)?;
     validate_tensor_parts(b_shape, b_values, limit)?;
+    let adapter_elements = a_values.len().checked_add(b_values.len())
+        .ok_or_else(|| NativeError::ResourceLimit("LoRAAdapter storage accounting overflow".into()))?;
+    if adapter_elements > limit.min(MAX_TENSOR_ELEMENTS) {
+        return Err(NativeError::ResourceLimit("LoRAAdapter aggregate matrix storage exceeds element budget".into()));
+    }
     let alpha = f32::from_bits(alpha_bits);
     if rank == 0 || rank > 256 || !alpha.is_finite() || a_shape.len() != 2 || b_shape.len() != 2
         || a_shape[0] != rank || b_shape[1] != rank || a_shape[1] == 0 || b_shape[0] == 0
