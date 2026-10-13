@@ -4040,6 +4040,10 @@ fn main() -> Int
 
     #[test]
     fn nominal_moe_router_rejects_invalid_literal_bounds_and_nonfinite_logits() {
+        assert!(matches!(
+            validate_value(&NativeValue::MoERouter { expert_count: 2, top_k: 3 }, ExecutionLimits::default()),
+            Err(NativeError::Type(message)) if message.contains("configuration")
+        ), "runtime validation must reject invalid nominal router arguments");
         let invalid = crate::parse(r#"module invalid_moe_router
 fn main() -> MoERouter
   moe_router(2, 3)
