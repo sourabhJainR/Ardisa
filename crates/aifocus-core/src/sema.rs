@@ -920,12 +920,12 @@ impl Checker {
                     let ty=type_node(TypeKind::Int,expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
                 }
                 if name == "tokenizer_state" {
-                    if args.len()!=4 { self.error("AIF540","tokenizer_state expects vocabulary List<String>, max_pending Int, max_tokens Int, and unknown_id Int (-1 rejects unknowns)",expr.span); return None; }
+                    if args.len()!=4 { self.error("AIF540","tokenizer_state expects vocabulary List<String>, max_pending Int, max_tokens Int, and unknown_id Int (0 rejects unknowns; positive values encode id + 1)",expr.span); return None; }
                     let vocab=self.check_expr(&args[0],locals)?; let pending=self.check_expr(&args[1],locals)?; let tokens=self.check_expr(&args[2],locals)?; let unknown=self.check_expr(&args[3],locals)?;
                     if !matches!(&vocab.kind,TypeKind::List(element) if matches!(&element.kind,TypeKind::String)) { self.error("AIF541","TokenizerState vocabulary must be List<String>",args[0].span); }
                     for (ty,arg,label,max) in [(&pending,&args[1],"max_pending",4i64),(&tokens,&args[2],"max_tokens",65536i64)] { if !is_kind(ty,&TypeKind::Int) { self.error("AIF542",format!("TokenizerState {label} must be Int"),arg.span); } if let ExprKind::Int(v)=arg.kind { if v<=0||v>max { self.error("AIF543",format!("TokenizerState {label} must be in 1..={max}"),arg.span); } } }
-                    if !is_kind(&unknown,&TypeKind::Int) { self.error("AIF544","TokenizerState unknown_id must be Int (-1 or non-negative)",args[3].span); }
-                    if let ExprKind::Int(v)=args[3].kind { if v < -1 { self.error("AIF545","TokenizerState unknown_id must be -1 or non-negative",args[3].span); } }
+                    if !is_kind(&unknown,&TypeKind::Int) { self.error("AIF544","TokenizerState unknown_id must be Int (0 to reject, positive id + 1 for fallback)",args[3].span); }
+                    if let ExprKind::Int(v)=args[3].kind { if v < 0 { self.error("AIF545","TokenizerState unknown_id encoding must be zero or positive",args[3].span); } }
                     if let ExprKind::List(items)=&args[0].kind { let mut seen=std::collections::BTreeSet::new(); for item in items { if let ExprKind::String(piece)=&item.kind { if piece.chars().count()!=1 || !seen.insert(piece.clone()) { self.error("AIF546","TokenizerState vocabulary entries must be unique single Unicode scalars",item.span); } } } }
                     let ty=type_node(TypeKind::Named("TokenizerState".into()),expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
                 }
