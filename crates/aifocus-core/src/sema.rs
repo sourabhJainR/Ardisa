@@ -890,6 +890,35 @@ impl Checker {
                     if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF379", "context_append requires a named mutable ContextWindow binding", args[0].span); }
                     return Some(type_node(TypeKind::Unit, expr.span));
                 }
+                if name == "activation_cache" {
+                    if args.len()!=3 { self.error("AIF510","activation_cache expects capacity, checkpoint_stride, and max_bytes Int",expr.span); return None; }
+                    let capacity=self.check_expr(&args[0],locals)?; let stride=self.check_expr(&args[1],locals)?; let bytes=self.check_expr(&args[2],locals)?;
+                    for (ty,arg) in [(&capacity,&args[0]),(&stride,&args[1]),(&bytes,&args[2])] { if !is_kind(ty,&TypeKind::Int) { self.error("AIF511","ActivationCache limits must be Int",arg.span); } }
+                    for (arg,label,max) in [(&args[0],"capacity",4096i64),(&args[1],"checkpoint_stride",4096i64),(&args[2],"max_bytes",16777216i64)] { if let ExprKind::Int(v)=arg.kind { if v<=0||v>max { self.error("AIF512",format!("ActivationCache {label} must be in 1..={max}"),arg.span); } } }
+                    let ty=type_node(TypeKind::Named("ActivationCache".into()),expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "activation_store" {
+                    if args.len()!=3 { self.error("AIF513","activation_store expects named cache, checkpoint ID, and Tensor<F32>",expr.span); return None; }
+                    let cache=self.check_expr(&args[0],locals)?; let step=self.check_expr(&args[1],locals)?; let tensor=self.check_expr(&args[2],locals)?;
+                    if !matches!(&cache.kind,TypeKind::Named(n) if n=="ActivationCache") { self.error("AIF514","activation_store requires ActivationCache",args[0].span); }
+                    if !is_kind(&step,&TypeKind::Int) { self.error("AIF515","ActivationCache checkpoint ID must be Int",args[1].span); }
+                    if !matches!(&tensor.kind,TypeKind::Generic(n,a) if n=="Tensor"&&a.len()==1&&matches!(&a[0].kind,TypeKind::Named(e) if e=="F32")) { self.error("AIF516","ActivationCache values must be Tensor<F32>",args[2].span); }
+                    if !matches!(&args[0].kind,ExprKind::Name(_)) { self.error("AIF517","ActivationCache mutation requires a named binding",args[0].span); }
+                    let ty=type_node(TypeKind::Unit,expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "activation_restore" {
+                    if args.len()!=2 { self.error("AIF518","activation_restore expects ActivationCache and checkpoint ID",expr.span); return None; }
+                    let cache=self.check_expr(&args[0],locals)?; let step=self.check_expr(&args[1],locals)?;
+                    if !matches!(&cache.kind,TypeKind::Named(n) if n=="ActivationCache") { self.error("AIF519","activation_restore requires ActivationCache",args[0].span); }
+                    if !is_kind(&step,&TypeKind::Int) { self.error("AIF520","ActivationCache checkpoint ID must be Int",args[1].span); }
+                    let ty=type_node(TypeKind::Generic("Tensor".into(),vec![type_node(TypeKind::Named("F32".into()),expr.span)]),expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "activation_cache_len" {
+                    if args.len()!=1 { self.error("AIF521","activation_cache_len expects ActivationCache",expr.span); return None; }
+                    let cache=self.check_expr(&args[0],locals)?;
+                    if !matches!(&cache.kind,TypeKind::Named(n) if n=="ActivationCache") { self.error("AIF522","activation_cache_len requires ActivationCache",args[0].span); }
+                    let ty=type_node(TypeKind::Int,expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
                 if name == "gradient_tape" {
                     if args.len()!=1 { self.error("AIF490","gradient_tape expects capacity Int",expr.span); return None; }
                     let capacity=self.check_expr(&args[0],locals)?;

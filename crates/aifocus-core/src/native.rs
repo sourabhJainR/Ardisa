@@ -27,6 +27,7 @@ pub enum NativeInstr {
     PushTensor { shape: Vec<usize>, values: Vec<u32> },
     TensorAdd,
     TensorMatMul,
+    MakeActivationCache, ActivationStore { name: String }, ActivationRestore, ActivationCacheLen,
     MakeGradientTape,
     GradientInput { name: String }, GradientAdd { name: String }, GradientMul { name: String }, GradientBackward { name: String }, GradientValue, GradientGet,
     /// Construct a validated nominal multi-head attention configuration.
@@ -201,6 +202,7 @@ pub enum NativeValue {
     Probability(u32),
     /// Tensor dimensions and IEEE-754 f32 values encoded as bits.
     Tensor { shape: Vec<usize>, values: Vec<u32> },
+    ActivationCache { capacity: usize, checkpoint_stride: usize, max_bytes: usize, retained_bytes: usize, entries: Vec<(i64, Vec<usize>, Vec<u32>)> },
     GradientTape { capacity: usize, slots: Vec<GradientSlot>, gradients: Vec<u32>, backward_ready: bool },
     /// Signed-int8 tensor payload and quantization metadata; scale is f32 bits.
     QuantizedTensor { shape: Vec<usize>, scale_bits: u32, zero_point: i8, values: Vec<i8> },
@@ -369,6 +371,12 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
             NativeValue::LoRAAdapter { a_shape, a_values, b_shape, b_values, alpha_bits, rank } => {
                 validate_lora_parts(a_shape, a_values, b_shape, b_values, *alpha_bits, *rank, limits.max_collection_items)?;
             }
+            NativeValue::ActivationCache { capacity, checkpoint_stride, max_bytes, retained_bytes, entries } => {
+                if *capacity==0 || *capacity>4096 || *checkpoint_stride==0 || *checkpoint_stride>4096 || *max_bytes==0 || *max_bytes>16_777_216 || entries.len()>*capacity { return Err(NativeError::InvalidProgram("invalid ActivationCache limits".into())); }
+                let mut ids=std::collections::BTreeSet::new(); let mut bytes=0usize;
+                for (step,shape,values) in entries { if *step<0 || (*step as usize)%*checkpoint_stride!=0 || !ids.insert(*step) { return Err(NativeError::InvalidProgram("invalid or duplicate ActivationCache checkpoint id".into())); } validate_tensor_parts(shape,values,MAX_TENSOR_ELEMENTS)?; if values.iter().any(|bits|!f32::from_bits(*bits).is_finite()) { return Err(NativeError::Type("ActivationCache values must be finite".into())); } bytes=bytes.checked_add(values.len().checked_mul(4).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?).and_then(|n|n.checked_add(shape.len().checked_mul(std::mem::size_of::<usize>())?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?; }
+                if bytes!=*retained_bytes || bytes>*max_bytes { return Err(NativeError::InvalidProgram("ActivationCache retained-byte accounting mismatch".into())); }
+            }
             NativeValue::GradientTape { capacity, slots, gradients, backward_ready } => {
                 if *capacity == 0 || *capacity > 4096 || slots.len() > *capacity || (*backward_ready && gradients.len() != slots.len()) || (!*backward_ready && !gradients.is_empty()) { return Err(NativeError::InvalidProgram("invalid GradientTape capacity or gradient state".into())); }
                 for (index, slot) in slots.iter().enumerate() { if !f32::from_bits(slot.value_bits).is_finite() { return Err(NativeError::Type("GradientTape values must be finite".into())); } let valid=match slot.op { GradientOp::Input=>true,GradientOp::Add{left,right}|GradientOp::Mul{left,right}=>left<index&&right<index }; if !valid{return Err(NativeError::InvalidProgram("GradientTape slot references must point to prior slots".into()));} }
@@ -441,6 +449,7 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
                 string_bytes = string_bytes.checked_add(value.len())
                     .ok_or_else(|| NativeError::ResourceLimit("string byte accounting overflow".into()))?;
             }
+            NativeValue::ActivationCache { entries, .. } => { for (_,shape,values) in entries { nodes=nodes.checked_add(shape.len()).and_then(|n|n.checked_add(values.len())).ok_or_else(||NativeError::ResourceLimit("ActivationCache footprint accounting overflow".into()))?; } }
             NativeValue::GradientTape { slots, gradients, .. } => { nodes=nodes.checked_add(slots.len()).and_then(|n|n.checked_add(gradients.len())).ok_or_else(||NativeError::ResourceLimit("GradientTape footprint accounting overflow".into()))?; }
             NativeValue::LoRAAdapter { a_values, b_values, .. } => {
                 nodes = nodes.checked_add(a_values.len()).and_then(|n| n.checked_add(b_values.len()))
@@ -571,7 +580,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape" | "ActivationCache"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -741,7 +750,7 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
             code[jump_end] = NativeInstr::Jump(end);
         }
         IrValue::Call { callee, args } => {
-            if callee != "kv_append" && callee != "context_append" && callee != "vector_index_insert" && !matches!(callee.as_str(), "mcts_root" | "mcts_expand" | "mcts_update" | "mcts_backpropagate" | "gradient_input" | "gradient_add" | "gradient_mul" | "gradient_backward") {
+            if callee != "kv_append" && callee != "context_append" && callee != "vector_index_insert" && !matches!(callee.as_str(), "mcts_root" | "mcts_expand" | "mcts_update" | "mcts_backpropagate" | "activation_store" | "gradient_input" | "gradient_add" | "gradient_mul" | "gradient_backward") {
                 for arg in args { emit_value(arg, code)?; }
             }
             if callee == "chr" && args.len() == 1 {
@@ -758,7 +767,11 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::TensorAdd);
             } else if callee == "tensor_matmul" && args.len() == 2 {
                 code.push(NativeInstr::TensorMatMul);
-            } else if callee == "gradient_tape" && args.len() == 1 { code.push(NativeInstr::MakeGradientTape); }
+            } else if callee == "activation_cache" && args.len() == 3 { code.push(NativeInstr::MakeActivationCache); }
+            else if callee == "activation_store" && args.len() == 3 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("activation_store requires named ActivationCache".into()));};emit_value(&args[1],code)?;emit_value(&args[2],code)?;code.push(NativeInstr::ActivationStore{name:name.clone()}); }
+            else if callee == "activation_restore" && args.len() == 2 { code.push(NativeInstr::ActivationRestore); }
+            else if callee == "activation_cache_len" && args.len() == 1 { code.push(NativeInstr::ActivationCacheLen); }
+            else if callee == "gradient_tape" && args.len() == 1 { code.push(NativeInstr::MakeGradientTape); }
             else if callee == "gradient_input" && args.len() == 2 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_input requires named GradientTape".into()));}; emit_value(&args[1],code)?; code.push(NativeInstr::GradientInput{name:name.clone()}); }
             else if callee == "gradient_add" && args.len() == 3 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_add requires named GradientTape".into()));}; emit_value(&args[1],code)?;emit_value(&args[2],code)?;code.push(NativeInstr::GradientAdd{name:name.clone()}); }
             else if callee == "gradient_mul" && args.len() == 3 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_mul requires named GradientTape".into()));}; emit_value(&args[1],code)?;emit_value(&args[2],code)?;code.push(NativeInstr::GradientMul{name:name.clone()}); }
@@ -1032,6 +1045,7 @@ fn run_function(
                 | NativeInstr::PushTensor { .. }
                 | NativeInstr::TensorAdd
                 | NativeInstr::TensorMatMul
+                | NativeInstr::MakeActivationCache | NativeInstr::ActivationStore { .. } | NativeInstr::ActivationRestore | NativeInstr::ActivationCacheLen
                 | NativeInstr::MakeGradientTape | NativeInstr::GradientInput { .. } | NativeInstr::GradientAdd { .. } | NativeInstr::GradientMul { .. } | NativeInstr::GradientBackward { .. } | NativeInstr::GradientValue | NativeInstr::GradientGet
                 | NativeInstr::MakeAttentionBlock
                 | NativeInstr::AttentionBlockApply
@@ -1543,6 +1557,10 @@ fn run_function(
                 if output.iter().any(|v|!v.is_finite()){return Err(NativeError::Type("LoRA output is non-finite".into()));}
                 stack.push(NativeValue::Tensor{shape:vec![batch,output_dim],values:output.into_iter().map(f32::to_bits).collect()});
             }
+            NativeInstr::MakeActivationCache => { let max_bytes=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("ActivationCache byte budget must be positive".into()))?;let stride=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("ActivationCache stride must be positive".into()))?;let capacity=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("ActivationCache capacity must be positive".into()))?;if capacity==0||capacity>4096||stride==0||stride>4096||max_bytes==0||max_bytes>16_777_216{return Err(NativeError::ResourceLimit("ActivationCache limits exceed supported bounds".into()));}stack.push(NativeValue::ActivationCache{capacity,checkpoint_stride:stride,max_bytes,retained_bytes:0,entries:Vec::new()}); }
+            NativeInstr::ActivationStore{name} => { let (shape,values)=pop_tensor(&mut stack,state.limits.max_collection_items)?;let step=pop_int(&mut stack)?;let step_usize=usize::try_from(step).map_err(|_|NativeError::Type("ActivationCache checkpoint id must be non-negative".into()))?;let cache=locals.get_mut(name).ok_or_else(||NativeError::Type("ActivationCache binding not found".into()))?;let NativeValue::ActivationCache{capacity,checkpoint_stride,max_bytes,retained_bytes,entries}=cache else{return Err(NativeError::Type("activation_store requires ActivationCache".into()));};if step_usize%*checkpoint_stride!=0{return Err(NativeError::Type("ActivationCache checkpoint id must align to checkpoint_stride".into()));}if entries.iter().any(|(id,_,_)|*id==step){return Err(NativeError::Type("duplicate ActivationCache checkpoint id".into()));}if entries.len()>=*capacity{return Err(NativeError::ResourceLimit("ActivationCache checkpoint capacity exhausted".into()));}let bytes=values.len().checked_mul(4).and_then(|n|n.checked_add(shape.len().checked_mul(std::mem::size_of::<usize>())?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte accounting overflow".into()))?;let new_bytes=retained_bytes.checked_add(bytes).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte accounting overflow".into()))?;if new_bytes>*max_bytes{return Err(NativeError::ResourceLimit("ActivationCache retained-byte budget exceeded".into()));}entries.push((step,shape,values));entries.sort_by_key(|(id,_,_)|*id);*retained_bytes=new_bytes;stack.push(NativeValue::Unit); }
+            NativeInstr::ActivationRestore => {let step=pop_int(&mut stack)?;let cache=stack.pop().ok_or_else(||NativeError::InvalidProgram("ActivationCache operand missing".into()))?;let NativeValue::ActivationCache{entries,..}=cache else{return Err(NativeError::Type("activation_restore requires ActivationCache".into()));};let (_,shape,values)=entries.iter().find(|(id,_,_)|*id==step).ok_or_else(||NativeError::Type("ActivationCache checkpoint id not found".into()))?;stack.push(NativeValue::Tensor{shape:shape.clone(),values:values.clone()});}
+            NativeInstr::ActivationCacheLen => {let cache=stack.pop().ok_or_else(||NativeError::InvalidProgram("ActivationCache operand missing".into()))?;let NativeValue::ActivationCache{entries,..}=cache else{return Err(NativeError::Type("activation_cache_len requires ActivationCache".into()));};stack.push(NativeValue::Int(entries.len() as i64));}
             NativeInstr::MakeGradientTape => { let capacity=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape capacity must be positive".into()))?; if capacity==0||capacity>4096{return Err(NativeError::ResourceLimit("GradientTape capacity must be in 1..=4096".into()));} stack.push(NativeValue::GradientTape{capacity,slots:Vec::new(),gradients:Vec::new(),backward_ready:false}); }
             NativeInstr::GradientInput{name} => { let value=pop_float(&mut stack)?; let tape=locals.get_mut(name).ok_or_else(||NativeError::Type("GradientTape binding not found".into()))?; let NativeValue::GradientTape{capacity,slots,gradients,backward_ready}=tape else{return Err(NativeError::Type("gradient_input requires GradientTape".into()));}; if slots.len()>=*capacity{return Err(NativeError::ResourceLimit("GradientTape slot capacity exhausted".into()));} slots.push(GradientSlot{value_bits:value.to_bits(),op:GradientOp::Input});gradients.clear();*backward_ready=false;stack.push(NativeValue::Int((slots.len()-1) as i64)); }
             NativeInstr::GradientAdd{name} | NativeInstr::GradientMul{name} => { let right=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape slot id must be non-negative".into()))?; let left=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape slot id must be non-negative".into()))?; let is_mul=matches!(instr,NativeInstr::GradientMul{..}); let tape=locals.get_mut(name).ok_or_else(||NativeError::Type("GradientTape binding not found".into()))?; let NativeValue::GradientTape{capacity,slots,gradients,backward_ready}=tape else{return Err(NativeError::Type("gradient operation requires GradientTape".into()));}; if left>=slots.len()||right>=slots.len(){return Err(NativeError::Type("GradientTape slot reference must exist before use".into()));} if slots.len()>=*capacity{return Err(NativeError::ResourceLimit("GradientTape slot capacity exhausted".into()));} let a=f32::from_bits(slots[left].value_bits);let b=f32::from_bits(slots[right].value_bits);let value=if is_mul{a*b}else{a+b};if !value.is_finite(){return Err(NativeError::Type("GradientTape intermediate must be finite".into()));} let op=if is_mul{GradientOp::Mul{left,right}}else{GradientOp::Add{left,right}};slots.push(GradientSlot{value_bits:value.to_bits(),op});gradients.clear();*backward_ready=false;stack.push(NativeValue::Int((slots.len()-1) as i64)); }
@@ -2091,6 +2109,7 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                     add_bytes(domain)?;
                 }
                 NativeInstr::MctsRoot { name } | NativeInstr::MctsExpand { name } | NativeInstr::MctsUpdate { name } | NativeInstr::MctsBackpropagate { name } => { if name.trim().is_empty() { return Err(NativeError::InvalidProgram("MCTS binding name must not be empty".into())); } add_bytes(name)?; },
+                NativeInstr::ActivationStore { name } => { if name.trim().is_empty(){return Err(NativeError::InvalidProgram("ActivationCache binding name must not be empty".into()));} add_bytes(name)?; },
                 NativeInstr::GradientInput { name } | NativeInstr::GradientAdd { name } | NativeInstr::GradientMul { name } | NativeInstr::GradientBackward { name } => { if name.trim().is_empty() { return Err(NativeError::InvalidProgram("GradientTape binding name must not be empty".into())); } add_bytes(name)?; },
                 NativeInstr::VectorIndexInsert { name } => {
                     if name.trim().is_empty() {
@@ -2220,6 +2239,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::PushTensor { shape, values } => format!("PushTensor:{}/{}", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(","), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
         NativeInstr::TensorAdd => "TensorAdd".into(),
         NativeInstr::TensorMatMul => "TensorMatMul".into(),
+        NativeInstr::MakeActivationCache=>"MakeActivationCache".into(), NativeInstr::ActivationStore{name}=>format!("ActivationStore:{}",escape_artifact(name)), NativeInstr::ActivationRestore=>"ActivationRestore".into(), NativeInstr::ActivationCacheLen=>"ActivationCacheLen".into(),
         NativeInstr::MakeGradientTape => "MakeGradientTape".into(), NativeInstr::GradientInput{name}=>format!("GradientInput:{}",escape_artifact(name)), NativeInstr::GradientAdd{name}=>format!("GradientAdd:{}",escape_artifact(name)), NativeInstr::GradientMul{name}=>format!("GradientMul:{}",escape_artifact(name)), NativeInstr::GradientBackward{name}=>format!("GradientBackward:{}",escape_artifact(name)), NativeInstr::GradientValue=>"GradientValue".into(), NativeInstr::GradientGet=>"GradientGet".into(),
         NativeInstr::MakeAttentionBlock => "MakeAttentionBlock".into(),
         NativeInstr::AttentionBlockApply => "AttentionBlockApply".into(),
@@ -2297,6 +2317,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "PushTensor"=>{let (shape, values)=arg.split_once('/').ok_or_else(bad)?; let shape=shape.split(',').map(|v|v.parse::<usize>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushTensor{shape,values}},
         "TensorAdd"=>NativeInstr::TensorAdd,
         "TensorMatMul"=>NativeInstr::TensorMatMul,
+        "MakeActivationCache"=>NativeInstr::MakeActivationCache, "ActivationStore"=>NativeInstr::ActivationStore{name:unescape_artifact(arg)?}, "ActivationRestore"=>NativeInstr::ActivationRestore, "ActivationCacheLen"=>NativeInstr::ActivationCacheLen,
         "MakeGradientTape"=>NativeInstr::MakeGradientTape, "GradientInput"=>NativeInstr::GradientInput{name:unescape_artifact(arg)?}, "GradientAdd"=>NativeInstr::GradientAdd{name:unescape_artifact(arg)?}, "GradientMul"=>NativeInstr::GradientMul{name:unescape_artifact(arg)?}, "GradientBackward"=>NativeInstr::GradientBackward{name:unescape_artifact(arg)?}, "GradientValue"=>NativeInstr::GradientValue, "GradientGet"=>NativeInstr::GradientGet,
         "MakeAttentionBlock"=>NativeInstr::MakeAttentionBlock,
         "AttentionBlockApply"=>NativeInstr::AttentionBlockApply,
@@ -4398,5 +4419,74 @@ fn main() -> F32
         let index=code.iter().position(|op|matches!(op,NativeInstr::PushFloat(_))).unwrap();
         code[index]=NativeInstr::PushFloat(f32::INFINITY.to_bits());
         assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::Type(message)) if message.contains("finite")));
+    }
+}
+
+#[cfg(test)]
+mod activation_cache_source_tests {
+    use super::*;
+    fn compile_source(source:&str)->NativeProgram {
+        let module=crate::parse(source).expect("source parses");
+        crate::sema::check(&module).expect("ActivationCache source passes semantic checks");
+        compile_program(&crate::ir::lower(&module)).expect("source lowers to native code")
+    }
+    #[test]
+    fn activation_cache_roundtrips_and_restores_exact_checkpoint_shape_and_values() {
+        let source=r#"module activation_cache_roundtrip
+fn main() -> Tensor<F32>
+  let cache = activation_cache(3, 2, 1024)
+  activation_store(cache, 0, tensor([1, 2], [1.0, 2.0]))
+  activation_store(cache, 2, tensor([2, 1], [3.0, 4.0]))
+  activation_restore(cache, 2)
+"#;
+        let program=compile_source(source);let artifact=encode_program(&program);let decoded=decode_program(&artifact).expect("artifact decodes");
+        assert_eq!(encode_program(&decoded),artifact);
+        assert_eq!(run_program(&decoded,"main",&[]).unwrap(),NativeValue::Tensor{shape:vec![2,1],values:vec![3.0f32.to_bits(),4.0f32.to_bits()]});
+    }
+    #[test]
+    fn activation_cache_rejects_duplicate_missing_non_stride_and_capacity_overflow() {
+        let duplicate=r#"module activation_duplicate
+fn main() -> Int
+  let cache = activation_cache(3, 2, 1024)
+  activation_store(cache, 0, tensor([1], [1.0]))
+  activation_store(cache, 0, tensor([1], [2.0]))
+  activation_cache_len(cache)
+"#;
+        assert!(matches!(run_program(&compile_source(duplicate),"main",&[]),Err(NativeError::Type(message)) if message.contains("duplicate")));
+        let missing=r#"module activation_missing
+fn main() -> Tensor<F32>
+  let cache = activation_cache(2, 1, 1024)
+  activation_restore(cache, 7)
+"#;
+        assert!(matches!(run_program(&compile_source(missing),"main",&[]),Err(NativeError::Type(message)) if message.contains("not found")));
+        let stride=r#"module activation_stride
+fn main() -> Int
+  let cache = activation_cache(2, 2, 1024)
+  activation_store(cache, 1, tensor([1], [1.0]))
+  0
+"#;
+        assert!(matches!(run_program(&compile_source(stride),"main",&[]),Err(NativeError::Type(message)) if message.contains("checkpoint_stride")));
+        let full=r#"module activation_full
+fn main() -> Int
+  let cache = activation_cache(1, 2, 1024)
+  activation_store(cache, 0, tensor([1], [1.0]))
+  activation_store(cache, 2, tensor([1], [2.0]))
+  0
+"#;
+        assert!(matches!(run_program(&compile_source(full),"main",&[]),Err(NativeError::ResourceLimit(message)) if message.contains("capacity")));
+    }
+    #[test]
+    fn activation_cache_enforces_retained_byte_budget_and_static_limits() {
+        let budget=r#"module activation_budget
+fn main() -> Int
+  let cache = activation_cache(2, 1, 8)
+  activation_store(cache, 0, tensor([1, 2], [1.0, 2.0]))
+  0
+"#;
+        assert!(matches!(run_program(&compile_source(budget),"main",&[]),Err(NativeError::ResourceLimit(message)) if message.contains("byte budget")));
+        let invalid=crate::parse("module invalid_activation_cache\nfn main() -> ActivationCache\n  activation_cache(0, 1, 100)\n").unwrap();
+        assert!(crate::sema::check(&invalid).is_err());
+        let malformed=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:1024,retained_bytes:0,entries:vec![(0,vec![1],vec![1.0f32.to_bits()])]};
+        assert!(matches!(validate_value(&malformed,ExecutionLimits::default()),Err(NativeError::InvalidProgram(message)) if message.contains("accounting")));
     }
 }
