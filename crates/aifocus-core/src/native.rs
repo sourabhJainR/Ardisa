@@ -185,7 +185,6 @@ pub struct NativeFunction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GradientOp { Input, Add { left: usize, right: usize }, Mul { left: usize, right: usize } }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
