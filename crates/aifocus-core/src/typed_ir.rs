@@ -757,4 +757,33 @@ fn route() -> Int
         assert!(matches!(&route.kind, TypedValueKind::Call { callee, args }
             if callee == "moe_route" && args.len() == 3 && args[0].ty == TypeKind::Named("MoERouter".into())));
     }
+
+    #[test]
+    fn nominal_vector_index_identity_and_search_metadata_survive_typed_ir() {
+        let module = crate::parse(r#"module nominal_vector_typed_ir
+fn make_index() -> VectorIndex
+  vector_index("semantic", 2)
+fn search() -> Int
+  let index = vector_index("semantic", 2)
+  vector_index_insert(index, 3, "semantic", [1.0, 0.0])
+  let hits = vector_index_search(index, "semantic", [1.0, 0.0], 1)
+  hits[0][0]
+"#).unwrap();
+        crate::sema::check(&module).expect("nominal VectorIndex source type-checks");
+        let typed = lower(&module).expect("VectorIndex lowers to typed IR");
+        assert_eq!(typed.functions[0].return_type, TypeKind::Named("VectorIndex".into()));
+        let constructor = match &typed.functions[0].blocks[0].ops[0] {
+            TypedIrOp::Expr(value) => value,
+            other => panic!("expected VectorIndex constructor expression, got {other:?}"),
+        };
+        assert_eq!(constructor.ty, TypeKind::Named("VectorIndex".into()));
+        assert!(matches!(&constructor.kind, TypedValueKind::Call { callee, args }
+            if callee == "vector_index" && args.len() == 2));
+        let search = typed.functions[1].blocks[0].ops.iter().find_map(|op| match op {
+            TypedIrOp::Bind { value, .. } if matches!(&value.kind, TypedValueKind::Call { callee, .. } if callee == "vector_index_search") => Some(value),
+            _ => None,
+        }).expect("typed IR retains VectorIndex search");
+        assert!(matches!(&search.kind, TypedValueKind::Call { callee, args }
+            if callee == "vector_index_search" && args.len() == 4 && args[0].ty == TypeKind::Named("VectorIndex".into())));
+    }
 }

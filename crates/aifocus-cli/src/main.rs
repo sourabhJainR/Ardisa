@@ -331,6 +331,7 @@ fn display_value(value: &ardisa_core::NativeValue) -> String {
         ardisa_core::NativeValue::AttentionBlock { hidden, heads, head_dim, causal } => format!("AttentionBlock(hidden={}, heads={}, head_dim={}, causal={})", hidden, heads, head_dim, causal),
         ardisa_core::NativeValue::LoRAAdapter { a_shape, b_shape, rank, .. } => format!("LoRAAdapter(rank={}, A={:?}, B={:?}, ownership=owned-immutable)", rank, a_shape, b_shape),
         ardisa_core::NativeValue::MoERouter { expert_count, top_k } => format!("MoERouter(experts={}, top_k={})", expert_count, top_k),
+        ardisa_core::NativeValue::VectorIndex { domain, dimensions, entries } => format!("VectorIndex(domain={}, dimensions={}, entries={})", domain, dimensions, entries.len()),
         ardisa_core::NativeValue::ContextWindow { max_segments, max_bytes, max_tokens, segments, bytes, tokens } => format!("ContextWindow(segments={}, bytes={}/{}, tokens={}/{}, segment_limit={})", segments.len(), bytes, max_bytes, tokens, max_tokens, max_segments),
         ardisa_core::NativeValue::String(value) => value.clone(),
         ardisa_core::NativeValue::List(values) => {

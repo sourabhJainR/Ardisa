@@ -203,6 +203,8 @@ pub enum NativeValue {
     LoRAAdapter { a_shape: Vec<usize>, a_values: Vec<u32>, b_shape: Vec<usize>, b_values: Vec<u32>, alpha_bits: u32, rank: usize },
     /// Nominal bounded expert-routing configuration, independent of model weight ownership.
     MoERouter { expert_count: usize, top_k: usize },
+    /// Nominal domain-isolated vector index with finite f32 coordinate bits.
+    VectorIndex { domain: String, dimensions: usize, entries: Vec<(u64, Vec<u32>)> },
     /// Bounded attention cache; float payloads are bit-encoded for deterministic equality.
     KvCache { capacity: usize, key_dim: Option<usize>, value_dim: Option<usize>, entries: Vec<(Vec<u32>, Vec<u32>)> },
     /// Bounded multimodal context with opaque byte payloads and explicit upstream token counts.
@@ -326,6 +328,35 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                     return Err(NativeError::Type("invalid MoERouter expert_count/top_k configuration".into()));
                 }
             }
+            NativeValue::VectorIndex { domain, dimensions, entries } => {
+                if domain.trim().is_empty() || domain.len() > 1024 {
+                    return Err(NativeError::Type("VectorIndex domain must contain 1..=1024 UTF-8 bytes".into()));
+                }
+                if *dimensions == 0 || *dimensions > crate::ai_routing::MAX_VECTOR_DIMENSIONS
+                    || *dimensions > limits.max_collection_items {
+                    return Err(NativeError::Type("invalid VectorIndex dimensions".into()));
+                }
+                if entries.len() > crate::ai_routing::MAX_INDEX_ENTRIES.min(limits.max_collection_items) {
+                    return Err(NativeError::ResourceLimit("VectorIndex entry limit exceeded".into()));
+                }
+                let mut ids = std::collections::BTreeSet::new();
+                for (id, coordinates) in entries {
+                    if !ids.insert(*id) { return Err(NativeError::InvalidProgram("duplicate VectorIndex id".into())); }
+                    if *id > i64::MAX as u64 { return Err(NativeError::InvalidProgram("VectorIndex id exceeds signed Int range".into())); }
+                    if coordinates.len() != *dimensions {
+                        return Err(NativeError::InvalidProgram("VectorIndex coordinate dimension mismatch".into()));
+                    }
+                    if coordinates.iter().any(|bits| !f32::from_bits(*bits).is_finite()) {
+                        return Err(NativeError::InvalidProgram("VectorIndex contains non-finite coordinates".into()));
+                    }
+                }
+                let nodes = entries.len().checked_mul(dimensions.checked_add(1).ok_or_else(|| NativeError::ResourceLimit("VectorIndex dimension accounting overflow".into()))?)
+                    .and_then(|n| n.checked_add(1))
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?;
+                if nodes > limits.max_value_nodes {
+                    return Err(NativeError::ResourceLimit("VectorIndex retained storage exceeds value-node budget".into()));
+                }
+            }
             NativeValue::LoRAAdapter { a_shape, a_values, b_shape, b_values, alpha_bits, rank } => {
                 validate_lora_parts(a_shape, a_values, b_shape, b_values, *alpha_bits, *rank, limits.max_collection_items)?;
             }
@@ -416,6 +447,13 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
                         .and_then(|n| n.checked_add(payload.len()))
                         .ok_or_else(|| NativeError::ResourceLimit("ContextWindow footprint byte accounting overflow".into()))?;
                 }
+            }
+            NativeValue::VectorIndex { domain, dimensions, entries } => {
+                nodes = nodes.checked_add(entries.len().checked_mul(dimensions.checked_add(1).ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?)
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?)
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?;
+                string_bytes = string_bytes.checked_add(domain.len())
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex domain byte accounting overflow".into()))?;
             }
             NativeValue::List(items) => pending.extend(items.iter()),
             NativeValue::ResultOk(inner) | NativeValue::ResultErr(inner) => pending.push(inner),
@@ -518,7 +556,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -1191,63 +1229,77 @@ fn run_function(
                 let value = NativeValue::List(rows); validate_value(&value, state.limits)?; stack.push(value);
             }
             NativeInstr::MakeVectorIndex => {
-                let dimensions = pop_int(&mut stack)?;
-                let dimensions = usize::try_from(dimensions).map_err(|_| NativeError::Type("vector_index dimensions must be positive".into()))?;
+                let dimensions = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("vector_index dimensions must be positive".into()))?;
                 let domain = match stack.pop() { Some(NativeValue::String(value)) => value, _ => return Err(NativeError::Type("vector_index domain must be String".into())) };
                 if domain.trim().is_empty() || domain.len() > 1024 { return Err(NativeError::Type("vector_index domain must contain 1..=1024 bytes".into())); }
-                if dimensions == 0 || dimensions > crate::ai_routing::MAX_VECTOR_DIMENSIONS { return Err(NativeError::ResourceLimit("vector_index dimensions exceed supported bounds".into())); }
-                stack.push(NativeValue::List(vec![NativeValue::String(domain), NativeValue::Int(dimensions as i64), NativeValue::List(Vec::new())]));
+                if dimensions == 0 || dimensions > crate::ai_routing::MAX_VECTOR_DIMENSIONS || dimensions > state.limits.max_collection_items {
+                    return Err(NativeError::ResourceLimit("vector_index dimensions exceed supported bounds".into()));
+                }
+                let index = NativeValue::VectorIndex { domain, dimensions, entries: Vec::new() };
+                validate_value(&index, state.limits)?;
+                stack.push(index);
             }
             NativeInstr::VectorIndexInsert { name } => {
-                let coordinates = match stack.pop() { Some(NativeValue::List(values)) => values, _ => return Err(NativeError::Type("vector coordinates must be List<F32>".into())) };
+                let coordinates = match stack.pop() { Some(NativeValue::List(values)) => values.into_iter().map(|v| match v {
+                    NativeValue::Float(bits) if f32::from_bits(bits).is_finite() => Ok(bits),
+                    _ => Err(NativeError::Type("vector coordinates must be finite F32 values".into())),
+                }).collect::<Result<Vec<_>,_>>()?, _ => return Err(NativeError::Type("vector coordinates must be List<F32>".into())) };
                 let supplied_domain = match stack.pop() { Some(NativeValue::String(value)) => value, _ => return Err(NativeError::Type("vector insert domain must be String".into())) };
-                let id = pop_int(&mut stack)?;
-                let id = u64::try_from(id).map_err(|_| NativeError::Type("vector id must be non-negative".into()))?;
-                let coordinates = coordinates.into_iter().map(|v| match v { NativeValue::Float(bits) if f32::from_bits(bits).is_finite() => Ok(f32::from_bits(bits)), _ => Err(NativeError::Type("vector coordinates must be finite F32 values".into())) }).collect::<Result<Vec<_>,_>>()?;
-                let Some(NativeValue::List(index)) = locals.get_mut(name) else { return Err(NativeError::Type("vector_index_insert requires a VectorIndex binding".into())); };
-                if index.len() != 3 { return Err(NativeError::InvalidProgram("malformed VectorIndex value".into())); }
-                let domain = match &index[0] { NativeValue::String(value) => value.clone(), _ => return Err(NativeError::InvalidProgram("malformed VectorIndex domain".into())) };
-                let dimensions = match index[1] { NativeValue::Int(value) if value > 0 => value as usize, _ => return Err(NativeError::InvalidProgram("malformed VectorIndex dimensions".into())) };
-                if supplied_domain != domain { return Err(NativeError::Type("vector index domain mismatch".into())); }
-                let Some(NativeValue::List(entries)) = index.get_mut(2) else { return Err(NativeError::InvalidProgram("malformed VectorIndex entries".into())); };
-                if coordinates.len() != dimensions { return Err(NativeError::Type("vector dimension mismatch".into())); }
-                if entries.len() >= crate::ai_routing::MAX_INDEX_ENTRIES.min(state.limits.max_collection_items) { return Err(NativeError::ResourceLimit("VectorIndex entry limit exceeded".into())); }
-                if entries.iter().any(|entry| matches!(entry, NativeValue::List(pair) if matches!(pair.first(), Some(NativeValue::Int(existing)) if *existing >= 0 && *existing as u64 == id))) { return Err(NativeError::Type("duplicate VectorIndex id".into())); }
-                let entry = NativeValue::List(vec![NativeValue::Int(id as i64), NativeValue::List(coordinates.into_iter().map(|v| NativeValue::Float(v.to_bits())).collect())]);
-                entries.push(entry);
+                let id = u64::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("vector id must be non-negative".into()))?;
+                if let Some(index) = locals.get(name) { validate_value(index, state.limits)?; }
+                let Some(NativeValue::VectorIndex { domain, dimensions, entries }) = locals.get_mut(name) else {
+                    return Err(NativeError::Type("vector_index_insert requires a nominal VectorIndex binding".into()));
+                };
+                if supplied_domain != *domain { return Err(NativeError::Type("vector index domain mismatch".into())); }
+                if coordinates.len() != *dimensions { return Err(NativeError::Type("vector dimension mismatch".into())); }
+                if entries.len() >= crate::ai_routing::MAX_INDEX_ENTRIES.min(state.limits.max_collection_items) {
+                    return Err(NativeError::ResourceLimit("VectorIndex entry limit exceeded".into()));
+                }
+                if entries.iter().any(|(existing, _)| *existing == id) { return Err(NativeError::Type("duplicate VectorIndex id".into())); }
+                let node_count = entries.len().checked_add(1)
+                    .and_then(|count| dimensions.checked_add(1).and_then(|width| count.checked_mul(width)))
+                    .and_then(|nodes| nodes.checked_add(1))
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex retained storage accounting overflow".into()))?;
+                if node_count > state.limits.max_value_nodes {
+                    return Err(NativeError::ResourceLimit("VectorIndex retained storage exceeds value-node budget".into()));
+                }
+                entries.push((id, coordinates));
                 stack.push(NativeValue::Unit);
             }
             NativeInstr::VectorIndexSearch => {
-                let limit = pop_int(&mut stack)?;
-                let limit = usize::try_from(limit).map_err(|_| NativeError::Type("vector_index_search limit must be non-negative".into()))?;
+                let limit = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("vector_index_search limit must be non-negative".into()))?;
                 if limit > crate::ai_routing::MAX_INDEX_ENTRIES { return Err(NativeError::ResourceLimit("VectorIndex search limit exceeded".into())); }
-                let query = match stack.pop() { Some(NativeValue::List(values)) => values.into_iter().map(|v| match v { NativeValue::Float(bits) if f32::from_bits(bits).is_finite() => Ok(f32::from_bits(bits)), _ => Err(NativeError::Type("vector query must contain finite F32 values".into())) }).collect::<Result<Vec<_>,_>>()?, _ => return Err(NativeError::Type("vector query must be List<F32>".into())) };
+                let query = match stack.pop() { Some(NativeValue::List(values)) => values.into_iter().map(|v| match v {
+                    NativeValue::Float(bits) if f32::from_bits(bits).is_finite() => Ok(bits),
+                    _ => Err(NativeError::Type("vector query must contain finite F32 values".into())),
+                }).collect::<Result<Vec<_>,_>>()?, _ => return Err(NativeError::Type("vector query must be List<F32>".into())) };
                 let supplied_domain = match stack.pop() { Some(NativeValue::String(value)) => value, _ => return Err(NativeError::Type("vector search domain must be String".into())) };
-                let index = match stack.pop() { Some(NativeValue::List(value)) => value, _ => return Err(NativeError::Type("vector_index_search requires VectorIndex".into())) };
-                if index.len() != 3 { return Err(NativeError::InvalidProgram("malformed VectorIndex value".into())); }
-                let domain = match &index[0] { NativeValue::String(value) => value, _ => return Err(NativeError::InvalidProgram("malformed VectorIndex domain".into())) };
-                let dimensions = match index[1] { NativeValue::Int(value) if value > 0 => value as usize, _ => return Err(NativeError::InvalidProgram("malformed VectorIndex dimensions".into())) };
-                if supplied_domain != *domain { return Err(NativeError::Type("vector index domain mismatch".into())); }
+                let index = match stack.pop() { Some(value @ NativeValue::VectorIndex { .. }) => value, _ => return Err(NativeError::Type("vector_index_search requires a nominal VectorIndex".into())) };
+                validate_value(&index, state.limits)?;
+                let NativeValue::VectorIndex { domain, dimensions, entries } = index else { unreachable!() };
+                if supplied_domain != domain { return Err(NativeError::Type("vector index domain mismatch".into())); }
                 if query.len() != dimensions { return Err(NativeError::Type("vector query dimension mismatch".into())); }
-                let Some(NativeValue::List(entries)) = index.get(2) else { return Err(NativeError::InvalidProgram("malformed VectorIndex entries".into())); };
-                let distance_ops = entries.len().checked_mul(dimensions).ok_or_else(|| NativeError::ResourceLimit("VectorIndex search work overflow".into()))?;
-                if distance_ops > 1_000_000 { return Err(NativeError::ResourceLimit("VectorIndex search work limit exceeded".into())); }
-                let mut hits = Vec::new();
-                for entry in entries {
-                    let NativeValue::List(pair) = entry else { return Err(NativeError::InvalidProgram("malformed VectorIndex entry".into())); };
-                    if pair.len() != 2 { return Err(NativeError::InvalidProgram("malformed VectorIndex entry fields".into())); }
-                    let id = match pair[0] { NativeValue::Int(value) if value >= 0 => value, _ => return Err(NativeError::InvalidProgram("malformed VectorIndex id".into())) };
-                    let coords = match &pair[1] { NativeValue::List(values) => values, _ => return Err(NativeError::InvalidProgram("malformed VectorIndex coordinates".into())) };
-                    if coords.len() != dimensions { return Err(NativeError::InvalidProgram("malformed VectorIndex coordinate dimension".into())); }
-                    let mut distance = 0.0f64;
-                    for (a,b) in coords.iter().zip(&query) { let NativeValue::Float(bits) = a else { return Err(NativeError::InvalidProgram("malformed VectorIndex coordinate".into())); }; let delta = f64::from(f32::from_bits(*bits)) - f64::from(*b); distance += delta * delta; }
-                    if !distance.is_finite() { return Err(NativeError::Type("vector distance overflow".into())); }
-                    hits.push((id, distance));
+                let work = entries.len().checked_mul(dimensions).ok_or_else(|| NativeError::ResourceLimit("VectorIndex search work overflow".into()))?;
+                if work > 1_000_000 || work > state.limits.max_value_nodes.saturating_mul(16) {
+                    return Err(NativeError::ResourceLimit("VectorIndex search work limit exceeded".into()));
                 }
-                hits.sort_by(|a,b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.0.cmp(&b.0)));
+                let mut hits = Vec::with_capacity(entries.len());
+                for (id, coordinates) in &entries {
+                    let mut distance = 0.0f64;
+                    for (bits, query_bits) in coordinates.iter().zip(&query) {
+                        let delta = f64::from(f32::from_bits(*bits)) - f64::from(f32::from_bits(*query_bits));
+                        distance += delta * delta;
+                    }
+                    if !distance.is_finite() { return Err(NativeError::Type("vector distance overflow".into())); }
+                    let distance_f32 = distance as f32;
+                    if !distance_f32.is_finite() { return Err(NativeError::Type("vector distance exceeds F32 output range".into())); }
+                    hits.push((*id, distance_f32));
+                }
+                hits.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.0.cmp(&b.0)));
                 hits.truncate(limit);
-                let value = NativeValue::List(hits.into_iter().map(|(id,distance)| NativeValue::List(vec![NativeValue::Int(id), NativeValue::Float((distance as f32).to_bits())])).collect());
-                validate_value(&value, state.limits)?; stack.push(value);
+                let value = NativeValue::List(hits.into_iter().map(|(id, distance)| NativeValue::List(vec![NativeValue::Int(id as i64), NativeValue::Float(distance.to_bits())])).collect());
+                validate_value(&value, state.limits)?;
+                stack.push(value);
             }
             NativeInstr::PushTensor { shape, values } => {
                 validate_tensor_parts(shape, values, state.limits.max_collection_items)?;
@@ -4063,5 +4115,104 @@ fn main() -> Int
         let index = function.code.iter().position(|instruction| matches!(instruction, NativeInstr::PushFloat(_))).unwrap();
         function.code[index] = NativeInstr::PushFloat(f32::INFINITY.to_bits());
         assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("finite")));
+    }
+}
+
+#[cfg(test)]
+mod vector_index_source_tests {
+    use super::*;
+
+    fn compile_source(source: &str) -> NativeProgram {
+        let module = crate::parse(source).expect("source parses");
+        crate::sema::check(&module).expect("source passes semantic validation");
+        compile_program(&crate::ir::lower(&module)).expect("source lowers to native code")
+    }
+
+    #[test]
+    fn nominal_vector_index_roundtrips_searches_and_breaks_distance_ties_by_id() {
+        let source = r#"module nominal_vector_index
+fn main() -> Int
+  let index = vector_index("semantic", 2)
+  vector_index_insert(index, 9, "semantic", [1.0, 0.0])
+  vector_index_insert(index, 3, "semantic", [1.0, 0.0])
+  vector_index_insert(index, 1, "semantic", [4.0, 0.0])
+  let hits = vector_index_search(index, "semantic", [1.0, 0.0], 2)
+  hits[0][0] * 10 + hits[1][0]
+"#;
+        let program = compile_source(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("VectorIndex artifact decodes");
+        assert_eq!(encode_program(&decoded), artifact);
+        let malformed_artifact = artifact.replacen("MakeVectorIndex", "MakeVectorIndexBogus", 1);
+        assert!(matches!(decode_program(&malformed_artifact), Err(NativeError::InvalidProgram(_))));
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(39));
+    }
+
+    #[test]
+    fn nominal_vector_index_rejects_domain_dimension_and_duplicate_id_errors() {
+        let domain_mismatch = r#"module vector_domain_mismatch
+fn main() -> Int
+  let index = vector_index("domain-a", 2)
+  vector_index_insert(index, 1, "domain-a", [0.0, 1.0])
+  let hits = vector_index_search(index, "domain-b", [0.0, 1.0], 1)
+  hits[0][0]
+"#;
+        let program = compile_source(domain_mismatch);
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("domain mismatch")));
+
+        let dimension_mismatch = r#"module vector_dimension_mismatch
+fn main() -> Int
+  let index = vector_index("domain-a", 2)
+  vector_index_insert(index, 1, "domain-a", [0.0])
+  0
+"#;
+        let program = compile_source(dimension_mismatch);
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("dimension mismatch")));
+
+        let duplicate_id = r#"module vector_duplicate_id
+fn main() -> Int
+  let index = vector_index("domain-a", 1)
+  vector_index_insert(index, 7, "domain-a", [0.0])
+  vector_index_insert(index, 7, "domain-a", [1.0])
+  0
+"#;
+        let program = compile_source(duplicate_id);
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("duplicate VectorIndex id")));
+    }
+
+    #[test]
+    fn nominal_vector_index_rejects_nonfinite_values_distance_overflow_and_malformed_state() {
+        let source = r#"module vector_nonfinite
+fn main() -> Int
+  let index = vector_index("domain-a", 1)
+  vector_index_insert(index, 1, "domain-a", [1.0])
+  let hits = vector_index_search(index, "domain-a", [0.0], 1)
+  hits[0][0]
+"#;
+        let mut program = compile_source(source);
+        let function = program.functions.get_mut("main").unwrap();
+        let index = function.code.iter().position(|instruction| matches!(instruction, NativeInstr::PushFloat(_))).unwrap();
+        function.code[index] = NativeInstr::PushFloat(f32::INFINITY.to_bits());
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("finite")));
+
+        let overflow = r#"module vector_distance_overflow
+fn main() -> Int
+  let index = vector_index("domain-a", 1)
+  vector_index_insert(index, 1, "domain-a", [300000000000000000000000000000000000000.0])
+  let hits = vector_index_search(index, "domain-a", [0.0], 1)
+  hits[0][0]
+"#;
+        let program = compile_source(overflow);
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("F32 output range")));
+
+        let malformed = NativeValue::VectorIndex { domain: "domain-a".into(), dimensions: 2, entries: vec![(1, vec![1.0f32.to_bits()])] };
+        assert!(matches!(validate_value(&malformed, ExecutionLimits::default()), Err(NativeError::InvalidProgram(message)) if message.contains("dimension")));
+        let duplicate = NativeValue::VectorIndex { domain: "domain-a".into(), dimensions: 1, entries: vec![(1, vec![0.0f32.to_bits()]), (1, vec![1.0f32.to_bits()])] };
+        assert!(matches!(validate_value(&duplicate, ExecutionLimits::default()), Err(NativeError::InvalidProgram(message)) if message.contains("duplicate")));
+        let oversized_id = NativeValue::VectorIndex { domain: "domain-a".into(), dimensions: 1, entries: vec![(u64::MAX, vec![0.0f32.to_bits()])] };
+        assert!(matches!(validate_value(&oversized_id, ExecutionLimits::default()), Err(NativeError::InvalidProgram(message)) if message.contains("signed Int")));
+        let limited = NativeValue::VectorIndex { domain: "domain-a".into(), dimensions: 2, entries: vec![(1, vec![0.0f32.to_bits(), 0.0f32.to_bits()]), (2, vec![1.0f32.to_bits(), 1.0f32.to_bits()])] };
+        let limits = ExecutionLimits { max_value_nodes: 4, ..ExecutionLimits::default() };
+        assert!(matches!(validate_value(&limited, limits), Err(NativeError::ResourceLimit(_))));
     }
 }
