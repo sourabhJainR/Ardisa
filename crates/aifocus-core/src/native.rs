@@ -4609,12 +4609,12 @@ fn main() -> Int
     fn tokenizer_state_rejects_duplicate_or_multiscalar_vocabulary_entries() {
         let duplicate = crate::parse(r#"module tokenizer_duplicate
 fn main() -> TokenizerState
-  tokenizer_state(["a", "a"], 4, 8, -1)
+  tokenizer_state(["a", "a"], 4, 8, 0)
 "#).unwrap();
         assert!(crate::sema::check(&duplicate).is_err());
         let multi = crate::parse(r#"module tokenizer_multiscalar
 fn main() -> TokenizerState
-  tokenizer_state(["ab"], 4, 8, -1)
+  tokenizer_state(["ab"], 4, 8, 0)
 "#).unwrap();
         assert!(crate::sema::check(&multi).is_err());
     }
