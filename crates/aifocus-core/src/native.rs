@@ -3583,6 +3583,30 @@ fn main() -> Tensor<F32>
     }
 
     #[test]
+    fn attention_block_causal_mask_changes_early_token_context() {
+        let causal = r#"module attention_causal
+fn main() -> Tensor<F32>
+  let q = tensor([2, 1], [1.0, 1.0])
+  let k = tensor([2, 1], [0.0, 0.0])
+  let v = tensor([2, 1], [2.0, 10.0])
+  attention_block(q, k, v, true)
+"#;
+        let noncausal = causal.replace("attention_causal", "attention_noncausal").replace("attention_block(q, k, v, true)", "attention_block(q, k, v, false)");
+        let causal_program = compile_source(causal);
+        let noncausal_program = compile_source(&noncausal);
+        let causal_artifact = encode_program(&causal_program);
+        let decoded = decode_program(&causal_artifact).expect("causal artifact round-trips");
+        let NativeValue::Tensor { shape, values } = run_program(&decoded, "main", &[]).unwrap() else { panic!("expected causal tensor"); };
+        assert_eq!(shape, vec![2, 1]);
+        let causal_values = values.iter().map(|bits| f32::from_bits(*bits)).collect::<Vec<_>>();
+        assert!((causal_values[0] - 2.0).abs() < 0.001, "first token must not see future values: {causal_values:?}");
+        assert!((causal_values[1] - 6.0).abs() < 0.001, "second token sees both values: {causal_values:?}");
+        let NativeValue::Tensor { values, .. } = run_program(&noncausal_program, "main", &[]).unwrap() else { panic!("expected noncausal tensor"); };
+        let noncausal_values = values.iter().map(|bits| f32::from_bits(*bits)).collect::<Vec<_>>();
+        assert!(noncausal_values.iter().all(|value| (*value - 6.0).abs() < 0.001), "noncausal rows should see both values: {noncausal_values:?}");
+    }
+
+    #[test]
     fn attention_cached_consumes_validated_kv_cache_entries() {
         let source = r#"module attention_cached_fixture
 fn main() -> Tensor<F32>
