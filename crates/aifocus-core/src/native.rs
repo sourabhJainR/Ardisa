@@ -4270,3 +4270,72 @@ fn main() -> Int
         assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("lengths")));
     }
 }
+
+#[cfg(test)]
+mod activation_cache_source_tests {
+    use super::*;
+    fn compile_source(source:&str)->NativeProgram {
+        let module=crate::parse(source).expect("source parses");
+        crate::sema::check(&module).expect("ActivationCache source passes semantic checks");
+        compile_program(&crate::ir::lower(&module)).expect("source lowers to native code")
+    }
+    #[test]
+    fn activation_cache_roundtrips_and_restores_exact_checkpoint_shape_and_values() {
+        let source=r#"module activation_cache_roundtrip
+fn main() -> Tensor<F32>
+  let cache = activation_cache(3, 2, 1024)
+  activation_store(cache, 0, tensor([1, 2], [1.0, 2.0]))
+  activation_store(cache, 2, tensor([2, 1], [3.0, 4.0]))
+  activation_restore(cache, 2)
+"#;
+        let program=compile_source(source);let artifact=encode_program(&program);let decoded=decode_program(&artifact).expect("artifact decodes");
+        assert_eq!(encode_program(&decoded),artifact);
+        assert_eq!(run_program(&decoded,"main",&[]).unwrap(),NativeValue::Tensor{shape:vec![2,1],values:vec![3.0f32.to_bits(),4.0f32.to_bits()]});
+    }
+    #[test]
+    fn activation_cache_rejects_duplicate_missing_non_stride_and_capacity_overflow() {
+        let duplicate=r#"module activation_duplicate
+fn main() -> Int
+  let cache = activation_cache(3, 2, 1024)
+  activation_store(cache, 0, tensor([1], [1.0]))
+  activation_store(cache, 0, tensor([1], [2.0]))
+  activation_cache_len(cache)
+"#;
+        assert!(matches!(run_program(&compile_source(duplicate),"main",&[]),Err(NativeError::Type(message)) if message.contains("duplicate")));
+        let missing=r#"module activation_missing
+fn main() -> Tensor<F32>
+  let cache = activation_cache(2, 1, 1024)
+  activation_restore(cache, 7)
+"#;
+        assert!(matches!(run_program(&compile_source(missing),"main",&[]),Err(NativeError::Type(message)) if message.contains("not found")));
+        let stride=r#"module activation_stride
+fn main() -> Int
+  let cache = activation_cache(2, 2, 1024)
+  activation_store(cache, 1, tensor([1], [1.0]))
+  0
+"#;
+        assert!(matches!(run_program(&compile_source(stride),"main",&[]),Err(NativeError::Type(message)) if message.contains("checkpoint_stride")));
+        let full=r#"module activation_full
+fn main() -> Int
+  let cache = activation_cache(1, 2, 1024)
+  activation_store(cache, 0, tensor([1], [1.0]))
+  activation_store(cache, 2, tensor([1], [2.0]))
+  0
+"#;
+        assert!(matches!(run_program(&compile_source(full),"main",&[]),Err(NativeError::ResourceLimit(message)) if message.contains("capacity")));
+    }
+    #[test]
+    fn activation_cache_enforces_retained_byte_budget_and_static_limits() {
+        let budget=r#"module activation_budget
+fn main() -> Int
+  let cache = activation_cache(2, 1, 8)
+  activation_store(cache, 0, tensor([1, 2], [1.0, 2.0]))
+  0
+"#;
+        assert!(matches!(run_program(&compile_source(budget),"main",&[]),Err(NativeError::ResourceLimit(message)) if message.contains("byte budget")));
+        let invalid=crate::parse("module invalid_activation_cache\nfn main() -> ActivationCache\n  activation_cache(0, 1, 100)\n").unwrap();
+        assert!(crate::sema::check(&invalid).is_err());
+        let malformed=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:1024,retained_bytes:0,entries:vec![(0,vec![1],vec![1.0f32.to_bits()])]};
+        assert!(matches!(validate_value(&malformed,ExecutionLimits::default()),Err(NativeError::InvalidProgram(message)) if message.contains("accounting")));
+    }
+}
