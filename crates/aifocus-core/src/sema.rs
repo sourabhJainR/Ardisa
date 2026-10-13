@@ -659,6 +659,9 @@ impl Checker {
                     if !is_kind(&top_k, &TypeKind::Int) { self.error("AIF477", "moe_router top_k must be Int", args[1].span); }
                     if let ExprKind::Int(value) = args[0].kind { if value <= 0 || value > 256 { self.error("AIF478", "moe_router expert_count must be in 1..=256", args[0].span); } }
                     if let ExprKind::Int(value) = args[1].kind { if value <= 0 || value > 32 { self.error("AIF479", "moe_router top_k must be in 1..=32", args[1].span); } }
+                    if let (ExprKind::Int(experts), ExprKind::Int(top_k)) = (&args[0].kind, &args[1].kind) {
+                        if *experts > 0 && *top_k > *experts { self.error("AIF484", "moe_router top_k cannot exceed expert_count", args[1].span); }
+                    }
                     let ty = type_node(TypeKind::Named("MoERouter".into()), expr.span);
                     self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
                 }
