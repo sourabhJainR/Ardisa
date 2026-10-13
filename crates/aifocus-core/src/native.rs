@@ -75,6 +75,14 @@ pub enum NativeInstr {
     MctsUpdate { name: String },
     MctsBackpropagate { name: String },
     MctsLen,
+    MakeGradientTape,
+    GradInput { name: String },
+    GradAdd { name: String },
+    GradMul { name: String },
+    GradBackward { name: String },
+    GradValue,
+    GradDerivative,
+    GradLen,
     MakeKvCache,
     KvLen,
     KvCapacity,
@@ -205,6 +213,8 @@ pub enum NativeValue {
     MoERouter { expert_count: usize, top_k: usize },
     /// Nominal domain-isolated vector index with finite f32 coordinate bits.
     VectorIndex { domain: String, dimensions: usize, entries: Vec<(u64, Vec<u32>)> },
+    /// Bounded append-only scalar tape with deterministic F32 gradients.
+    GradientTape(crate::ai_autograd::GradientTape),
     /// Bounded attention cache; float payloads are bit-encoded for deterministic equality.
     KvCache { capacity: usize, key_dim: Option<usize>, value_dim: Option<usize>, entries: Vec<(Vec<u32>, Vec<u32>)> },
     /// Bounded multimodal context with opaque byte payloads and explicit upstream token counts.
@@ -328,6 +338,14 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                     return Err(NativeError::Type("invalid MoERouter expert_count/top_k configuration".into()));
                 }
             }
+            NativeValue::GradientTape(tape) => {
+                tape.validate().map_err(|error| match error {
+                    crate::ai_autograd::GradientError::ResourceLimit => NativeError::ResourceLimit("GradientTape footprint exceeds resource bounds".into()),
+                    other => NativeError::InvalidProgram(format!("invalid GradientTape: {other:?}")),
+                })?;
+                let footprint = tape.footprint_nodes().map_err(|_| NativeError::ResourceLimit("GradientTape footprint accounting overflow".into()))?;
+                if footprint > limits.max_value_nodes { return Err(NativeError::ResourceLimit("GradientTape exceeds value-node budget".into())); }
+            }
             NativeValue::VectorIndex { domain, dimensions, entries } => {
                 if domain.trim().is_empty() || domain.len() > 1024 {
                     return Err(NativeError::Type("VectorIndex domain must contain 1..=1024 UTF-8 bytes".into()));
@@ -448,6 +466,10 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
                         .ok_or_else(|| NativeError::ResourceLimit("ContextWindow footprint byte accounting overflow".into()))?;
                 }
             }
+            NativeValue::GradientTape(tape) => {
+                nodes = nodes.checked_add(tape.footprint_nodes().map_err(|_| NativeError::ResourceLimit("GradientTape footprint accounting overflow".into()))?)
+                    .ok_or_else(|| NativeError::ResourceLimit("GradientTape footprint accounting overflow".into()))?;
+            }
             NativeValue::VectorIndex { domain, dimensions, entries } => {
                 nodes = nodes.checked_add(entries.len().checked_mul(dimensions.checked_add(1).ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?)
                     .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?)
@@ -556,7 +578,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape"),
         TypeKind::Generic(_, _) => false,
     }
 }
