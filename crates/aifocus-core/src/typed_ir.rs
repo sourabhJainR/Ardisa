@@ -687,10 +687,10 @@ fn main() -> Tensor<F32>
         let typed = lower(&module).unwrap();
         let ops = &typed.functions[0].blocks[0].ops;
         let lora = match &ops[3] { TypedIrOp::Bind { value, .. } => value, other => panic!("expected LoRA binding, got {other:?}") };
-        assert_eq!(lora.ty, TypeKind::Generic("Tensor".into(), vec![TypeKind::Named("F32".into())]));
+        assert_eq!(lora.ty, TypeKind::Generic("Tensor".into(), vec![crate::ast::Type { id: crate::ast::NodeId(0), span: Span::new(0, 0), kind: TypeKind::Named("F32".into()) }]));
         assert!(matches!(&lora.kind, TypedValueKind::Call { callee, args } if callee == "lora_apply" && matches!(args[4].kind, TypedValueKind::Int(1))));
         let attention = match &ops[7] { TypedIrOp::Expr(value) => value, other => panic!("expected attention expression, got {other:?}") };
-        assert_eq!(attention.ty, TypeKind::Generic("Tensor".into(), vec![TypeKind::Named("F32".into())]));
+        assert_eq!(attention.ty, TypeKind::Generic("Tensor".into(), vec![crate::ast::Type { id: crate::ast::NodeId(0), span: Span::new(0, 0), kind: TypeKind::Named("F32".into()) }]));
         assert!(matches!(&attention.kind, TypedValueKind::Call { callee, args } if callee == "attention_block" && matches!(args[3].kind, TypedValueKind::Bool(true))));
     }
 
