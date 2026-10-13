@@ -387,8 +387,13 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                 let mut seen = std::collections::BTreeSet::new();
                 for piece in vocabulary { if piece.chars().count()!=1 || !seen.insert(piece) { return Err(NativeError::InvalidProgram("TokenizerState vocabulary must contain unique single Unicode scalars".into())); } }
                 if unknown_id.is_some_and(|id| id < 0) { return Err(NativeError::InvalidProgram("TokenizerState unknown token id must be non-negative".into())); }
-                if std::str::from_utf8(pending).is_ok() { /* complete but possibly not yet tokenized scalar */ }
-                else if std::str::from_utf8(pending).err().is_none_or(|e| e.error_len().is_some() || e.valid_up_to()!=0) { return Err(NativeError::InvalidProgram("TokenizerState pending bytes must be an incomplete UTF-8 suffix".into())); }
+                if !pending.is_empty() {
+                    match std::str::from_utf8(pending) {
+                        Ok(_) => return Err(NativeError::InvalidProgram("TokenizerState pending bytes must be an incomplete UTF-8 suffix".into())),
+                        Err(error) if error.error_len().is_some() || error.valid_up_to()!=0 => return Err(NativeError::InvalidProgram("TokenizerState pending bytes must be an incomplete UTF-8 suffix".into())),
+                        Err(_) => {}
+                    }
+                }
             }
             NativeValue::GradientTape { capacity, slots, gradients, backward_ready } => {
                 if *capacity == 0 || *capacity > 4096 || slots.len() > *capacity || (*backward_ready && gradients.len() != slots.len()) || (!*backward_ready && !gradients.is_empty()) { return Err(NativeError::InvalidProgram("invalid GradientTape capacity or gradient state".into())); }
