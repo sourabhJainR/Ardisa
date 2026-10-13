@@ -772,7 +772,7 @@ impl Checker {
                     if !matches!(&tree.kind, TypeKind::Named(t) if t == "MctsTree") { self.error("AIF416", "mcts_root requires MctsTree", args[0].span); }
                     if !is_kind(&state, &TypeKind::Int) { self.error("AIF417", "MCTS state id must be Int", args[1].span); }
                     if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF418", "MCTS mutations require a named mutable binding", args[0].span); }
-                    return Some(type_node(TypeKind::Int, expr.span));
+                    let ty = type_node(TypeKind::Int, expr.span); self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
                 }
                 if name == "mcts_expand" {
                     if args.len() != 3 { self.error("AIF419", "mcts_expand expects tree, parent index, and state id", expr.span); return None; }
@@ -780,14 +780,14 @@ impl Checker {
                     if !matches!(&tree.kind, TypeKind::Named(t) if t == "MctsTree") { self.error("AIF420", "mcts_expand requires MctsTree", args[0].span); }
                     if !is_kind(&parent, &TypeKind::Int) || !is_kind(&state, &TypeKind::Int) { self.error("AIF421", "MCTS parent index and state id must be Int", expr.span); }
                     if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF422", "MCTS mutations require a named mutable binding", args[0].span); }
-                    return Some(type_node(TypeKind::Int, expr.span));
+                    let ty = type_node(TypeKind::Int, expr.span); self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
                 }
                 if name == "mcts_child" {
                     if args.len() != 3 { self.error("AIF423", "mcts_child expects tree, parent index, and child ordinal", expr.span); return None; }
                     let tree = self.check_expr(&args[0], locals)?; let parent = self.check_expr(&args[1], locals)?; let ordinal = self.check_expr(&args[2], locals)?;
                     if !matches!(&tree.kind, TypeKind::Named(t) if t == "MctsTree") { self.error("AIF424", "mcts_child requires MctsTree", args[0].span); }
                     if !is_kind(&parent, &TypeKind::Int) || !is_kind(&ordinal, &TypeKind::Int) { self.error("AIF425", "MCTS parent index and child ordinal must be Int", expr.span); }
-                    return Some(type_node(TypeKind::Int, expr.span));
+                    let ty = type_node(TypeKind::Int, expr.span); self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
                 }
                 if name == "mcts_update" || name == "mcts_backpropagate" {
                     if args.len() != 3 { self.error("AIF426", "MCTS update expects tree, node index, and finite F32 reward", expr.span); return None; }
@@ -796,12 +796,12 @@ impl Checker {
                     if !is_kind(&node, &TypeKind::Int) { self.error("AIF428", "MCTS node index must be Int", args[1].span); }
                     if !is_kind(&reward, &TypeKind::Named("F32".into())) { self.error("AIF429", "MCTS reward must be F32", args[2].span); }
                     if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF430", "MCTS mutations require a named mutable binding", args[0].span); }
-                    return Some(type_node(TypeKind::Unit, expr.span));
+                    let ty = type_node(TypeKind::Unit, expr.span); self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
                 }
                 if name == "mcts_len" {
                     if args.len() != 1 { self.error("AIF431", "mcts_len expects one MctsTree", expr.span); return None; }
                     let tree = self.check_expr(&args[0], locals)?; if !matches!(&tree.kind, TypeKind::Named(t) if t == "MctsTree") { self.error("AIF432", "mcts_len requires MctsTree", args[0].span); }
-                    return Some(type_node(TypeKind::Int, expr.span));
+                    let ty = type_node(TypeKind::Int, expr.span); self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
                 }
                 if name == "kv_cache" {
                     if args.len() != 1 { self.error("AIF360", "kv_cache expects one positive Int capacity", expr.span); return None; }
