@@ -654,7 +654,7 @@ mod tests {
     }
     #[test]
     fn mcts_type_and_resource_bounds_survive_typed_ir_lowering() {
-        let module = crate::parse("module mcts_typed\nfn main() -> Int\n  let tree = mcts_tree(16, 4)\n  mcts_len(tree)\n").unwrap();
+        let module = crate::parse("module mcts_typed\nfn main() -> Int\n  let tree = mcts_tree(16, 4)\n  let root = mcts_root(tree, 1)\n  let child = mcts_expand(tree, root, 2)\n  mcts_update(tree, child, 0.5)\n  mcts_backpropagate(tree, child, 0.25)\n  mcts_child(tree, root, 0)\n  mcts_len(tree)\n").unwrap();
         let typed = lower(&module).unwrap();
         let call = match &typed.functions[0].blocks[0].ops[0] {
             TypedIrOp::Bind { value, .. } => value,
