@@ -3583,6 +3583,25 @@ fn main() -> Tensor<F32>
     }
 
     #[test]
+    fn attention_cached_consumes_validated_kv_cache_entries() {
+        let source = r#"module attention_cached_fixture
+fn main() -> Tensor<F32>
+  let cache = kv_cache(2)
+  kv_append(cache, [1.0, 0.0], [2.0], "reject")
+  kv_append(cache, [0.0, 1.0], [4.0], "reject")
+  let q = tensor([1, 2], [1.0, 0.0])
+  attention_cached(q, cache)
+"#;
+        let program = compile_source(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).unwrap();
+        assert_eq!(encode_program(&decoded), artifact);
+        let NativeValue::Tensor { shape, values } = run_program(&decoded, "main", &[]).unwrap() else { panic!("expected cached attention tensor"); };
+        assert_eq!(shape, vec![1, 1]);
+        assert!((f32::from_bits(values[0]) - 2.660476f32).abs() < 0.001);
+    }
+
+    #[test]
     fn lora_apply_computes_low_rank_delta_without_materializing_full_delta() {
         let source = r#"module lora_fixture
 fn main() -> Tensor<F32>
