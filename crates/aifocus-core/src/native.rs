@@ -4215,4 +4215,41 @@ fn main() -> Int
         let limits = ExecutionLimits { max_value_nodes: 4, ..ExecutionLimits::default() };
         assert!(matches!(validate_value(&limited, limits), Err(NativeError::ResourceLimit(_))));
     }
+
+    #[test]
+    fn nominal_vector_index_empty_search_and_zero_limit_return_empty_results() {
+        let source = r#"module vector_index_empty_results
+fn main() -> Int
+  let index = vector_index("empty-domain", 2)
+  let empty_hits = vector_index_search(index, "empty-domain", [0.0, 0.0], 10)
+  vector_index_insert(index, 5, "empty-domain", [0.0, 0.0])
+  let zero_hits = vector_index_search(index, "empty-domain", [0.0, 0.0], 0)
+  len(empty_hits) + len(zero_hits)
+"#;
+        let program = compile_source(source);
+        assert_eq!(run_program(&decode_program(&encode_program(&program)).unwrap(), "main", &[]).unwrap(), NativeValue::Int(0));
+    }
+
+    #[test]
+    fn nominal_moe_router_rejects_empty_logits_and_masks_at_runtime() {
+        let source = r#"module moe_empty_logits
+fn main() -> Int
+  let router = moe_router(1, 1)
+  let logits = [1.0]
+  let masked = [false]
+  let routed = moe_route(router, logits, masked)
+  len(routed)
+"#;
+        let mut program = compile_source(source);
+        let function = program.functions.get_mut("main").unwrap();
+        let mut changed = 0;
+        for instruction in &mut function.code {
+            if matches!(instruction, NativeInstr::PushList(1)) && changed < 2 {
+                *instruction = NativeInstr::PushList(0);
+                changed += 1;
+            }
+        }
+        assert_eq!(changed, 2, "fixture should contain the logits and mask list constructors");
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("lengths")));
+    }
 }
