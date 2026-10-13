@@ -13,7 +13,7 @@ pub enum GradientError {
     InvalidTape,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Op {
     Input,
     Add { left: usize, right: usize },
@@ -62,8 +62,8 @@ impl GradientTape {
     }
 
     pub fn mul(&mut self, left: usize, right: usize) -> Result<usize, GradientError> {
-        let a = self.nodes.get(left).ok_or(GradientError::InvalidSlot)?.value;
-        let b = self.nodes.get(right).ok_or(GradientError::InvalidSlot)?.value;
+        let a = f32::from_bits(self.nodes.get(left).ok_or(GradientError::InvalidSlot)?.value_bits);
+        let b = f32::from_bits(self.nodes.get(right).ok_or(GradientError::InvalidSlot)?.value_bits);
         self.append(Op::Mul { left, right }, a * b)
     }
 
