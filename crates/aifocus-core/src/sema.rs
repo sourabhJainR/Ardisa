@@ -651,6 +651,56 @@ impl Checker {
                     );
                     return None;
                 };
+                if name == "gradient_tape" {
+                    if args.len() != 1 { self.error("AIF485", "gradient_tape expects max_slots Int", expr.span); return None; }
+                    let max_slots = self.check_expr(&args[0], locals)?;
+                    if !is_kind(&max_slots, &TypeKind::Int) { self.error("AIF486", "gradient_tape max_slots must be Int", args[0].span); }
+                    if let ExprKind::Int(value) = args[0].kind { if value <= 0 || value > 4096 { self.error("AIF487", "gradient_tape max_slots must be in 1..=4096", args[0].span); } }
+                    let ty = type_node(TypeKind::Named("GradientTape".into()), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
+                if name == "grad_input" {
+                    if args.len() != 2 { self.error("AIF488", "grad_input expects a named GradientTape and F32 value", expr.span); return None; }
+                    let tape = self.check_expr(&args[0], locals)?; let value = self.check_expr(&args[1], locals)?;
+                    if !matches!(&tape.kind, TypeKind::Named(t) if t == "GradientTape") { self.error("AIF489", "grad_input requires GradientTape", args[0].span); }
+                    if !matches!(&value.kind, TypeKind::Named(t) if t == "F32") { self.error("AIF490", "grad_input value must be F32", args[1].span); }
+                    if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF491", "GradientTape mutations require a named mutable binding", args[0].span); }
+                    let ty = type_node(TypeKind::Int, expr.span); self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
+                if name == "grad_add" || name == "grad_mul" {
+                    if args.len() != 3 { self.error("AIF492", format!("{} expects a named GradientTape and two Int slots", name), expr.span); return None; }
+                    let tape = self.check_expr(&args[0], locals)?; let left = self.check_expr(&args[1], locals)?; let right = self.check_expr(&args[2], locals)?;
+                    if !matches!(&tape.kind, TypeKind::Named(t) if t == "GradientTape") { self.error("AIF493", "gradient operation requires GradientTape", args[0].span); }
+                    if !is_kind(&left, &TypeKind::Int) { self.error("AIF494", "gradient left slot must be Int", args[1].span); }
+                    if !is_kind(&right, &TypeKind::Int) { self.error("AIF495", "gradient right slot must be Int", args[2].span); }
+                    for arg in [&args[1], &args[2]] { if let ExprKind::Int(value) = arg.kind { if value < 0 { self.error("AIF496", "gradient slot indices must be non-negative", arg.span); } } }
+                    if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF497", "GradientTape mutations require a named mutable binding", args[0].span); }
+                    let ty = type_node(TypeKind::Int, expr.span); self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
+                if name == "grad_backward" {
+                    if args.len() != 3 { self.error("AIF498", "grad_backward expects a named GradientTape, output slot Int, and seed F32", expr.span); return None; }
+                    let tape = self.check_expr(&args[0], locals)?; let slot = self.check_expr(&args[1], locals)?; let seed = self.check_expr(&args[2], locals)?;
+                    if !matches!(&tape.kind, TypeKind::Named(t) if t == "GradientTape") { self.error("AIF499", "grad_backward requires GradientTape", args[0].span); }
+                    if !is_kind(&slot, &TypeKind::Int) { self.error("AIF500", "grad_backward output slot must be Int", args[1].span); }
+                    if !matches!(&seed.kind, TypeKind::Named(t) if t == "F32") { self.error("AIF501", "grad_backward seed must be F32", args[2].span); }
+                    if let ExprKind::Int(value) = args[1].kind { if value < 0 { self.error("AIF502", "grad_backward output slot must be non-negative", args[1].span); } }
+                    if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF503", "GradientTape mutations require a named mutable binding", args[0].span); }
+                    let ty = type_node(TypeKind::Unit, expr.span); self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
+                if name == "grad_value" || name == "grad_derivative" {
+                    if args.len() != 2 { self.error("AIF504", format!("{} expects GradientTape and slot Int", name), expr.span); return None; }
+                    let tape = self.check_expr(&args[0], locals)?; let slot = self.check_expr(&args[1], locals)?;
+                    if !matches!(&tape.kind, TypeKind::Named(t) if t == "GradientTape") { self.error("AIF505", "gradient read requires GradientTape", args[0].span); }
+                    if !is_kind(&slot, &TypeKind::Int) { self.error("AIF506", "gradient read slot must be Int", args[1].span); }
+                    if let ExprKind::Int(value) = args[1].kind { if value < 0 { self.error("AIF507", "gradient read slot must be non-negative", args[1].span); } }
+                    let ty = type_node(TypeKind::Named("F32".into()), expr.span); self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
+                if name == "grad_len" {
+                    if args.len() != 1 { self.error("AIF508", "grad_len expects GradientTape", expr.span); return None; }
+                    let tape = self.check_expr(&args[0], locals)?;
+                    if !matches!(&tape.kind, TypeKind::Named(t) if t == "GradientTape") { self.error("AIF509", "grad_len requires GradientTape", args[0].span); }
+                    let ty = type_node(TypeKind::Int, expr.span); self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
                 if name == "moe_router" {
                     if args.len() != 2 { self.error("AIF475", "moe_router expects expert_count and top_k Int", expr.span); return None; }
                     let experts = self.check_expr(&args[0], locals)?;
