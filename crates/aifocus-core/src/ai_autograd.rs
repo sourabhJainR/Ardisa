@@ -13,7 +13,7 @@ pub enum GradientError {
     InvalidTape,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Op {
     Input,
     Add { left: usize, right: usize },
@@ -88,7 +88,8 @@ impl GradientTape {
                     gradients[right] += gradient * f32::from_bits(self.nodes[left].value_bits);
                 }
             }
-            if gradients.iter().any(|value| !value.is_finite()) {
+            if !gradient.is_finite()
+                || gradients.iter().any(|value| !value.is_finite()) {
                 return Err(GradientError::NonFinite);
             }
         }
