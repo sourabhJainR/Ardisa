@@ -203,6 +203,8 @@ pub enum NativeValue {
     LoRAAdapter { a_shape: Vec<usize>, a_values: Vec<u32>, b_shape: Vec<usize>, b_values: Vec<u32>, alpha_bits: u32, rank: usize },
     /// Nominal bounded expert-routing configuration, independent of model weight ownership.
     MoERouter { expert_count: usize, top_k: usize },
+    /// Nominal domain-isolated vector index with finite f32 coordinate bits.
+    VectorIndex { domain: String, dimensions: usize, entries: Vec<(u64, Vec<u32>)> },
     /// Bounded attention cache; float payloads are bit-encoded for deterministic equality.
     KvCache { capacity: usize, key_dim: Option<usize>, value_dim: Option<usize>, entries: Vec<(Vec<u32>, Vec<u32>)> },
     /// Bounded multimodal context with opaque byte payloads and explicit upstream token counts.
@@ -324,6 +326,34 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                 if *expert_count == 0 || *expert_count > crate::ai_routing::MAX_EXPERTS
                     || *top_k == 0 || *top_k > crate::ai_routing::MAX_TOP_K || *top_k > *expert_count {
                     return Err(NativeError::Type("invalid MoERouter expert_count/top_k configuration".into()));
+                }
+            }
+            NativeValue::VectorIndex { domain, dimensions, entries } => {
+                if domain.trim().is_empty() || domain.len() > 1024 {
+                    return Err(NativeError::Type("VectorIndex domain must contain 1..=1024 UTF-8 bytes".into()));
+                }
+                if *dimensions == 0 || *dimensions > crate::ai_routing::MAX_VECTOR_DIMENSIONS
+                    || *dimensions > limits.max_collection_items {
+                    return Err(NativeError::Type("invalid VectorIndex dimensions".into()));
+                }
+                if entries.len() > crate::ai_routing::MAX_INDEX_ENTRIES.min(limits.max_collection_items) {
+                    return Err(NativeError::ResourceLimit("VectorIndex entry limit exceeded".into()));
+                }
+                let mut ids = std::collections::BTreeSet::new();
+                for (id, coordinates) in entries {
+                    if !ids.insert(*id) { return Err(NativeError::InvalidProgram("duplicate VectorIndex id".into())); }
+                    if coordinates.len() != *dimensions {
+                        return Err(NativeError::InvalidProgram("VectorIndex coordinate dimension mismatch".into()));
+                    }
+                    if coordinates.iter().any(|bits| !f32::from_bits(*bits).is_finite()) {
+                        return Err(NativeError::InvalidProgram("VectorIndex contains non-finite coordinates".into()));
+                    }
+                }
+                let nodes = entries.len().checked_mul(dimensions.checked_add(1).ok_or_else(|| NativeError::ResourceLimit("VectorIndex dimension accounting overflow".into()))?)
+                    .and_then(|n| n.checked_add(1))
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?;
+                if nodes > limits.max_value_nodes {
+                    return Err(NativeError::ResourceLimit("VectorIndex retained storage exceeds value-node budget".into()));
                 }
             }
             NativeValue::LoRAAdapter { a_shape, a_values, b_shape, b_values, alpha_bits, rank } => {
@@ -518,7 +548,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -4064,4 +4094,11 @@ fn main() -> Int
         function.code[index] = NativeInstr::PushFloat(f32::INFINITY.to_bits());
         assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("finite")));
     }
-}
+}            NativeValue::VectorIndex { domain, dimensions, entries } => {
+                nodes = nodes.checked_add(entries.len().checked_mul(dimensions.checked_add(1).ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?)
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?)
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?;
+                string_bytes = string_bytes.checked_add(domain.len())
+                    .ok_or_else(|| NativeError::ResourceLimit("VectorIndex domain byte accounting overflow".into()))?;
+            }
+
