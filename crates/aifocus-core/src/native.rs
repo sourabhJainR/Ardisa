@@ -3835,4 +3835,84 @@ fn main() -> Tensor<F32>
         let malformed = encode_program(&NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![NativeInstr::AttentionBlock, NativeInstr::Return] })]) }).replace("AttentionBlock", "AttentionBlockBogus");
         assert!(decode_program(&malformed).is_err());
     }
+
+    #[test]
+    fn nominal_attention_block_roundtrips_and_executes_multhead_source_to_runtime() {
+        let source = r#"module nominal_attention
+fn main() -> Tensor<F32>
+  let block = attention_block_new(2, 2, 1, false)
+  let q = tensor([1, 2], [1.0, 1.0])
+  let k = tensor([1, 2], [0.0, 0.0])
+  let v = tensor([1, 2], [2.0, 4.0])
+  attention_block_apply(block, q, k, v)
+"#;
+        let program = compile_source(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("nominal attention artifact decodes");
+        assert_eq!(encode_program(&decoded), artifact);
+        let NativeValue::Tensor { shape, values } = run_program(&decoded, "main", &[]).unwrap() else { panic!("expected Tensor output"); };
+        assert_eq!(shape, vec![1, 2]);
+        assert_eq!(values.iter().map(|bits| f32::from_bits(*bits)).collect::<Vec<_>>(), vec![2.0, 4.0]);
+    }
+
+    #[test]
+    fn nominal_attention_cache_path_checks_configuration_and_cache_dimensions() {
+        let source = r#"module nominal_attention_cache
+fn main() -> Tensor<F32>
+  let block = attention_block_new(2, 2, 1, true)
+  let cache = kv_cache(2)
+  kv_append(cache, [1.0, 0.0], [2.0, 4.0], "reject")
+  let q = tensor([1, 2], [1.0, 0.0])
+  attention_block_cached(block, q, cache)
+"#;
+        let program = compile_source(source);
+        let NativeValue::Tensor { shape, values } = run_program(&decode_program(&encode_program(&program)).unwrap(), "main", &[]).unwrap() else { panic!("expected cached Tensor"); };
+        assert_eq!(shape, vec![1, 2]);
+        assert_eq!(values.iter().map(|bits| f32::from_bits(*bits)).collect::<Vec<_>>(), vec![2.0, 4.0]);
+        let bad = r#"module nominal_attention_bad
+fn main(hidden: Int) -> AttentionBlock
+  attention_block_new(hidden, 2, 1, false)
+"#;
+        let program = compile_source(bad);
+        assert!(matches!(run_program(&program, "main", &[NativeValue::Int(3)]), Err(NativeError::Type(message)) if message.contains("hidden")));
+    }
+
+    #[test]
+    fn nominal_lora_adapter_owns_validated_matrices_and_returns_delta_without_base_mutation() {
+        let source = r#"module nominal_lora
+fn main() -> Tensor<F32>
+  let a = tensor([1, 2], [1.0, 1.0])
+  let b = tensor([2, 1], [2.0, 3.0])
+  let adapter = lora_adapter_new(a, b, 2.0, 1)
+  let input = tensor([1, 2], [1.0, 2.0])
+  lora_adapter_apply(adapter, input)
+"#;
+        let program = compile_source(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("LoRA artifact decodes");
+        assert_eq!(encode_program(&decoded), artifact);
+        let NativeValue::Tensor { shape, values } = run_program(&decoded, "main", &[]).unwrap() else { panic!("expected Tensor output"); };
+        assert_eq!(shape, vec![1, 2]);
+        assert_eq!(values.iter().map(|bits| f32::from_bits(*bits)).collect::<Vec<_>>(), vec![12.0, 18.0]);
+    }
+
+    #[test]
+    fn nominal_constructors_fail_closed_on_invalid_static_shapes_and_generic_forms() {
+        let bad_attention = r#"module nominal_bad_attention
+fn main() -> AttentionBlock
+  attention_block_new(3, 2, 1, false)
+"#;
+        let module = crate::parse(bad_attention).unwrap();
+        assert!(crate::sema::check(&module).is_err(), "hidden/head dimensions must be checked statically when literal");
+        let bad_lora = r#"module nominal_bad_lora
+fn main() -> LoRAAdapter
+  let a = tensor([2, 3], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+  let b = tensor([1, 2], [1.0, 1.0])
+  lora_adapter_new(a, b, 1.0, 1)
+"#;
+        let program = compile_source(bad_lora);
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(_))));
+        let unsupported = crate::parse("module unsupported_nominal\nfn bad(x: AttentionBlock<Int, Int, Int>) -> Int\n  1\n").unwrap();
+        assert!(crate::sema::check(&unsupported).is_err(), "unsupported compile-time shape forms must fail closed");
+    }
 }
