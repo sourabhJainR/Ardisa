@@ -3342,7 +3342,7 @@ mod mcts_native_integration_tests {
 
     #[test]
     fn source_mcts_compiles_runs_and_roundtrips_ardisa_exec_v1() {
-        let source = "module mcts_native\\nfn main() -> Int\\n  let tree = mcts_tree(8, 3)\\n  let root = mcts_root(tree, 10)\\n  let child = mcts_expand(tree, root, 11)\\n  mcts_backpropagate(tree, child, 0.75)\\n  mcts_child(tree, root, 0)\\n";
+        let source = "module mcts_native\nfn main() -> Int\n  let tree = mcts_tree(8, 3)\n  let root = mcts_root(tree, 10)\n  let child = mcts_expand(tree, root, 11)\n  mcts_backpropagate(tree, child, 0.75)\n  mcts_child(tree, root, 0)\n";
         let module = crate::parse(source).unwrap();
         crate::sema::check(&module).unwrap();
         let program = compile_program(&crate::ir::lower(&module)).unwrap();
@@ -3354,7 +3354,7 @@ mod mcts_native_integration_tests {
 
     #[test]
     fn mcts_runtime_rejects_invalid_indices_bounds_nonfinite_rewards_and_bad_artifacts() {
-        let source = "module mcts_bad\\nfn main() -> Int\\n  let tree = mcts_tree(2, 1)\\n  let root = mcts_root(tree, 1)\\n  mcts_expand(tree, 99, 2)\\n  mcts_len(tree)\\n";
+        let source = "module mcts_bad\nfn main() -> Int\n  let tree = mcts_tree(2, 1)\n  let root = mcts_root(tree, 1)\n  mcts_expand(tree, 99, 2)\n  mcts_len(tree)\n";
         let module = crate::parse(source).unwrap();
         crate::sema::check(&module).unwrap();
         let program = compile_program(&crate::ir::lower(&module)).unwrap();
@@ -3367,7 +3367,7 @@ mod mcts_native_integration_tests {
 
     #[test]
     fn mcts_native_mutation_is_atomic_on_reward_rejection() {
-        let source = "module mcts_atomic\\nfn main() -> Int\\n  let tree = mcts_tree(4, 2)\\n  let root = mcts_root(tree, 1)\\n  mcts_update(tree, root, 1000001.0)\\n  mcts_len(tree)\\n";
+        let source = "module mcts_atomic\nfn main() -> Int\n  let tree = mcts_tree(4, 2)\n  let root = mcts_root(tree, 1)\n  mcts_update(tree, root, 1000001.0)\n  mcts_len(tree)\n";
         let module = crate::parse(source).unwrap();
         crate::sema::check(&module).unwrap();
         let program = compile_program(&crate::ir::lower(&module)).unwrap();
@@ -3389,7 +3389,7 @@ mod mcts_native_integration_tests {
         let module = crate::parse(&source).unwrap();
         crate::sema::check(&module).unwrap();
         let program = compile_program(&crate::ir::lower(&module)).unwrap();
-        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::ResourceLimit(message)) if message.contains("depth limit")));
+        let result = run_program(&program, "main", &[]); assert!(matches!(&result, Err(NativeError::ResourceLimit(message)) if message.contains("depth limit")), "unexpected MCTS depth result: {result:?}");
     }
 
 }
