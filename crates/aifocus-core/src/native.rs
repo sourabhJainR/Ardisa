@@ -2248,6 +2248,16 @@ fn pop_probability(stack: &mut Vec<NativeValue>) -> Result<f32, NativeError> {
     }
 }
 
+fn pop_bool(stack: &mut Vec<NativeValue>) -> Result<bool, NativeError> {
+    match stack.pop() { Some(NativeValue::Bool(value)) => Ok(value), _ => Err(NativeError::Type("expected Bool value".into())) }
+}
+fn pop_float(stack: &mut Vec<NativeValue>) -> Result<f32, NativeError> {
+    match stack.pop() {
+        Some(NativeValue::Float(bits)) if f32::from_bits(bits).is_finite() => Ok(f32::from_bits(bits)),
+        Some(NativeValue::Int(value)) => { let value = value as f32; if value.is_finite() { Ok(value) } else { Err(NativeError::Type("expected finite F32 value".into())) } },
+        _ => Err(NativeError::Type("expected finite F32 value".into())),
+    }
+}
 fn pop_int(stack: &mut Vec<NativeValue>) -> Result<i64, NativeError> {
     match stack.pop() {
         Some(NativeValue::Int(value)) => Ok(value),
