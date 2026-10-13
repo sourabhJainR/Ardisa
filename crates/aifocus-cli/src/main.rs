@@ -318,6 +318,7 @@ fn display_value(value: &ardisa_core::NativeValue) -> String {
             let scale = f32::from_bits(*scale_bits);
             format!("QuantizedTensor<{dimensions}; scale={scale}; zero_point={zero_point}>[{}]", values.iter().map(i8::to_string).collect::<Vec<_>>().join(", "))
         }
+        ardisa_core::NativeValue::ActivationCache { capacity, checkpoint_stride, retained_bytes, entries, .. } => format!("ActivationCache(checkpoints={}, capacity={}, stride={}, bytes={})", entries.len(), capacity, checkpoint_stride, retained_bytes),
         ardisa_core::NativeValue::Tensor { shape, values } => {
             let dimensions = shape.iter().map(usize::to_string).collect::<Vec<_>>().join("x");
             let rendered = values.iter().map(|bits| f32::from_bits(*bits).to_string()).collect::<Vec<_>>().join(", ");
