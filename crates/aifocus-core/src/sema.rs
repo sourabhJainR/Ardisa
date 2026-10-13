@@ -856,6 +856,37 @@ impl Checker {
                     if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF379", "context_append requires a named mutable ContextWindow binding", args[0].span); }
                     return Some(type_node(TypeKind::Unit, expr.span));
                 }
+                if name == "attention_block" {
+                    if args.len() != 4 { self.error("AIF440", "attention_block expects Q, K, V Tensor<F32> values and a causal Bool", expr.span); return None; }
+                    let q = self.check_expr(&args[0], locals)?;
+                    let k = self.check_expr(&args[1], locals)?;
+                    let v = self.check_expr(&args[2], locals)?;
+                    let causal = self.check_expr(&args[3], locals)?;
+                    let tensor = |ty: &Type| matches!(&ty.kind, TypeKind::Generic(name, args) if name == "Tensor" && args.len() == 1 && matches!(&args[0].kind, TypeKind::Named(element) if element == "F32"));
+                    for (ty, arg) in [(&q, &args[0]), (&k, &args[1]), (&v, &args[2])] {
+                        if !tensor(ty) { self.error("AIF441", "attention_block Q/K/V must be Tensor<F32>", arg.span); }
+                    }
+                    if !is_kind(&causal, &TypeKind::Bool) { self.error("AIF442", "attention_block causal flag must be Bool", args[3].span); }
+                    let ty = type_node(TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
+                if name == "lora_apply" {
+                    if args.len() != 5 { self.error("AIF443", "lora_apply expects input, A, B Tensor<F32>, alpha F32, and rank Int", expr.span); return None; }
+                    let input = self.check_expr(&args[0], locals)?;
+                    let a = self.check_expr(&args[1], locals)?;
+                    let b = self.check_expr(&args[2], locals)?;
+                    let alpha = self.check_expr(&args[3], locals)?;
+                    let rank = self.check_expr(&args[4], locals)?;
+                    let tensor = |ty: &Type| matches!(&ty.kind, TypeKind::Generic(name, args) if name == "Tensor" && args.len() == 1 && matches!(&args[0].kind, TypeKind::Named(element) if element == "F32"));
+                    for (ty, arg) in [(&input, &args[0]), (&a, &args[1]), (&b, &args[2])] {
+                        if !tensor(ty) { self.error("AIF444", "lora_apply input/A/B must be Tensor<F32>", arg.span); }
+                    }
+                    if !is_kind(&alpha, &TypeKind::Int) && !matches!(&alpha.kind, TypeKind::Named(name) if name == "F32") { self.error("AIF445", "lora_apply alpha must be F32 or Int", args[3].span); }
+                    if !is_kind(&rank, &TypeKind::Int) { self.error("AIF446", "lora_apply rank must be Int", args[4].span); }
+                    if let ExprKind::Int(value) = args[4].kind { if value <= 0 || value > 256 { self.error("AIF447", "lora_apply rank must be in 1..=256", args[4].span); } }
+                    let ty = type_node(TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
                 if name == "tensor" {
                     if args.len() != 2 { self.error("AIF340", "tensor expects shape and value lists", expr.span); return None; }
                     let shape = self.check_expr(&args[0], locals)?;
