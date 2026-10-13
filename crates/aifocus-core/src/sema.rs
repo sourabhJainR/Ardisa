@@ -890,6 +890,45 @@ impl Checker {
                     if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF379", "context_append requires a named mutable ContextWindow binding", args[0].span); }
                     return Some(type_node(TypeKind::Unit, expr.span));
                 }
+                if name == "gradient_tape" {
+                    if args.len()!=1 { self.error("AIF490","gradient_tape expects capacity Int",expr.span); return None; }
+                    let capacity=self.check_expr(&args[0],locals)?;
+                    if !is_kind(&capacity,&TypeKind::Int) { self.error("AIF491","GradientTape capacity must be Int",args[0].span); }
+                    if let ExprKind::Int(v)=args[0].kind { if v<=0||v>4096 { self.error("AIF492","GradientTape capacity must be in 1..=4096",args[0].span); } }
+                    let ty=type_node(TypeKind::Named("GradientTape".into()),expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "gradient_input" {
+                    if args.len()!=2 { self.error("AIF493","gradient_input expects named tape and finite F32/Int value",expr.span); return None; }
+                    let tape=self.check_expr(&args[0],locals)?; let value=self.check_expr(&args[1],locals)?;
+                    if !matches!(&tape.kind,TypeKind::Named(n) if n=="GradientTape") { self.error("AIF494","gradient_input requires GradientTape",args[0].span); }
+                    if !is_kind(&value,&TypeKind::Int)&&!matches!(&value.kind,TypeKind::Named(n) if n=="F32") { self.error("AIF495","GradientTape values must be F32 or Int",args[1].span); }
+                    if !matches!(&args[0].kind,ExprKind::Name(_)) { self.error("AIF496","GradientTape mutation requires a named binding",args[0].span); }
+                    let ty=type_node(TypeKind::Int,expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "gradient_add" || name == "gradient_mul" {
+                    if args.len()!=3 { self.error("AIF497","gradient_add/mul expects named tape and two prior slot IDs",expr.span); return None; }
+                    let tape=self.check_expr(&args[0],locals)?; let left=self.check_expr(&args[1],locals)?; let right=self.check_expr(&args[2],locals)?;
+                    if !matches!(&tape.kind,TypeKind::Named(n) if n=="GradientTape") { self.error("AIF498","gradient_add/mul requires GradientTape",args[0].span); }
+                    if !is_kind(&left,&TypeKind::Int)||!is_kind(&right,&TypeKind::Int) { self.error("AIF499","GradientTape slot IDs must be Int",expr.span); }
+                    if !matches!(&args[0].kind,ExprKind::Name(_)) { self.error("AIF496","GradientTape mutation requires a named binding",args[0].span); }
+                    let ty=type_node(TypeKind::Int,expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "gradient_backward" {
+                    if args.len()!=3 { self.error("AIF500","gradient_backward expects named tape, output slot ID, and seed",expr.span); return None; }
+                    let tape=self.check_expr(&args[0],locals)?; let output=self.check_expr(&args[1],locals)?; let seed=self.check_expr(&args[2],locals)?;
+                    if !matches!(&tape.kind,TypeKind::Named(n) if n=="GradientTape") { self.error("AIF501","gradient_backward requires GradientTape",args[0].span); }
+                    if !is_kind(&output,&TypeKind::Int) { self.error("AIF502","GradientTape output slot must be Int",args[1].span); }
+                    if !is_kind(&seed,&TypeKind::Int)&&!matches!(&seed.kind,TypeKind::Named(n) if n=="F32") { self.error("AIF503","GradientTape seed must be F32 or Int",args[2].span); }
+                    if !matches!(&args[0].kind,ExprKind::Name(_)) { self.error("AIF496","GradientTape mutation requires a named binding",args[0].span); }
+                    let ty=type_node(TypeKind::Unit,expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "gradient_value" || name == "gradient_get" {
+                    if args.len()!=2 { self.error("AIF504","gradient_value/get expects GradientTape and slot ID",expr.span); return None; }
+                    let tape=self.check_expr(&args[0],locals)?; let slot=self.check_expr(&args[1],locals)?;
+                    if !matches!(&tape.kind,TypeKind::Named(n) if n=="GradientTape") { self.error("AIF505","gradient query requires GradientTape",args[0].span); }
+                    if !is_kind(&slot,&TypeKind::Int) { self.error("AIF506","GradientTape slot ID must be Int",args[1].span); }
+                    let ty=type_node(TypeKind::Named("F32".into()),expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
                 if name == "attention_block_new" {
                     if args.len() != 4 { self.error("AIF452", "attention_block_new expects hidden, heads, head_dim Int and causal Bool", expr.span); return None; }
                     let hidden=self.check_expr(&args[0],locals)?; let heads=self.check_expr(&args[1],locals)?; let dim=self.check_expr(&args[2],locals)?; let causal=self.check_expr(&args[3],locals)?;

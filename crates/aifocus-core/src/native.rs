@@ -27,6 +27,8 @@ pub enum NativeInstr {
     PushTensor { shape: Vec<usize>, values: Vec<u32> },
     TensorAdd,
     TensorMatMul,
+    MakeGradientTape,
+    GradientInput { name: String }, GradientAdd { name: String }, GradientMul { name: String }, GradientBackward { name: String }, GradientValue, GradientGet,
     /// Construct a validated nominal multi-head attention configuration.
     MakeAttentionBlock,
     /// Apply a nominal attention configuration to rank-2 Q/K/V tensors.
@@ -182,8 +184,14 @@ pub struct NativeFunction {
     pub code: Vec<NativeInstr>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GradientOp { Input, Add { left: usize, right: usize }, Mul { left: usize, right: usize } }
+
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GradientSlot { pub value_bits: u32, pub op: GradientOp }
+
 /// Native values are intentionally dependency-free so the native compiler can bootstrap incrementally.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeValue {
     Int(i64),
     /// Finite f32 runtime scalar encoded as bits for deterministic Eq and serialization.
@@ -193,6 +201,7 @@ pub enum NativeValue {
     Probability(u32),
     /// Tensor dimensions and IEEE-754 f32 values encoded as bits.
     Tensor { shape: Vec<usize>, values: Vec<u32> },
+    GradientTape { capacity: usize, slots: Vec<GradientSlot>, gradients: Vec<u32>, backward_ready: bool },
     /// Signed-int8 tensor payload and quantization metadata; scale is f32 bits.
     QuantizedTensor { shape: Vec<usize>, scale_bits: u32, zero_point: i8, values: Vec<i8> },
     /// Nominal domain label plus IEEE-754 f32 coordinate bits.
@@ -360,6 +369,11 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
             NativeValue::LoRAAdapter { a_shape, a_values, b_shape, b_values, alpha_bits, rank } => {
                 validate_lora_parts(a_shape, a_values, b_shape, b_values, *alpha_bits, *rank, limits.max_collection_items)?;
             }
+            NativeValue::GradientTape { capacity, slots, gradients, backward_ready } => {
+                if *capacity == 0 || *capacity > 4096 || slots.len() > *capacity || (*backward_ready && gradients.len() != slots.len()) || (!*backward_ready && !gradients.is_empty()) { return Err(NativeError::InvalidProgram("invalid GradientTape capacity or gradient state".into())); }
+                for (index, slot) in slots.iter().enumerate() { if !f32::from_bits(slot.value_bits).is_finite() { return Err(NativeError::Type("GradientTape values must be finite".into())); } let valid=match slot.op { GradientOp::Input=>true,GradientOp::Add{left,right}|GradientOp::Mul{left,right}=>left<index&&right<index }; if !valid{return Err(NativeError::InvalidProgram("GradientTape slot references must point to prior slots".into()));} }
+                if gradients.iter().any(|bits|!f32::from_bits(*bits).is_finite()){return Err(NativeError::Type("GradientTape gradients must be finite".into()));}
+            }
             NativeValue::Embedding { domain, values } => {
                 validate_embedding_parts(domain, values, limits.max_collection_items)?;
             }
@@ -427,6 +441,7 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
                 string_bytes = string_bytes.checked_add(value.len())
                     .ok_or_else(|| NativeError::ResourceLimit("string byte accounting overflow".into()))?;
             }
+            NativeValue::GradientTape { slots, gradients, .. } => { nodes=nodes.checked_add(slots.len()).and_then(|n|n.checked_add(gradients.len())).ok_or_else(||NativeError::ResourceLimit("GradientTape footprint accounting overflow".into()))?; }
             NativeValue::LoRAAdapter { a_values, b_values, .. } => {
                 nodes = nodes.checked_add(a_values.len()).and_then(|n| n.checked_add(b_values.len()))
                     .ok_or_else(|| NativeError::ResourceLimit("LoRAAdapter footprint accounting overflow".into()))?;
@@ -556,7 +571,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -726,7 +741,7 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
             code[jump_end] = NativeInstr::Jump(end);
         }
         IrValue::Call { callee, args } => {
-            if callee != "kv_append" && callee != "context_append" && callee != "vector_index_insert" && !matches!(callee.as_str(), "mcts_root" | "mcts_expand" | "mcts_update" | "mcts_backpropagate") {
+            if callee != "kv_append" && callee != "context_append" && callee != "vector_index_insert" && !matches!(callee.as_str(), "mcts_root" | "mcts_expand" | "mcts_update" | "mcts_backpropagate" | "gradient_input" | "gradient_add" | "gradient_mul" | "gradient_backward") {
                 for arg in args { emit_value(arg, code)?; }
             }
             if callee == "chr" && args.len() == 1 {
@@ -743,7 +758,14 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::TensorAdd);
             } else if callee == "tensor_matmul" && args.len() == 2 {
                 code.push(NativeInstr::TensorMatMul);
-            } else if callee == "attention_block_new" && args.len() == 4 {
+            } else if callee == "gradient_tape" && args.len() == 1 { code.push(NativeInstr::MakeGradientTape); }
+            else if callee == "gradient_input" && args.len() == 2 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_input requires named GradientTape".into()));}; emit_value(&args[1],code)?; code.push(NativeInstr::GradientInput{name:name.clone()}); }
+            else if callee == "gradient_add" && args.len() == 3 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_add requires named GradientTape".into()));}; emit_value(&args[1],code)?;emit_value(&args[2],code)?;code.push(NativeInstr::GradientAdd{name:name.clone()}); }
+            else if callee == "gradient_mul" && args.len() == 3 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_mul requires named GradientTape".into()));}; emit_value(&args[1],code)?;emit_value(&args[2],code)?;code.push(NativeInstr::GradientMul{name:name.clone()}); }
+            else if callee == "gradient_backward" && args.len() == 3 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_backward requires named GradientTape".into()));}; emit_value(&args[1],code)?;emit_value(&args[2],code)?;code.push(NativeInstr::GradientBackward{name:name.clone()}); }
+            else if callee == "gradient_value" && args.len() == 2 { code.push(NativeInstr::GradientValue); }
+            else if callee == "gradient_get" && args.len() == 2 { code.push(NativeInstr::GradientGet); }
+            else if callee == "attention_block_new" && args.len() == 4 {
                 code.push(NativeInstr::MakeAttentionBlock);
             } else if callee == "attention_block_apply" && args.len() == 4 {
                 code.push(NativeInstr::AttentionBlockApply);
@@ -1010,6 +1032,7 @@ fn run_function(
                 | NativeInstr::PushTensor { .. }
                 | NativeInstr::TensorAdd
                 | NativeInstr::TensorMatMul
+                | NativeInstr::MakeGradientTape | NativeInstr::GradientInput { .. } | NativeInstr::GradientAdd { .. } | NativeInstr::GradientMul { .. } | NativeInstr::GradientBackward { .. } | NativeInstr::GradientValue | NativeInstr::GradientGet
                 | NativeInstr::MakeAttentionBlock
                 | NativeInstr::AttentionBlockApply
                 | NativeInstr::AttentionBlockCached
@@ -1520,6 +1543,11 @@ fn run_function(
                 if output.iter().any(|v|!v.is_finite()){return Err(NativeError::Type("LoRA output is non-finite".into()));}
                 stack.push(NativeValue::Tensor{shape:vec![batch,output_dim],values:output.into_iter().map(f32::to_bits).collect()});
             }
+            NativeInstr::MakeGradientTape => { let capacity=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape capacity must be positive".into()))?; if capacity==0||capacity>4096{return Err(NativeError::ResourceLimit("GradientTape capacity must be in 1..=4096".into()));} stack.push(NativeValue::GradientTape{capacity,slots:Vec::new(),gradients:Vec::new(),backward_ready:false}); }
+            NativeInstr::GradientInput{name} => { let value=pop_float(&mut stack)?; let tape=locals.get_mut(name).ok_or_else(||NativeError::Type("GradientTape binding not found".into()))?; let NativeValue::GradientTape{capacity,slots,gradients,backward_ready}=tape else{return Err(NativeError::Type("gradient_input requires GradientTape".into()));}; if slots.len()>=*capacity{return Err(NativeError::ResourceLimit("GradientTape slot capacity exhausted".into()));} slots.push(GradientSlot{value_bits:value.to_bits(),op:GradientOp::Input});gradients.clear();*backward_ready=false;stack.push(NativeValue::Int((slots.len()-1) as i64)); }
+            NativeInstr::GradientAdd{name} | NativeInstr::GradientMul{name} => { let right=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape slot id must be non-negative".into()))?; let left=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape slot id must be non-negative".into()))?; let is_mul=matches!(instr,NativeInstr::GradientMul{..}); let tape=locals.get_mut(name).ok_or_else(||NativeError::Type("GradientTape binding not found".into()))?; let NativeValue::GradientTape{capacity,slots,gradients,backward_ready}=tape else{return Err(NativeError::Type("gradient operation requires GradientTape".into()));}; if left>=slots.len()||right>=slots.len(){return Err(NativeError::Type("GradientTape slot reference must exist before use".into()));} if slots.len()>=*capacity{return Err(NativeError::ResourceLimit("GradientTape slot capacity exhausted".into()));} let a=f32::from_bits(slots[left].value_bits);let b=f32::from_bits(slots[right].value_bits);let value=if is_mul{a*b}else{a+b};if !value.is_finite(){return Err(NativeError::Type("GradientTape intermediate must be finite".into()));} let op=if is_mul{GradientOp::Mul{left,right}}else{GradientOp::Add{left,right}};slots.push(GradientSlot{value_bits:value.to_bits(),op});gradients.clear();*backward_ready=false;stack.push(NativeValue::Int((slots.len()-1) as i64)); }
+            NativeInstr::GradientBackward{name} => { let seed=pop_float(&mut stack)?;let output=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape output slot must be non-negative".into()))?;let tape=locals.get_mut(name).ok_or_else(||NativeError::Type("GradientTape binding not found".into()))?;let NativeValue::GradientTape{slots,gradients,backward_ready,..}=tape else{return Err(NativeError::Type("gradient_backward requires GradientTape".into()));};if output>=slots.len(){return Err(NativeError::Type("GradientTape output slot does not exist".into()));}let mut grads=vec![0.0f32;slots.len()];grads[output]=seed;for index in (0..=output).rev(){let g=grads[index];match slots[index].op{GradientOp::Input=>{},GradientOp::Add{left,right}=>{grads[left]+=g;grads[right]+=g;},GradientOp::Mul{left,right}=>{grads[left]+=g*f32::from_bits(slots[right].value_bits);grads[right]+=g*f32::from_bits(slots[left].value_bits);}}if grads.iter().any(|v|!v.is_finite()){return Err(NativeError::Type("GradientTape gradient accumulation is non-finite".into()));}}*gradients=grads.into_iter().map(f32::to_bits).collect();*backward_ready=true;stack.push(NativeValue::Unit); }
+            NativeInstr::GradientValue | NativeInstr::GradientGet => { let slot=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape slot id must be non-negative".into()))?;let tape=stack.pop().ok_or_else(||NativeError::InvalidProgram("GradientTape operand missing".into()))?;let NativeValue::GradientTape{slots,gradients,backward_ready,..}=tape else{return Err(NativeError::Type("gradient query requires GradientTape".into()));};if slot>=slots.len(){return Err(NativeError::Type("GradientTape slot does not exist".into()));}let bits=if matches!(instr,NativeInstr::GradientValue){slots[slot].value_bits}else{if !backward_ready{return Err(NativeError::Type("gradient_get requires gradient_backward first".into()));}*gradients.get(slot).ok_or_else(||NativeError::InvalidProgram("GradientTape gradient state malformed".into()))?};stack.push(NativeValue::Float(bits)); }
             NativeInstr::MakeMctsTree => {
                 let branches = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS branch bound must be positive".into()))?;
                 let nodes = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS node bound must be positive".into()))?;
@@ -2063,6 +2091,7 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                     add_bytes(domain)?;
                 }
                 NativeInstr::MctsRoot { name } | NativeInstr::MctsExpand { name } | NativeInstr::MctsUpdate { name } | NativeInstr::MctsBackpropagate { name } => { if name.trim().is_empty() { return Err(NativeError::InvalidProgram("MCTS binding name must not be empty".into())); } add_bytes(name)?; },
+                NativeInstr::GradientInput { name } | NativeInstr::GradientAdd { name } | NativeInstr::GradientMul { name } | NativeInstr::GradientBackward { name } => { if name.trim().is_empty() { return Err(NativeError::InvalidProgram("GradientTape binding name must not be empty".into())); } add_bytes(name)?; },
                 NativeInstr::VectorIndexInsert { name } => {
                     if name.trim().is_empty() {
                         return Err(NativeError::InvalidProgram("VectorIndexInsert binding name must not be empty".into()));
@@ -2191,6 +2220,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::PushTensor { shape, values } => format!("PushTensor:{}/{}", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(","), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
         NativeInstr::TensorAdd => "TensorAdd".into(),
         NativeInstr::TensorMatMul => "TensorMatMul".into(),
+        NativeInstr::MakeGradientTape => "MakeGradientTape".into(), NativeInstr::GradientInput{name}=>format!("GradientInput:{}",escape_artifact(name)), NativeInstr::GradientAdd{name}=>format!("GradientAdd:{}",escape_artifact(name)), NativeInstr::GradientMul{name}=>format!("GradientMul:{}",escape_artifact(name)), NativeInstr::GradientBackward{name}=>format!("GradientBackward:{}",escape_artifact(name)), NativeInstr::GradientValue=>"GradientValue".into(), NativeInstr::GradientGet=>"GradientGet".into(),
         NativeInstr::MakeAttentionBlock => "MakeAttentionBlock".into(),
         NativeInstr::AttentionBlockApply => "AttentionBlockApply".into(),
         NativeInstr::AttentionBlockCached => "AttentionBlockCached".into(),
@@ -2267,6 +2297,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "PushTensor"=>{let (shape, values)=arg.split_once('/').ok_or_else(bad)?; let shape=shape.split(',').map(|v|v.parse::<usize>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushTensor{shape,values}},
         "TensorAdd"=>NativeInstr::TensorAdd,
         "TensorMatMul"=>NativeInstr::TensorMatMul,
+        "MakeGradientTape"=>NativeInstr::MakeGradientTape, "GradientInput"=>NativeInstr::GradientInput{name:unescape_artifact(arg)?}, "GradientAdd"=>NativeInstr::GradientAdd{name:unescape_artifact(arg)?}, "GradientMul"=>NativeInstr::GradientMul{name:unescape_artifact(arg)?}, "GradientBackward"=>NativeInstr::GradientBackward{name:unescape_artifact(arg)?}, "GradientValue"=>NativeInstr::GradientValue, "GradientGet"=>NativeInstr::GradientGet,
         "MakeAttentionBlock"=>NativeInstr::MakeAttentionBlock,
         "AttentionBlockApply"=>NativeInstr::AttentionBlockApply,
         "AttentionBlockCached"=>NativeInstr::AttentionBlockCached,
@@ -4251,5 +4282,121 @@ fn main() -> Int
         }
         assert_eq!(changed, 2, "fixture should contain the logits and mask list constructors");
         assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("lengths")));
+    }
+}
+
+#[cfg(test)]
+mod gradient_tape_source_tests {
+    use super::*;
+    fn compile_source(source: &str) -> NativeProgram {
+        let module=crate::parse(source).expect("source parses");
+        crate::sema::check(&module).expect("GradientTape source passes semantic checks");
+        compile_program(&crate::ir::lower(&module)).expect("GradientTape source lowers")
+    }
+    #[test]
+    fn gradient_tape_forward_backward_and_artifact_roundtrip_are_deterministic() {
+        let source=r#"module gradient_tape_chain
+fn main() -> F32
+  let tape = gradient_tape(8)
+  let x = gradient_input(tape, 3.0)
+  let y = gradient_input(tape, 4.0)
+  let product = gradient_mul(tape, x, y)
+  let output = gradient_add(tape, product, x)
+  gradient_backward(tape, output, 1.0)
+  gradient_get(tape, x)
+"#;
+        let program=compile_source(source);
+        let artifact=encode_program(&program);
+        let decoded=decode_program(&artifact).expect("artifact decodes");
+        assert_eq!(encode_program(&decoded),artifact);
+        assert_eq!(run_program(&decoded,"main",&[]).unwrap(),NativeValue::Float(5.0f32.to_bits()));
+    }
+    #[test]
+    fn gradient_tape_repeated_operands_accumulate_and_values_are_observable() {
+        let source=r#"module gradient_tape_square
+fn main() -> F32
+  let tape = gradient_tape(4)
+  let x = gradient_input(tape, 3.0)
+  let square = gradient_mul(tape, x, x)
+  gradient_backward(tape, square, 1.0)
+  gradient_get(tape, x)
+"#;
+        let program=compile_source(source);
+        assert_eq!(run_program(&decode_program(&encode_program(&program)).unwrap(),"main",&[]).unwrap(),NativeValue::Float(6.0f32.to_bits()));
+    }
+    #[test]
+    fn gradient_tape_rejects_forward_slot_refs_capacity_overflow_and_missing_backward() {
+        let bad_ref=r#"module gradient_tape_bad_ref
+fn main() -> Int
+  let tape = gradient_tape(4)
+  let x = gradient_input(tape, 2.0)
+  gradient_add(tape, x, 9)
+"#;
+        let p=compile_source(bad_ref);
+        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::Type(message)) if message.contains("exist before use")));
+        let full=r#"module gradient_tape_full
+fn main() -> Int
+  let tape = gradient_tape(1)
+  let x = gradient_input(tape, 2.0)
+  gradient_input(tape, 3.0)
+"#;
+        let p=compile_source(full);
+        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::ResourceLimit(message)) if message.contains("capacity")));
+        let no_backward=r#"module gradient_tape_no_backward
+fn main() -> F32
+  let tape = gradient_tape(2)
+  let x = gradient_input(tape, 2.0)
+  gradient_get(tape, x)
+"#;
+        let p=compile_source(no_backward);
+        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::Type(message)) if message.contains("backward")));
+        let invalid=crate::parse("module invalid_gradient_tape\nfn main() -> GradientTape\n  gradient_tape(0)\n").unwrap();
+        assert!(crate::sema::check(&invalid).is_err());
+    }
+    #[test]
+    fn gradient_tape_rejects_malformed_artifacts_and_overflowing_intermediates() {
+        let source=r#"module gradient_tape_overflow
+fn main() -> Int
+  let tape = gradient_tape(4)
+  let x = gradient_input(tape, 2.0)
+  let y = gradient_input(tape, 3.0)
+  gradient_mul(tape, x, y)
+"#;
+        let mut program=compile_source(source);
+        let code=&mut program.functions.get_mut("main").unwrap().code;
+        let mut replaced=0;
+        for op in code.iter_mut() {
+            if matches!(op,NativeInstr::PushFloat(_)) {
+                *op=NativeInstr::PushFloat(f32::MAX.to_bits()); replaced+=1;
+            }
+        }
+        assert_eq!(replaced,2);
+        assert!(matches!(run_program(&program,"main",&[]),Err(NativeError::Type(message)) if message.contains("intermediate")));
+
+        let valid=compile_source(r#"module gradient_tape_malformed
+fn main() -> Int
+  let tape = gradient_tape(2)
+  let x = gradient_input(tape, 1.0)
+  x
+"#);
+        let malformed=encode_program(&valid).replace("GradientInput:", "GradientInputBogus:");
+        assert!(matches!(decode_program(&malformed),Err(NativeError::InvalidProgram(_))));
+        let invalid=NativeValue::GradientTape { capacity: 2, slots: vec![GradientSlot { value_bits: 1.0f32.to_bits(), op: GradientOp::Add { left: 0, right: 0 } }], gradients: vec![], backward_ready: false };
+        assert!(matches!(validate_value(&invalid,ExecutionLimits::default()),Err(NativeError::InvalidProgram(message)) if message.contains("prior slots")));
+    }
+    #[test]
+    fn gradient_tape_rejects_nonfinite_inputs_and_gradient_overflow() {
+        let source=r#"module gradient_tape_nonfinite
+fn main() -> F32
+  let tape = gradient_tape(3)
+  let x = gradient_input(tape, 2.0)
+  gradient_backward(tape, x, 1.0)
+  gradient_get(tape, x)
+"#;
+        let mut p=compile_source(source);
+        let code=&mut p.functions.get_mut("main").unwrap().code;
+        let index=code.iter().position(|op|matches!(op,NativeInstr::PushFloat(_))).unwrap();
+        code[index]=NativeInstr::PushFloat(f32::INFINITY.to_bits());
+        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::Type(message)) if message.contains("finite")));
     }
 }
