@@ -342,6 +342,7 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                 let mut ids = std::collections::BTreeSet::new();
                 for (id, coordinates) in entries {
                     if !ids.insert(*id) { return Err(NativeError::InvalidProgram("duplicate VectorIndex id".into())); }
+                    if *id > i64::MAX as u64 { return Err(NativeError::InvalidProgram("VectorIndex id exceeds signed Int range".into())); }
                     if coordinates.len() != *dimensions {
                         return Err(NativeError::InvalidProgram("VectorIndex coordinate dimension mismatch".into()));
                     }
@@ -4142,6 +4143,8 @@ fn main() -> Int
         let artifact = encode_program(&program);
         let decoded = decode_program(&artifact).expect("VectorIndex artifact decodes");
         assert_eq!(encode_program(&decoded), artifact);
+        let malformed_artifact = artifact.replacen("MakeVectorIndex", "MakeVectorIndexBogus", 1);
+        assert!(matches!(decode_program(&malformed_artifact), Err(NativeError::InvalidProgram(_))));
         assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(39));
     }
 
@@ -4195,7 +4198,7 @@ fn main() -> Int
         let overflow = r#"module vector_distance_overflow
 fn main() -> Int
   let index = vector_index("domain-a", 1)
-  vector_index_insert(index, 1, "domain-a", [3.0e38])
+  vector_index_insert(index, 1, "domain-a", [300000000000000000000000000000000000000.0])
   let hits = vector_index_search(index, "domain-a", [0.0], 1)
   hits[0][0]
 "#;
@@ -4206,6 +4209,8 @@ fn main() -> Int
         assert!(matches!(validate_value(&malformed, ExecutionLimits::default()), Err(NativeError::InvalidProgram(message)) if message.contains("dimension")));
         let duplicate = NativeValue::VectorIndex { domain: "domain-a".into(), dimensions: 1, entries: vec![(1, vec![0.0f32.to_bits()]), (1, vec![1.0f32.to_bits()])] };
         assert!(matches!(validate_value(&duplicate, ExecutionLimits::default()), Err(NativeError::InvalidProgram(message)) if message.contains("duplicate")));
+        let oversized_id = NativeValue::VectorIndex { domain: "domain-a".into(), dimensions: 1, entries: vec![(u64::MAX, vec![0.0f32.to_bits()])] };
+        assert!(matches!(validate_value(&oversized_id, ExecutionLimits::default()), Err(NativeError::InvalidProgram(message)) if message.contains("signed Int")));
         let limited = NativeValue::VectorIndex { domain: "domain-a".into(), dimensions: 2, entries: vec![(1, vec![0.0f32.to_bits(), 0.0f32.to_bits()]), (2, vec![1.0f32.to_bits(), 1.0f32.to_bits()])] };
         let limits = ExecutionLimits { max_value_nodes: 4, ..ExecutionLimits::default() };
         assert!(matches!(validate_value(&limited, limits), Err(NativeError::ResourceLimit(_))));
