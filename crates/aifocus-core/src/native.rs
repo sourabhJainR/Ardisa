@@ -309,6 +309,14 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
             NativeValue::Tensor { shape, values } => {
                 validate_tensor_parts(shape, values, limits.max_collection_items)?;
             }
+            NativeValue::AttentionBlock { hidden, heads, head_dim, .. } => {
+                if *hidden == 0 || *heads == 0 || *head_dim == 0 || *heads > 256 || *hidden != heads.checked_mul(*head_dim).unwrap_or(usize::MAX) {
+                    return Err(NativeError::Type("invalid AttentionBlock hidden/head configuration".into()));
+                }
+            }
+            NativeValue::LoRAAdapter { a_shape, a_values, b_shape, b_values, alpha_bits, rank } => {
+                validate_lora_parts(a_shape, a_values, b_shape, b_values, *alpha_bits, *rank, limits.max_collection_items)?;
+            }
             NativeValue::Embedding { domain, values } => {
                 validate_embedding_parts(domain, values, limits.max_collection_items)?;
             }
@@ -1238,6 +1246,44 @@ fn run_function(
                 }
                 stack.push(NativeValue::Tensor { shape: vec![m, n], values });
             }
+            NativeInstr::MakeAttentionBlock => {
+                let causal = pop_bool(&mut stack)?;
+                let head_dim = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("AttentionBlock head_dim must be positive".into()))?;
+                let heads = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("AttentionBlock heads must be positive".into()))?;
+                let hidden = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("AttentionBlock hidden must be positive".into()))?;
+                if hidden == 0 || heads == 0 || head_dim == 0 || heads > 256 || hidden != heads.checked_mul(head_dim).unwrap_or(usize::MAX) {
+                    return Err(NativeError::Type("AttentionBlock requires hidden == heads * head_dim, positive dimensions, and heads <= 256".into()));
+                }
+                stack.push(NativeValue::AttentionBlock { hidden, heads, head_dim, causal });
+            }
+            NativeInstr::AttentionBlockApply => {
+                let value = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let key = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let query = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let block = match stack.pop() { Some(NativeValue::AttentionBlock { hidden, heads, head_dim, causal }) => (hidden, heads, head_dim, causal), _ => return Err(NativeError::Type("attention_block_apply requires an AttentionBlock".into())) };
+                let output = attention_multihead(&block, &query.0, &query.1, &key.0, &key.1, &value.0, &value.1, state.limits)?;
+                stack.push(NativeValue::Tensor { shape: output.0, values: output.1 });
+            }
+            NativeInstr::AttentionBlockCached => {
+                let cache = match stack.pop() { Some(NativeValue::KvCache { entries, .. }) => entries, _ => return Err(NativeError::Type("attention_block_cached requires a KvCache".into())) };
+                let query = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let block = match stack.pop() { Some(NativeValue::AttentionBlock { hidden, heads, head_dim, causal }) => (hidden, heads, head_dim, causal), _ => return Err(NativeError::Type("attention_block_cached requires an AttentionBlock".into())) };
+                if query.0.len() != 2 || query.0[1] != block.0 || cache.is_empty() || cache.iter().any(|(k,v)| k.len()!=block.0 || v.len()!=block.0) {
+                    return Err(NativeError::Type("AttentionBlock/KVCache dimensions are incompatible or cache is empty".into()));
+                }
+                let (tq, hidden, heads, head_dim) = (query.0[0], block.0, block.1, block.2);
+                let out_count = tq.checked_mul(hidden).ok_or_else(|| NativeError::ResourceLimit("cached attention output size overflow".into()))?;
+                let work = tq.checked_mul(cache.len()).and_then(|n| n.checked_mul(hidden)).ok_or_else(|| NativeError::ResourceLimit("cached attention work overflow".into()))?;
+                if out_count > state.limits.max_collection_items.min(MAX_TENSOR_ELEMENTS) || work > state.limits.max_value_nodes.saturating_mul(16) { return Err(NativeError::ResourceLimit("cached attention exceeds resource budget".into())); }
+                let mut out = vec![0.0f32; out_count];
+                for qi in 0..tq { for h in 0..heads {
+                    let start = h*head_dim; let mut scores=Vec::with_capacity(cache.len());
+                    for (k,_) in &cache { let mut dot=0.0f32; for d in 0..head_dim { dot += f32::from_bits(query.1[qi*hidden+start+d])*f32::from_bits(k[start+d]); } let score=dot/(head_dim as f32).sqrt(); if !score.is_finite(){return Err(NativeError::Type("cached attention score is non-finite".into()));} scores.push(score); }
+                    let max=scores.iter().copied().fold(f32::NEG_INFINITY,f32::max); let mut weights=scores.iter().map(|x|(*x-max).exp()).collect::<Vec<_>>(); let total: f32=weights.iter().sum(); if !total.is_finite()||total<=0.0{return Err(NativeError::Type("cached attention softmax failed".into()));} for w in &mut weights{*w/=total;}
+                    for d in 0..head_dim { let mut sum=0.0f32; for (i,(_,v)) in cache.iter().enumerate(){sum+=weights[i]*f32::from_bits(v[start+d]);} if !sum.is_finite(){return Err(NativeError::Type("cached attention output is non-finite".into()));} out[qi*hidden+start+d]=sum; }
+                }}
+                stack.push(NativeValue::Tensor { shape: vec![tq,hidden], values: out.into_iter().map(f32::to_bits).collect() });
+            }
             NativeInstr::AttentionBlock => {
                 let causal = pop_bool(&mut stack)?;
                 let value = pop_tensor(&mut stack, state.limits.max_collection_items)?;
@@ -1326,6 +1372,28 @@ fn run_function(
                     }
                 }
                 stack.push(NativeValue::Tensor { shape: vec![tq, dv], values: output.into_iter().map(f32::to_bits).collect() });
+            }
+            NativeInstr::MakeLoRAAdapter => {
+                let rank = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("LoRA rank must be positive".into()))?;
+                let alpha = pop_float(&mut stack)?;
+                let b = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let a = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                validate_lora_parts(&a.0, &a.1, &b.0, &b.1, alpha.to_bits(), rank, state.limits.max_collection_items)?;
+                stack.push(NativeValue::LoRAAdapter { a_shape: a.0, a_values: a.1, b_shape: b.0, b_values: b.1, alpha_bits: alpha.to_bits(), rank });
+            }
+            NativeInstr::LoRAAdapterApply => {
+                let input = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let (a_shape,a_values,b_shape,b_values,alpha_bits,rank) = match stack.pop() { Some(NativeValue::LoRAAdapter { a_shape,a_values,b_shape,b_values,alpha_bits,rank }) => (a_shape,a_values,b_shape,b_values,alpha_bits,rank), _ => return Err(NativeError::Type("lora_adapter_apply requires a LoRAAdapter".into())) };
+                validate_lora_parts(&a_shape,&a_values,&b_shape,&b_values,alpha_bits,rank,state.limits.max_collection_items)?;
+                if input.0.len()!=2 || input.0[1]!=a_shape[1] { return Err(NativeError::Type("LoRAAdapter input dimension mismatch".into())); }
+                let (batch,input_dim,output_dim)=(input.0[0],a_shape[1],b_shape[0]);
+                let out_count=batch.checked_mul(output_dim).ok_or_else(||NativeError::ResourceLimit("LoRA adapter output overflow".into()))?;
+                let work=batch.checked_mul(rank).and_then(|x|x.checked_mul(input_dim)).and_then(|x|x.checked_add(batch.checked_mul(rank)?.checked_mul(output_dim)?)).ok_or_else(||NativeError::ResourceLimit("LoRA adapter work overflow".into()))?;
+                if out_count>state.limits.max_collection_items.min(MAX_TENSOR_ELEMENTS)||work>state.limits.max_value_nodes.saturating_mul(16){return Err(NativeError::ResourceLimit("LoRA adapter exceeds resource budget".into()));}
+                let scale=f32::from_bits(alpha_bits)/(rank as f32); let mut out=vec![0.0f32;out_count];
+                for row in 0..batch { for r in 0..rank { let mut sum=0.0f32; for col in 0..input_dim { sum+=f32::from_bits(input.1[row*input_dim+col])*f32::from_bits(a_values[r*input_dim+col]); } if !sum.is_finite(){return Err(NativeError::Type("LoRA adapter intermediate is non-finite".into()));} for col in 0..output_dim { out[row*output_dim+col]+=scale*sum*f32::from_bits(b_values[col*rank+r]); } }}
+                if out.iter().any(|v|!v.is_finite()){return Err(NativeError::Type("LoRA adapter output is non-finite".into()));}
+                stack.push(NativeValue::Tensor { shape: vec![batch,output_dim], values: out.into_iter().map(f32::to_bits).collect() });
             }
             NativeInstr::LoRAApply => {
                 let rank = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("LoRA rank must be positive".into()))?;
