@@ -1630,6 +1630,52 @@ fn run_function(
                 let tree = stack.pop().ok_or_else(|| NativeError::Type("mcts_len missing tree".into()))?;
                 stack.push(NativeValue::Int(mcts_len(&tree)? as i64));
             }
+            NativeInstr::MakeGradientTape => {
+                let max_slots = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("GradientTape max_slots must be positive".into()))?;
+                let tape = crate::ai_autograd::GradientTape::new(max_slots).map_err(gradient_error_to_native)?;
+                stack.push(NativeValue::GradientTape(tape));
+            }
+            NativeInstr::GradInput { name } => {
+                let value = pop_float(&mut stack)?;
+                let tape = locals.get_mut(name).ok_or_else(|| NativeError::Type("GradientTape binding not found".into()))?;
+                let NativeValue::GradientTape(tape) = tape else { return Err(NativeError::Type("grad_input requires GradientTape".into())); };
+                let slot = tape.input(value).map_err(gradient_error_to_native)?;
+                stack.push(NativeValue::Int(slot as i64));
+            }
+            NativeInstr::GradAdd { name } | NativeInstr::GradMul { name } => {
+                let right = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("GradientTape slot must be non-negative".into()))?;
+                let left = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("GradientTape slot must be non-negative".into()))?;
+                let multiply = matches!(instr, NativeInstr::GradMul { .. });
+                let tape = locals.get_mut(name).ok_or_else(|| NativeError::Type("GradientTape binding not found".into()))?;
+                let NativeValue::GradientTape(tape) = tape else { return Err(NativeError::Type("gradient operation requires GradientTape".into())); };
+                let slot = if multiply { tape.mul(left, right) } else { tape.add(left, right) }.map_err(gradient_error_to_native)?;
+                stack.push(NativeValue::Int(slot as i64));
+            }
+            NativeInstr::GradBackward { name } => {
+                let seed = pop_float(&mut stack)?;
+                let output = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("GradientTape output slot must be non-negative".into()))?;
+                let tape = locals.get_mut(name).ok_or_else(|| NativeError::Type("GradientTape binding not found".into()))?;
+                let NativeValue::GradientTape(tape) = tape else { return Err(NativeError::Type("grad_backward requires GradientTape".into())); };
+                tape.backward(output, seed).map_err(gradient_error_to_native)?;
+                stack.push(NativeValue::Unit);
+            }
+            NativeInstr::GradValue => {
+                let slot = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("GradientTape slot must be non-negative".into()))?;
+                let tape = stack.pop().ok_or_else(|| NativeError::Type("grad_value missing GradientTape".into()))?;
+                let NativeValue::GradientTape(tape) = tape else { return Err(NativeError::Type("grad_value requires GradientTape".into())); };
+                stack.push(NativeValue::Float(tape.value(slot).map_err(gradient_error_to_native)?.to_bits()));
+            }
+            NativeInstr::GradDerivative => {
+                let slot = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("GradientTape slot must be non-negative".into()))?;
+                let tape = stack.pop().ok_or_else(|| NativeError::Type("grad_derivative missing GradientTape".into()))?;
+                let NativeValue::GradientTape(tape) = tape else { return Err(NativeError::Type("grad_derivative requires GradientTape".into())); };
+                stack.push(NativeValue::Float(tape.derivative(slot).map_err(gradient_error_to_native)?.to_bits()));
+            }
+            NativeInstr::GradLen => {
+                let tape = stack.pop().ok_or_else(|| NativeError::Type("grad_len missing GradientTape".into()))?;
+                let NativeValue::GradientTape(tape) = tape else { return Err(NativeError::Type("grad_len requires GradientTape".into())); };
+                stack.push(NativeValue::Int(tape.len() as i64));
+            }
             NativeInstr::MakeKvCache => {
                 let capacity = match stack.pop() { Some(NativeValue::Int(value)) if value > 0 => usize::try_from(value).map_err(|_| NativeError::ResourceLimit("KVCache capacity overflow".into()))?, _ => return Err(NativeError::Type("kv_cache capacity must be a positive Int".into())) };
                 let cache = KvCache::new(capacity).map_err(|error| NativeError::Type(format!("invalid KVCache capacity: {error:?}")))?;
@@ -2261,6 +2307,14 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::MctsUpdate { name } => format!("MctsUpdate:{}", escape_artifact(name)),
         NativeInstr::MctsBackpropagate { name } => format!("MctsBackpropagate:{}", escape_artifact(name)),
         NativeInstr::MctsLen => "MctsLen".into(),
+        NativeInstr::MakeGradientTape => "MakeGradientTape".into(),
+        NativeInstr::GradInput { name } => format!("GradInput:{}", escape_artifact(name)),
+        NativeInstr::GradAdd { name } => format!("GradAdd:{}", escape_artifact(name)),
+        NativeInstr::GradMul { name } => format!("GradMul:{}", escape_artifact(name)),
+        NativeInstr::GradBackward { name } => format!("GradBackward:{}", escape_artifact(name)),
+        NativeInstr::GradValue => "GradValue".into(),
+        NativeInstr::GradDerivative => "GradDerivative".into(),
+        NativeInstr::GradLen => "GradLen".into(),
         NativeInstr::MakeKvCache => "MakeKvCache".into(), NativeInstr::KvLen => "KvLen".into(), NativeInstr::KvCapacity => "KvCapacity".into(),
         NativeInstr::KvAppend { name, evict_oldest } => format!("KvAppend:{},{}", escape_artifact(name), evict_oldest),
         NativeInstr::MakeContextWindow => "MakeContextWindow".into(), NativeInstr::ContextLen => "ContextLen".into(), NativeInstr::ContextBytes => "ContextBytes".into(), NativeInstr::ContextTokens => "ContextTokens".into(),
@@ -2337,6 +2391,14 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "MctsUpdate"=>NativeInstr::MctsUpdate{name:unescape_artifact(arg)?},
         "MctsBackpropagate"=>NativeInstr::MctsBackpropagate{name:unescape_artifact(arg)?},
         "MctsLen"=>NativeInstr::MctsLen,
+        "MakeGradientTape"=>NativeInstr::MakeGradientTape,
+        "GradInput"=>NativeInstr::GradInput{name:unescape_artifact(arg)?},
+        "GradAdd"=>NativeInstr::GradAdd{name:unescape_artifact(arg)?},
+        "GradMul"=>NativeInstr::GradMul{name:unescape_artifact(arg)?},
+        "GradBackward"=>NativeInstr::GradBackward{name:unescape_artifact(arg)?},
+        "GradValue"=>NativeInstr::GradValue,
+        "GradDerivative"=>NativeInstr::GradDerivative,
+        "GradLen"=>NativeInstr::GradLen,
         "MakeKvCache"=>NativeInstr::MakeKvCache,"KvLen"=>NativeInstr::KvLen,"KvCapacity"=>NativeInstr::KvCapacity,
         "KvAppend"=>{let (name,policy)=arg.rsplit_once(',').ok_or_else(bad)?; let policy=policy.parse::<bool>().map_err(|_|bad())?; NativeInstr::KvAppend{name:unescape_artifact(name)?,evict_oldest:policy}},
         "MakeContextWindow"=>NativeInstr::MakeContextWindow,"ContextLen"=>NativeInstr::ContextLen,"ContextBytes"=>NativeInstr::ContextBytes,"ContextTokens"=>NativeInstr::ContextTokens,
@@ -2359,6 +2421,17 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "Join"=>NativeInstr::Join{name:unescape_artifact(arg)?},"Cancel"=>NativeInstr::Cancel{name:unescape_artifact(arg)?},
         _=>return Err(bad()),
     })
+}
+
+fn gradient_error_to_native(error: crate::ai_autograd::GradientError) -> NativeError {
+    use crate::ai_autograd::GradientError::*;
+    match error {
+        ResourceLimit => NativeError::ResourceLimit("GradientTape slot or value budget exceeded".into()),
+        InvalidSlot => NativeError::Type("GradientTape slot is invalid or refers forward".into()),
+        NonFinite => NativeError::Type("GradientTape input or intermediate must be finite F32".into()),
+        BackwardNotRun => NativeError::Type("GradientTape backward pass has not run".into()),
+        InvalidTape => NativeError::InvalidProgram("invalid GradientTape state".into()),
+    }
 }
 
 fn mcts_fields(tree: &NativeValue) -> Result<(usize, usize, &Vec<NativeValue>), NativeError> {
