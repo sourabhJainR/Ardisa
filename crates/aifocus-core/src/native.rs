@@ -1985,7 +1985,44 @@ fn mcts_fields(tree: &NativeValue) -> Result<(usize, usize, &Vec<NativeValue>), 
     let max_branches = match fields.get(1) { Some(NativeValue::Int(v)) if *v > 0 && *v as usize <= crate::ai_mcts::MAX_MCTS_BRANCHES => *v as usize, _ => return Err(NativeError::InvalidProgram("invalid MCTS branch limit".into())) };
     let nodes = match fields.get(2) { Some(NativeValue::List(v)) => v, _ => return Err(NativeError::InvalidProgram("invalid MCTS node arena".into())) };
     if nodes.len() > max_nodes { return Err(NativeError::ResourceLimit("MCTS node limit exceeded".into())); }
+    validate_mcts_structure(nodes, max_branches)?;
     Ok((max_nodes, max_branches, nodes))
+}
+fn validate_mcts_structure(nodes: &[NativeValue], max_branches: usize) -> Result<(), NativeError> {
+    for (index, node) in nodes.iter().enumerate() {
+        let fields = match node { NativeValue::List(v) if v.len() == 5 => v, _ => return Err(NativeError::InvalidProgram("malformed MCTS node".into())) };
+        if !matches!(fields.first(), Some(NativeValue::Int(id)) if *id >= 0)
+            || !matches!(fields.get(1), Some(NativeValue::Int(parent)) if (*parent == -1 && index == 0) || (*parent >= 0 && (*parent as usize) < index))
+            || !matches!(fields.get(2), Some(NativeValue::List(children)) if children.len() <= max_branches)
+            || !matches!(fields.get(3), Some(NativeValue::Int(visits)) if *visits >= 0)
+            || !matches!(fields.get(4), Some(NativeValue::Float(bits)) if f32::from_bits(*bits).is_finite()) {
+            return Err(NativeError::InvalidProgram("invalid MCTS node fields".into()));
+        }
+        let children = match fields.get(2) { Some(NativeValue::List(v)) => v, _ => unreachable!() };
+        let mut seen = std::collections::BTreeSet::new();
+        for child in children {
+            let child = match child { NativeValue::Int(v) if *v > index as i64 && (*v as usize) < nodes.len() => *v as usize, _ => return Err(NativeError::InvalidProgram("invalid MCTS child index".into())) };
+            if !seen.insert(child) { return Err(NativeError::InvalidProgram("duplicate MCTS child edge".into())); }
+            if !matches!(&nodes[child], NativeValue::List(child_fields) if matches!(child_fields.get(1), Some(NativeValue::Int(parent)) if *parent == index as i64)) {
+                return Err(NativeError::InvalidProgram("MCTS parent-child relationship mismatch".into()));
+            }
+        }
+        if index > 0 {
+            let parent = match fields.get(1) { Some(NativeValue::Int(v)) if *v >= 0 => *v as usize, _ => return Err(NativeError::InvalidProgram("invalid MCTS parent".into())) };
+            if !matches!(nodes.get(parent), Some(NativeValue::List(parent_fields)) if matches!(parent_fields.get(2), Some(NativeValue::List(children)) if children.iter().any(|child| matches!(child, NativeValue::Int(v) if *v == index as i64)))) {
+                return Err(NativeError::InvalidProgram("MCTS parent is missing child edge".into()));
+            }
+            let mut cursor = index;
+            let mut depth = 0usize;
+            loop {
+                let parent = match &nodes[cursor] { NativeValue::List(fields) => match fields.get(1) { Some(NativeValue::Int(-1)) if cursor == 0 => break, Some(NativeValue::Int(v)) if *v >= 0 => *v as usize, _ => return Err(NativeError::InvalidProgram("invalid MCTS ancestry".into())) }, _ => unreachable!() };
+                cursor = parent;
+                depth += 1;
+                if depth >= crate::ai_mcts::MAX_MCTS_DEPTH { return Err(NativeError::ResourceLimit("MCTS depth limit exceeded".into())); }
+            }
+        }
+    }
+    Ok(())
 }
 fn mcts_node(state: u64, parent: Option<usize>) -> NativeValue {
     NativeValue::List(vec![NativeValue::Int(state as i64), NativeValue::Int(parent.map(|p| p as i64).unwrap_or(-1)), NativeValue::List(Vec::new()), NativeValue::Int(0), NativeValue::Float(0.0f32.to_bits())])
