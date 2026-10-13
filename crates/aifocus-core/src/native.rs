@@ -752,6 +752,16 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::TensorAdd);
             } else if callee == "tensor_matmul" && args.len() == 2 {
                 code.push(NativeInstr::TensorMatMul);
+            } else if callee == "activation_cache" && args.len() == 3 {
+                code.push(NativeInstr::MakeActivationCache);
+            } else if callee == "activation_store" && args.len() == 3 {
+                let IrValue::Name(name)=&args[0] else { return Err(NativeError::Unsupported("activation_store requires named ActivationCache".into())); };
+                emit_value(&args[1],code)?; emit_value(&args[2],code)?;
+                code.push(NativeInstr::ActivationStore { name:name.clone() });
+            } else if callee == "activation_restore" && args.len() == 2 {
+                code.push(NativeInstr::ActivationRestore);
+            } else if callee == "activation_cache_len" && args.len() == 1 {
+                code.push(NativeInstr::ActivationCacheLen);
             } else if callee == "attention_block_new" && args.len() == 4 {
                 code.push(NativeInstr::MakeAttentionBlock);
             } else if callee == "attention_block_apply" && args.len() == 4 {
