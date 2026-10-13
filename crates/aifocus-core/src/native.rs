@@ -4333,7 +4333,7 @@ fn main() -> Int
   gradient_add(tape, x, 9)
 "#;
         let p=compile_source(bad_ref);
-        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::Type(message)) if message.contains("prior slot")));
+        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::Type(message)) if message.contains("exist before use")));
         let full=r#"module gradient_tape_full
 fn main() -> Int
   let tape = gradient_tape(1)
