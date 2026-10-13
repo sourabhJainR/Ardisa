@@ -27,6 +27,10 @@ pub enum NativeInstr {
     PushTensor { shape: Vec<usize>, values: Vec<u32> },
     TensorAdd,
     TensorMatMul,
+    /// Stable scaled dot-product attention over rank-2 Q/K/V tensors.
+    AttentionBlock,
+    /// Apply a bounded low-rank update: input [batch,in], A [rank,in], B [out,rank].
+    LoRAApply,
     /// Build a finite f32 tensor from source-level shape/value integer lists.
     MakeTensor,
     /// Build a domain-tagged embedding from a source-level domain and integer list.
@@ -661,6 +665,10 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::TensorAdd);
             } else if callee == "tensor_matmul" && args.len() == 2 {
                 code.push(NativeInstr::TensorMatMul);
+            } else if callee == "attention_block" && args.len() == 4 {
+                code.push(NativeInstr::AttentionBlock);
+            } else if callee == "lora_apply" && args.len() == 5 {
+                code.push(NativeInstr::LoRAApply);
             } else if callee == "embedding" && args.len() == 2 {
                 code.push(NativeInstr::MakeEmbedding);
             } else if callee == "quantized_tensor" && args.len() == 4 {
@@ -908,6 +916,8 @@ fn run_function(
                 | NativeInstr::PushTensor { .. }
                 | NativeInstr::TensorAdd
                 | NativeInstr::TensorMatMul
+                | NativeInstr::AttentionBlock
+                | NativeInstr::LoRAApply
                 | NativeInstr::MakeTensor
                 | NativeInstr::MakeEmbedding
                 | NativeInstr::PushQuantizedTensor { .. }
@@ -1198,6 +1208,82 @@ fn run_function(
                     }
                 }
                 stack.push(NativeValue::Tensor { shape: vec![m, n], values });
+            }
+            NativeInstr::AttentionBlock => {
+                let causal = pop_bool(&mut stack)?;
+                let value = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let key = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let query = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                if query.0.len() != 2 || key.0.len() != 2 || value.0.len() != 2
+                    || query.0[1] != key.0[1] || key.0[0] != value.0[0]
+                    || query.0[0] == 0 || key.0[0] == 0 {
+                    return Err(NativeError::Type("attention_block requires Q[Tq,D], K[Tk,D], V[Tk,Dv] with compatible non-empty shapes".into()));
+                }
+                let (tq, d, tk, dv) = (query.0[0], query.0[1], key.0[0], value.0[1]);
+                let out_count = tq.checked_mul(dv).ok_or_else(|| NativeError::ResourceLimit("attention output size overflow".into()))?;
+                let work = tq.checked_mul(tk).and_then(|x| x.checked_mul(d)).ok_or_else(|| NativeError::ResourceLimit("attention work size overflow".into()))?;
+                if out_count > state.limits.max_collection_items.min(MAX_TENSOR_ELEMENTS)
+                    || work > state.limits.max_value_nodes.saturating_mul(16) {
+                    return Err(NativeError::ResourceLimit("attention computation exceeds resource budget".into()));
+                }
+                let scale = (d as f32).sqrt();
+                if !scale.is_finite() || scale == 0.0 { return Err(NativeError::Type("attention head dimension must be positive".into())); }
+                let mut output = vec![0.0f32; out_count];
+                for qi in 0..tq {
+                    let mut scores = Vec::with_capacity(tk);
+                    for ki in 0..tk {
+                        if causal && ki > qi { scores.push(f32::NEG_INFINITY); continue; }
+                        let mut dot = 0.0f32;
+                        for di in 0..d {
+                            dot += f32::from_bits(query.1[qi*d+di]) * f32::from_bits(key.1[ki*d+di]);
+                        }
+                        let score = dot / scale;
+                        if !score.is_finite() { return Err(NativeError::Type("attention score is non-finite".into())); }
+                        scores.push(score);
+                    }
+                    let max_score = scores.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
+                    if !max_score.is_finite() { return Err(NativeError::Type("attention row is fully masked".into())); }
+                    let mut weights = scores.iter().map(|s| if s.is_finite() { (*s-max_score).exp() } else { 0.0 }).collect::<Vec<_>>();
+                    let total: f32 = weights.iter().sum();
+                    if !total.is_finite() || total <= 0.0 { return Err(NativeError::Type("attention softmax normalization failed".into())); }
+                    for w in &mut weights { *w /= total; }
+                    for vi in 0..dv {
+                        let mut sum = 0.0f32;
+                        for ki in 0..tk { sum += weights[ki] * f32::from_bits(value.1[ki*dv+vi]); }
+                        if !sum.is_finite() { return Err(NativeError::Type("attention output is non-finite".into())); }
+                        output[qi*dv+vi] = sum;
+                    }
+                }
+                stack.push(NativeValue::Tensor { shape: vec![tq, dv], values: output.into_iter().map(f32::to_bits).collect() });
+            }
+            NativeInstr::LoRAApply => {
+                let rank = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("LoRA rank must be positive".into()))?;
+                let alpha = pop_float(&mut stack)?;
+                let b = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let a = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                let input = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                if rank == 0 || rank > 256 || !alpha.is_finite()
+                    || input.0.len()!=2 || a.0.len()!=2 || b.0.len()!=2
+                    || a.0[0]!=rank || b.0[1]!=rank || a.0[1]!=input.0[1] {
+                    return Err(NativeError::Type("lora_apply requires input[batch,in], A[rank,in], B[out,rank], finite alpha, and matching rank".into()));
+                }
+                let (batch, input_dim, output_dim)=(input.0[0],input.0[1],b.0[0]);
+                let out_count=batch.checked_mul(output_dim).ok_or_else(||NativeError::ResourceLimit("LoRA output size overflow".into()))?;
+                let work=batch.checked_mul(rank).and_then(|x|x.checked_mul(input_dim)).and_then(|x|x.checked_add(batch.saturating_mul(rank).saturating_mul(output_dim))).ok_or_else(||NativeError::ResourceLimit("LoRA work size overflow".into()))?;
+                if out_count>state.limits.max_collection_items.min(MAX_TENSOR_ELEMENTS) || work>state.limits.max_value_nodes.saturating_mul(16) {
+                    return Err(NativeError::ResourceLimit("LoRA computation exceeds resource budget".into()));
+                }
+                let scale=alpha/(rank as f32);
+                if !scale.is_finite(){return Err(NativeError::Type("LoRA alpha/rank scale is non-finite".into()));}
+                let mut output=vec![0.0f32;out_count];
+                for row in 0..batch { for r in 0..rank {
+                    let mut sum=0.0f32;
+                    for col in 0..input_dim {sum+=f32::from_bits(input.1[row*input_dim+col])*f32::from_bits(a.1[r*input_dim+col]);}
+                    if !sum.is_finite(){return Err(NativeError::Type("LoRA intermediate is non-finite".into()));}
+                    for col in 0..output_dim {output[row*output_dim+col]+=scale*sum*f32::from_bits(b.1[col*rank+r]);}
+                }}
+                if output.iter().any(|v|!v.is_finite()){return Err(NativeError::Type("LoRA output is non-finite".into()));}
+                stack.push(NativeValue::Tensor{shape:vec![batch,output_dim],values:output.into_iter().map(f32::to_bits).collect()});
             }
             NativeInstr::MakeMctsTree => {
                 let branches = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS branch bound must be positive".into()))?;
@@ -1870,6 +1956,8 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::PushTensor { shape, values } => format!("PushTensor:{}/{}", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(","), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
         NativeInstr::TensorAdd => "TensorAdd".into(),
         NativeInstr::TensorMatMul => "TensorMatMul".into(),
+        NativeInstr::AttentionBlock => "AttentionBlock".into(),
+        NativeInstr::LoRAApply => "LoRAApply".into(),
         NativeInstr::MakeTensor => "MakeTensor".into(),
         NativeInstr::MakeEmbedding => "MakeEmbedding".into(),
         NativeInstr::MakeQuantizedTensor => "MakeQuantizedTensor".into(),
@@ -1936,6 +2024,8 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "PushTensor"=>{let (shape, values)=arg.split_once('/').ok_or_else(bad)?; let shape=shape.split(',').map(|v|v.parse::<usize>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushTensor{shape,values}},
         "TensorAdd"=>NativeInstr::TensorAdd,
         "TensorMatMul"=>NativeInstr::TensorMatMul,
+        "AttentionBlock"=>NativeInstr::AttentionBlock,
+        "LoRAApply"=>NativeInstr::LoRAApply,
         "MakeTensor"=>NativeInstr::MakeTensor,
         "MakeEmbedding"=>NativeInstr::MakeEmbedding,
         "MakeQuantizedTensor"=>NativeInstr::MakeQuantizedTensor,
