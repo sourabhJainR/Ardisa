@@ -869,7 +869,7 @@ impl Checker {
                     for (ty,arg) in [(&hidden,&args[0]),(&heads,&args[1]),(&dim,&args[2])] { if !is_kind(ty,&TypeKind::Int) { self.error("AIF453","AttentionBlock dimensions must be Int",arg.span); } }
                     if !is_kind(&causal,&TypeKind::Bool) { self.error("AIF454","AttentionBlock causal flag must be Bool",args[3].span); }
                     if let (ExprKind::Int(h),ExprKind::Int(n),ExprKind::Int(d))=(&args[0].kind,&args[1].kind,&args[2].kind) {
-                        if *h<=0 || *n<=0 || *d<=0 || *n>256 || h.checked_div(*d).is_none() || h != &n.saturating_mul(*d) { self.error("AIF455","AttentionBlock requires positive dimensions and hidden == heads * head_dim (heads <= 256)",expr.span); }
+                        if *h<=0 || *n<=0 || *d<=0 || *n>256 || n.checked_mul(*d) != Some(*h) { self.error("AIF455","AttentionBlock requires positive dimensions and hidden == heads * head_dim (heads <= 256)",expr.span); }
                     }
                     let ty=type_node(TypeKind::Named("AttentionBlock".into()),expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
                 }
