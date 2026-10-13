@@ -185,12 +185,14 @@ pub struct NativeFunction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Native values are intentionally dependency-free so the native compiler can bootstrap incrementally.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GradientOp { Input, Add { left: usize, right: usize }, Mul { left: usize, right: usize } }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GradientSlot { pub value_bits: u32, pub op: GradientOp }
 
+/// Native values are intentionally dependency-free so the native compiler can bootstrap incrementally.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeValue {
     Int(i64),
     /// Finite f32 runtime scalar encoded as bits for deterministic Eq and serialization.
