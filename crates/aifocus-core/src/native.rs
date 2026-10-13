@@ -4591,7 +4591,7 @@ fn main() -> Int
     fn tokenizer_state_unknown_fallback_and_token_budget_are_deterministic() {
         let fallback = compile_source(r#"module tokenizer_fallback
 fn main() -> Int
-  let state = tokenizer_state(["a"], 4, 8, 99)
+  let state = tokenizer_state(["a"], 4, 8, 100)
   tokenizer_feed(state, [98])
   tokenizer_token(state, 0)
 "#);
