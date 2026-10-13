@@ -3985,3 +3985,79 @@ fn main() -> LoRAAdapter
         assert!(crate::sema::check(&unsupported).is_err(), "unsupported compile-time shape forms must fail closed");
     }
 }
+
+#[cfg(test)]
+mod moe_router_source_tests {
+    use super::*;
+
+    fn compile_source(source: &str) -> NativeProgram {
+        let module = crate::parse(source).expect("source parses");
+        crate::sema::check(&module).expect("source passes semantic validation");
+        compile_program(&crate::ir::lower(&module)).expect("source lowers to native code")
+    }
+
+    #[test]
+    fn nominal_moe_router_roundtrips_and_routes_ties_deterministically() {
+        let source = r#"module nominal_moe_router
+fn main() -> Int
+  let router = moe_router(4, 2)
+  let logits = [0.5, 2.0, 2.0, -1.0]
+  let masked = [false, false, false, false]
+  let routed = moe_route(router, logits, masked)
+  routed[0][0]
+"#;
+        let program = compile_source(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("MoERouter artifact decodes");
+        assert_eq!(encode_program(&decoded), artifact);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(1));
+    }
+
+    #[test]
+    fn nominal_moe_router_fails_closed_for_all_masked_and_mismatched_lengths() {
+        let all_masked = r#"module moe_all_masked
+fn main() -> Int
+  let router = moe_router(3, 2)
+  let logits = [1.0, 2.0, 3.0]
+  let masked = [true, true, true]
+  let routed = moe_route(router, logits, masked)
+  routed[0][0]
+"#;
+        let program = compile_source(all_masked);
+        assert!(matches!(run_program(&decode_program(&encode_program(&program)).unwrap(), "main", &[]), Err(NativeError::Type(message)) if message.contains("AllExpertsMasked")));
+
+        let mismatched = r#"module moe_length_mismatch
+fn main() -> Int
+  let router = moe_router(3, 2)
+  let logits = [1.0, 2.0]
+  let masked = [false, false]
+  let routed = moe_route(router, logits, masked)
+  routed[0][0]
+"#;
+        let program = compile_source(mismatched);
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("lengths")));
+    }
+
+    #[test]
+    fn nominal_moe_router_rejects_invalid_literal_bounds_and_nonfinite_logits() {
+        let invalid = crate::parse(r#"module invalid_moe_router
+fn main() -> MoERouter
+  moe_router(2, 3)
+"#).unwrap();
+        assert!(crate::sema::check(&invalid).is_err(), "top_k cannot exceed expert_count");
+
+        let source = r#"module moe_nonfinite
+fn main() -> Int
+  let router = moe_router(2, 1)
+  let logits = [1.0, 2.0]
+  let masked = [false, false]
+  let routed = moe_route(router, logits, masked)
+  routed[0][0]
+"#;
+        let mut program = compile_source(source);
+        let function = program.functions.get_mut("main").unwrap();
+        let index = function.code.iter().position(|instruction| matches!(instruction, NativeInstr::PushFloat(_))).unwrap();
+        function.code[index] = NativeInstr::PushFloat(f32::INFINITY.to_bits());
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("finite")));
+    }
+}
