@@ -56,6 +56,10 @@ pub enum NativeInstr {
     /// Push a domain-tagged finite embedding with deterministic f32-bit coordinates.
     PushEmbedding { domain: String, values: Vec<u32> },
     EmbeddingDot,
+    /// Construct a nominal bounded expert router with a fixed expert count and top-k.
+    MakeMoERouter,
+    /// Route finite logits through a validated nominal MoERouter and mask.
+    MoERoute,
     /// Execute bounded deterministic MoE top-k routing from source-level lists.
     RouteTopK,
     /// Create a domain-isolated bounded vector index.
@@ -197,6 +201,8 @@ pub enum NativeValue {
     AttentionBlock { hidden: usize, heads: usize, head_dim: usize, causal: bool },
     /// Immutable, owned low-rank matrices. Applying returns a delta and never mutates base weights.
     LoRAAdapter { a_shape: Vec<usize>, a_values: Vec<u32>, b_shape: Vec<usize>, b_values: Vec<u32>, alpha_bits: u32, rank: usize },
+    /// Nominal bounded expert-routing configuration, independent of model weight ownership.
+    MoERouter { expert_count: usize, top_k: usize },
     /// Bounded attention cache; float payloads are bit-encoded for deterministic equality.
     KvCache { capacity: usize, key_dim: Option<usize>, value_dim: Option<usize>, entries: Vec<(Vec<u32>, Vec<u32>)> },
     /// Bounded multimodal context with opaque byte payloads and explicit upstream token counts.
@@ -312,6 +318,12 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
             NativeValue::AttentionBlock { hidden, heads, head_dim, .. } => {
                 if *hidden == 0 || *heads == 0 || *head_dim == 0 || *heads > 256 || heads.checked_mul(*head_dim) != Some(*hidden) {
                     return Err(NativeError::Type("invalid AttentionBlock hidden/head configuration".into()));
+                }
+            }
+            NativeValue::MoERouter { expert_count, top_k } => {
+                if *expert_count == 0 || *expert_count > crate::ai_routing::MAX_EXPERTS
+                    || *top_k == 0 || *top_k > crate::ai_routing::MAX_TOP_K || *top_k > *expert_count {
+                    return Err(NativeError::Type("invalid MoERouter expert_count/top_k configuration".into()));
                 }
             }
             NativeValue::LoRAAdapter { a_shape, a_values, b_shape, b_values, alpha_bits, rank } => {
@@ -506,7 +518,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -717,6 +729,10 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::DequantizeTensor);
             } else if callee == "embedding_dot" && args.len() == 2 {
                 code.push(NativeInstr::EmbeddingDot);
+            } else if callee == "moe_router" && args.len() == 2 {
+                code.push(NativeInstr::MakeMoERouter);
+            } else if callee == "moe_route" && args.len() == 3 {
+                code.push(NativeInstr::MoERoute);
             } else if callee == "route_top_k" && args.len() == 3 {
                 code.push(NativeInstr::RouteTopK);
             } else if callee == "vector_index" && args.len() == 2 {
@@ -970,6 +986,8 @@ fn run_function(
                 | NativeInstr::DequantizeTensor
                 | NativeInstr::PushEmbedding { .. }
                 | NativeInstr::EmbeddingDot
+                | NativeInstr::MakeMoERouter
+                | NativeInstr::MoERoute
                 | NativeInstr::RouteTopK
                 | NativeInstr::MakeVectorIndex
                 | NativeInstr::VectorIndexInsert { .. }
@@ -1145,6 +1163,23 @@ fn run_function(
                 let threshold = pop_probability(&mut stack)?;
                 let value = pop_probability(&mut stack)?;
                 stack.push(NativeValue::Bool(value >= threshold));
+            }
+            NativeInstr::MakeMoERouter => {
+                let top_k = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("moe_router top_k must be positive".into()))?;
+                let expert_count = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("moe_router expert_count must be positive".into()))?;
+                let router = NativeValue::MoERouter { expert_count, top_k };
+                validate_value(&router, state.limits)?;
+                if top_k > expert_count { return Err(NativeError::Type("moe_router top_k cannot exceed expert_count".into())); }
+                stack.push(router);
+            }
+            NativeInstr::MoERoute => {
+                let masked = match stack.pop() { Some(NativeValue::List(values)) => values.into_iter().map(|v| match v { NativeValue::Bool(value) => Ok(value), _ => Err(NativeError::Type("moe_route mask must contain Bool values".into())) }).collect::<Result<Vec<_>,_>>()?, _ => return Err(NativeError::Type("moe_route mask must be a List<Bool>".into())) };
+                let logits = match stack.pop() { Some(NativeValue::List(values)) => values.into_iter().map(|v| match v { NativeValue::Float(bits) if f32::from_bits(bits).is_finite() => Ok(f32::from_bits(bits)), _ => Err(NativeError::Type("moe_route logits must contain finite F32 values".into())) }).collect::<Result<Vec<_>,_>>()?, _ => return Err(NativeError::Type("moe_route logits must be a List<F32>".into())) };
+                let router = match stack.pop() { Some(NativeValue::MoERouter { expert_count, top_k }) => (expert_count, top_k), _ => return Err(NativeError::Type("moe_route requires a nominal MoERouter value".into())) };
+                if logits.len() != router.0 || masked.len() != router.0 { return Err(NativeError::Type("moe_route logits and mask lengths must equal configured expert_count".into())); }
+                let routed = crate::ai_routing::route_top_k(&logits, &masked, router.1).map_err(|e| NativeError::Type(format!("moe_route rejected input: {e:?}")))?;
+                let rows = routed.into_iter().map(|v| NativeValue::List(vec![NativeValue::Int(v.expert as i64), NativeValue::Float(v.weight.to_bits())])).collect();
+                let value = NativeValue::List(rows); validate_value(&value, state.limits)?; stack.push(value);
             }
             NativeInstr::RouteTopK => {
                 let top_k = pop_int(&mut stack)?;
@@ -2119,6 +2154,8 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::DequantizeTensor => "DequantizeTensor".into(),
         NativeInstr::PushEmbedding { domain, values } => format!("PushEmbedding:{}/{}", encode_hex(domain.as_bytes()), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
         NativeInstr::EmbeddingDot => "EmbeddingDot".into(),
+        NativeInstr::MakeMoERouter => "MakeMoERouter".into(),
+        NativeInstr::MoERoute => "MoERoute".into(),
         NativeInstr::RouteTopK => "RouteTopK".into(),
         NativeInstr::MakeVectorIndex => "MakeVectorIndex".into(),
         NativeInstr::VectorIndexInsert { name } => format!("VectorIndexInsert:{}", escape_artifact(name)),
@@ -2193,6 +2230,8 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "DequantizeTensor"=>NativeInstr::DequantizeTensor,
         "PushEmbedding"=>{let (domain, values)=arg.split_once('/').ok_or_else(bad)?; let domain=String::from_utf8(decode_hex(domain).map_err(|_|bad())?).map_err(|_|bad())?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushEmbedding{domain,values}},
         "EmbeddingDot"=>NativeInstr::EmbeddingDot,
+        "MakeMoERouter"=>NativeInstr::MakeMoERouter,
+        "MoERoute"=>NativeInstr::MoERoute,
         "RouteTopK"=>NativeInstr::RouteTopK,
         "MakeVectorIndex"=>NativeInstr::MakeVectorIndex,
         "VectorIndexInsert"=>NativeInstr::VectorIndexInsert{name:unescape_artifact(arg)?},
