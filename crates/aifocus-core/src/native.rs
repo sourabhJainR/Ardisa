@@ -4001,7 +4001,7 @@ mod moe_router_source_tests {
         let source = r#"module nominal_moe_router
 fn main() -> Int
   let router = moe_router(4, 2)
-  let logits = [0.5, 2.0, 2.0, -1.0]
+  let logits = [0.5, 2.0, 2.0, 0.0]
   let masked = [false, false, false, false]
   let routed = moe_route(router, logits, masked)
   routed[0][0]
