@@ -332,6 +332,7 @@ fn display_value(value: &ardisa_core::NativeValue) -> String {
         ardisa_core::NativeValue::LoRAAdapter { a_shape, b_shape, rank, .. } => format!("LoRAAdapter(rank={}, A={:?}, B={:?}, ownership=owned-immutable)", rank, a_shape, b_shape),
         ardisa_core::NativeValue::MoERouter { expert_count, top_k } => format!("MoERouter(experts={}, top_k={})", expert_count, top_k),
         ardisa_core::NativeValue::VectorIndex { domain, dimensions, entries } => format!("VectorIndex(domain={}, dimensions={}, entries={})", domain, dimensions, entries.len()),
+        ardisa_core::NativeValue::GradientTape(tape) => format!("GradientTape(slots={}/{}, gradients={})", tape.len(), tape.max_slots(), tape.has_gradients()),
         ardisa_core::NativeValue::ContextWindow { max_segments, max_bytes, max_tokens, segments, bytes, tokens } => format!("ContextWindow(segments={}, bytes={}/{}, tokens={}/{}, segment_limit={})", segments.len(), bytes, max_bytes, tokens, max_tokens, max_segments),
         ardisa_core::NativeValue::String(value) => value.clone(),
         ardisa_core::NativeValue::List(values) => {
