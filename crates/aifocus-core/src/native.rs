@@ -1587,7 +1587,7 @@ fn run_function(
             NativeInstr::ActivationRestore => {let step=pop_int(&mut stack)?;let cache=stack.pop().ok_or_else(||NativeError::InvalidProgram("ActivationCache operand missing".into()))?;let NativeValue::ActivationCache{entries,..}=cache else{return Err(NativeError::Type("activation_restore requires ActivationCache".into()));};let (_,shape,values)=entries.iter().find(|(id,_,_)|*id==step).ok_or_else(||NativeError::Type("ActivationCache checkpoint id not found".into()))?;stack.push(NativeValue::Tensor{shape:shape.clone(),values:values.clone()});}
             NativeInstr::ActivationCacheLen => {let cache=stack.pop().ok_or_else(||NativeError::InvalidProgram("ActivationCache operand missing".into()))?;let NativeValue::ActivationCache{entries,..}=cache else{return Err(NativeError::Type("activation_cache_len requires ActivationCache".into()));};stack.push(NativeValue::Int(entries.len() as i64));}
             NativeInstr::MakeTokenizerState => {
-                let unknown=pop_int(&mut stack)?; let unknown_id=if unknown == -1 { None } else if unknown >= 0 { Some(unknown) } else { return Err(NativeError::Type("TokenizerState unknown id must be -1 or non-negative".into())); };
+                let unknown=pop_int(&mut stack)?; let unknown_id=if unknown == 0 { None } else if unknown > 0 { Some(unknown-1) } else { return Err(NativeError::Type("TokenizerState unknown_id encoding must be zero (reject) or a positive id-plus-one".into())); };
                 let max_tokens=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("TokenizerState max_tokens must be positive".into()))?;
                 let max_pending=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("TokenizerState max_pending must be positive".into()))?;
                 let vocabulary=match stack.pop(){Some(NativeValue::List(values))=>values.into_iter().map(|v|match v{NativeValue::String(piece)=>Ok(piece),_=>Err(NativeError::Type("TokenizerState vocabulary must contain strings".into()))}).collect::<Result<Vec<_>,_>>()?,_=>return Err(NativeError::Type("TokenizerState vocabulary must be List<String>".into()))};
@@ -4547,7 +4547,7 @@ fn main() -> Int
     fn tokenizer_state_handles_split_utf8_incrementally_and_roundtrips_deterministically() {
         let source = r#"module tokenizer_split_utf8
 fn main() -> Int
-  let state = tokenizer_state(["a", "é"], 4, 8, -1)
+  let state = tokenizer_state(["a", "é"], 4, 8, 0)
   tokenizer_feed(state, [195])
   let before = tokenizer_token_count(state)
   tokenizer_feed(state, [169])
@@ -4565,21 +4565,21 @@ fn main() -> Int
     fn tokenizer_state_rejects_invalid_utf8_unknown_scalars_and_incomplete_flush() {
         let invalid = compile_source(r#"module tokenizer_invalid
 fn main() -> Int
-  let state = tokenizer_state(["a"], 4, 8, -1)
+  let state = tokenizer_state(["a"], 4, 8, 0)
   tokenizer_feed(state, [255])
   tokenizer_token_count(state)
 "#);
         assert!(matches!(run_program(&invalid, "main", &[]), Err(NativeError::Type(message)) if message.contains("invalid UTF-8")));
         let unknown = compile_source(r#"module tokenizer_unknown
 fn main() -> Int
-  let state = tokenizer_state(["a"], 4, 8, -1)
+  let state = tokenizer_state(["a"], 4, 8, 0)
   tokenizer_feed(state, [98])
   tokenizer_token_count(state)
 "#);
         assert!(matches!(run_program(&unknown, "main", &[]), Err(NativeError::Type(message)) if message.contains("unknown vocabulary")));
         let incomplete = compile_source(r#"module tokenizer_incomplete
 fn main() -> Int
-  let state = tokenizer_state(["a", "é"], 4, 8, -1)
+  let state = tokenizer_state(["a", "é"], 4, 8, 0)
   tokenizer_feed(state, [195])
   tokenizer_flush(state)
   tokenizer_token_count(state)
@@ -4598,7 +4598,7 @@ fn main() -> Int
         assert_eq!(run_program(&decode_program(&encode_program(&fallback)).unwrap(), "main", &[]).unwrap(), NativeValue::Int(99));
         let full = compile_source(r#"module tokenizer_full
 fn main() -> Int
-  let state = tokenizer_state(["a"], 4, 1, -1)
+  let state = tokenizer_state(["a"], 4, 1, 0)
   tokenizer_feed(state, [97, 97])
   tokenizer_token_count(state)
 "#);
