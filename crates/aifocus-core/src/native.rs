@@ -4292,7 +4292,7 @@ mod gradient_tape_source_tests {
     fn compile_source(source: &str) -> NativeProgram {
         let module=crate::parse(source).expect("source parses");
         crate::sema::check(&module).expect("GradientTape source passes semantic checks");
-        compile_program(&crate::ir::lower(&module)).expect("GradientTape source lowers");
+        compile_program(&crate::ir::lower(&module)).expect("GradientTape source lowers")
     }
     #[test]
     fn gradient_tape_forward_backward_and_artifact_roundtrip_are_deterministic() {
@@ -4311,7 +4311,6 @@ fn main() -> F32
         let decoded=decode_program(&artifact).expect("artifact decodes");
         assert_eq!(encode_program(&decoded),artifact);
         assert_eq!(run_program(&decoded,"main",&[]).unwrap(),NativeValue::Float(5.0f32.to_bits()));
-        let NativeValue::GradientTape{..}=NativeValue::GradientTape{capacity:1,slots:vec![],gradients:vec![],backward_ready:false} else { unreachable!() };
     }
     #[test]
     fn gradient_tape_repeated_operands_accumulate_and_values_are_observable() {
