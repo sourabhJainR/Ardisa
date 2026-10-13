@@ -956,8 +956,13 @@ fn run_function(
                 | NativeInstr::PushTensor { .. }
                 | NativeInstr::TensorAdd
                 | NativeInstr::TensorMatMul
+                | NativeInstr::MakeAttentionBlock
+                | NativeInstr::AttentionBlockApply
+                | NativeInstr::AttentionBlockCached
                 | NativeInstr::AttentionBlock
                 | NativeInstr::AttentionCached
+                | NativeInstr::MakeLoRAAdapter
+                | NativeInstr::LoRAAdapterApply
                 | NativeInstr::LoRAApply
                 | NativeInstr::MakeTensor
                 | NativeInstr::MakeEmbedding
