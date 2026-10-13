@@ -651,6 +651,33 @@ impl Checker {
                     );
                     return None;
                 };
+                if name == "moe_router" {
+                    if args.len() != 2 { self.error("AIF475", "moe_router expects expert_count and top_k Int", expr.span); return None; }
+                    let experts = self.check_expr(&args[0], locals)?;
+                    let top_k = self.check_expr(&args[1], locals)?;
+                    if !is_kind(&experts, &TypeKind::Int) { self.error("AIF476", "moe_router expert_count must be Int", args[0].span); }
+                    if !is_kind(&top_k, &TypeKind::Int) { self.error("AIF477", "moe_router top_k must be Int", args[1].span); }
+                    if let ExprKind::Int(value) = args[0].kind { if value <= 0 || value > 256 { self.error("AIF478", "moe_router expert_count must be in 1..=256", args[0].span); } }
+                    if let ExprKind::Int(value) = args[1].kind { if value <= 0 || value > 32 { self.error("AIF479", "moe_router top_k must be in 1..=32", args[1].span); } }
+                    if let (ExprKind::Int(experts), ExprKind::Int(top_k)) = (&args[0].kind, &args[1].kind) {
+                        if *experts > 0 && *top_k > *experts { self.error("AIF484", "moe_router top_k cannot exceed expert_count", args[1].span); }
+                    }
+                    let ty = type_node(TypeKind::Named("MoERouter".into()), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
+                if name == "moe_route" {
+                    if args.len() != 3 { self.error("AIF480", "moe_route expects MoERouter, logits List<F32>, and masked List<Bool>", expr.span); return None; }
+                    let router = self.check_expr(&args[0], locals)?;
+                    let logits = self.check_expr(&args[1], locals)?;
+                    let masked = self.check_expr(&args[2], locals)?;
+                    if !matches!(&router.kind, TypeKind::Named(ty) if ty == "MoERouter") { self.error("AIF481", "moe_route requires a MoERouter value", args[0].span); }
+                    let expected_logits = TypeKind::List(Box::new(type_node(TypeKind::Named("F32".into()), args[1].span)));
+                    let expected_masked = TypeKind::List(Box::new(type_node(TypeKind::Bool, args[2].span)));
+                    if !same_type_kind(&logits.kind, &expected_logits) { self.error("AIF482", "moe_route logits must be a homogeneous List<F32>", args[1].span); }
+                    if !same_type_kind(&masked.kind, &expected_masked) { self.error("AIF483", "moe_route mask must be a homogeneous List<Bool>", args[2].span); }
+                    let ty = type_node(TypeKind::List(Box::new(type_node(TypeKind::Named("ExpertWeight".into()), expr.span))), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
                 if name == "route_top_k" {
                     if args.len() != 3 {
                         self.error("AIF380", "route_top_k expects logits: List<F32>, masked: List<Bool>, and top_k: Int", expr.span);

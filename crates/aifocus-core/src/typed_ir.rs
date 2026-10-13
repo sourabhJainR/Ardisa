@@ -727,4 +727,34 @@ fn make_adapter() -> LoRAAdapter
         assert!(matches!(&adapter.kind, TypedValueKind::Call { callee, args }
             if callee == "lora_adapter_new" && matches!(args[3].kind, TypedValueKind::Int(1))));
     }
+
+    #[test]
+    fn nominal_moe_router_identity_and_route_metadata_survive_typed_ir() {
+        let module = crate::parse(r#"module nominal_moe_typed_ir
+fn make_router() -> MoERouter
+  moe_router(4, 2)
+fn route() -> Int
+  let router = moe_router(4, 2)
+  let logits = [0.0, 1.0, 1.0, 0.0]
+  let mask = [false, false, false, false]
+  let routed = moe_route(router, logits, mask)
+  routed[0][0]
+"#).unwrap();
+        crate::sema::check(&module).expect("nominal MoERouter source type-checks");
+        let typed = lower(&module).expect("MoERouter lowers to typed IR");
+        assert_eq!(typed.functions[0].return_type, TypeKind::Named("MoERouter".into()));
+        let constructor = match &typed.functions[0].blocks[0].ops[0] {
+            TypedIrOp::Expr(value) => value,
+            other => panic!("expected MoERouter constructor expression, got {other:?}"),
+        };
+        assert_eq!(constructor.ty, TypeKind::Named("MoERouter".into()));
+        assert!(matches!(&constructor.kind, TypedValueKind::Call { callee, args }
+            if callee == "moe_router" && matches!(args[0].kind, TypedValueKind::Int(4)) && matches!(args[1].kind, TypedValueKind::Int(2))));
+        let route = typed.functions[1].blocks[0].ops.iter().find_map(|op| match op {
+            TypedIrOp::Bind { value, .. } if matches!(&value.kind, TypedValueKind::Call { callee, .. } if callee == "moe_route") => Some(value),
+            _ => None,
+        }).expect("typed IR retains the nominal route operation");
+        assert!(matches!(&route.kind, TypedValueKind::Call { callee, args }
+            if callee == "moe_route" && args.len() == 3 && args[0].ty == TypeKind::Named("MoERouter".into())));
+    }
 }
