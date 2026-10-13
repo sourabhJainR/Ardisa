@@ -4536,4 +4536,80 @@ fn main() -> Int
         let malformed=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:1024,retained_bytes:0,entries:vec![(0,vec![1],vec![1.0f32.to_bits()])]};
         assert!(matches!(validate_value(&malformed,ExecutionLimits::default()),Err(NativeError::InvalidProgram(message)) if message.contains("accounting")));
     }
+
+    #[test]
+    fn tokenizer_state_handles_split_utf8_incrementally_and_roundtrips_deterministically() {
+        let source = r#"module tokenizer_split_utf8
+fn main() -> Int
+  let state = tokenizer_state(["a", "é"], 4, 8, -1)
+  tokenizer_feed(state, [195])
+  let before = tokenizer_token_count(state)
+  tokenizer_feed(state, [169])
+  tokenizer_flush(state)
+  tokenizer_token(state, 0)
+"#;
+        let program = compile_source(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("TokenizerState artifact decodes");
+        assert_eq!(encode_program(&decoded), artifact);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(1));
+    }
+
+    #[test]
+    fn tokenizer_state_rejects_invalid_utf8_unknown_scalars_and_incomplete_flush() {
+        let invalid = compile_source(r#"module tokenizer_invalid
+fn main() -> Int
+  let state = tokenizer_state(["a"], 4, 8, -1)
+  tokenizer_feed(state, [255])
+  tokenizer_token_count(state)
+"#);
+        assert!(matches!(run_program(&invalid, "main", &[]), Err(NativeError::Type(message)) if message.contains("invalid UTF-8")));
+        let unknown = compile_source(r#"module tokenizer_unknown
+fn main() -> Int
+  let state = tokenizer_state(["a"], 4, 8, -1)
+  tokenizer_feed(state, [98])
+  tokenizer_token_count(state)
+"#);
+        assert!(matches!(run_program(&unknown, "main", &[]), Err(NativeError::Type(message)) if message.contains("unknown vocabulary")));
+        let incomplete = compile_source(r#"module tokenizer_incomplete
+fn main() -> Int
+  let state = tokenizer_state(["a", "é"], 4, 8, -1)
+  tokenizer_feed(state, [195])
+  tokenizer_flush(state)
+  tokenizer_token_count(state)
+"#);
+        assert!(matches!(run_program(&incomplete, "main", &[]), Err(NativeError::Type(message)) if message.contains("incomplete UTF-8")));
+    }
+
+    #[test]
+    fn tokenizer_state_unknown_fallback_and_token_budget_are_deterministic() {
+        let fallback = compile_source(r#"module tokenizer_fallback
+fn main() -> Int
+  let state = tokenizer_state(["a"], 4, 8, 99)
+  tokenizer_feed(state, [98])
+  tokenizer_token(state, 0)
+"#);
+        assert_eq!(run_program(&decode_program(&encode_program(&fallback)).unwrap(), "main", &[]).unwrap(), NativeValue::Int(99));
+        let full = compile_source(r#"module tokenizer_full
+fn main() -> Int
+  let state = tokenizer_state(["a"], 4, 1, -1)
+  tokenizer_feed(state, [97, 97])
+  tokenizer_token_count(state)
+"#);
+        assert!(matches!(run_program(&full, "main", &[]), Err(NativeError::ResourceLimit(message)) if message.contains("capacity exhausted")));
+    }
+
+    #[test]
+    fn tokenizer_state_rejects_duplicate_or_multiscalar_vocabulary_entries() {
+        let duplicate = crate::parse(r#"module tokenizer_duplicate
+fn main() -> TokenizerState
+  tokenizer_state(["a", "a"], 4, 8, -1)
+"#).unwrap();
+        assert!(crate::sema::check(&duplicate).is_err());
+        let multi = crate::parse(r#"module tokenizer_multiscalar
+fn main() -> TokenizerState
+  tokenizer_state(["ab"], 4, 8, -1)
+"#).unwrap();
+        assert!(crate::sema::check(&multi).is_err());
+    }
 }
