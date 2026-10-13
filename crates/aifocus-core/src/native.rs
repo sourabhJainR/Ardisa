@@ -4285,3 +4285,89 @@ fn main() -> Int
         assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("lengths")));
     }
 }
+
+#[cfg(test)]
+mod gradient_tape_source_tests {
+    use super::*;
+    fn compile_source(source: &str) -> NativeProgram {
+        let module=crate::parse(source).expect("source parses");
+        crate::sema::check(&module).expect("GradientTape source passes semantic checks");
+        compile_program(&crate::ir::lower(&module)).expect("GradientTape source lowers");
+    }
+    #[test]
+    fn gradient_tape_forward_backward_and_artifact_roundtrip_are_deterministic() {
+        let source=r#"module gradient_tape_chain
+fn main() -> F32
+  let tape = gradient_tape(8)
+  let x = gradient_input(tape, 3.0)
+  let y = gradient_input(tape, 4.0)
+  let product = gradient_mul(tape, x, y)
+  let output = gradient_add(tape, product, x)
+  gradient_backward(tape, output, 1.0)
+  gradient_get(tape, x)
+"#;
+        let program=compile_source(source);
+        let artifact=encode_program(&program);
+        let decoded=decode_program(&artifact).expect("artifact decodes");
+        assert_eq!(encode_program(&decoded),artifact);
+        assert_eq!(run_program(&decoded,"main",&[]).unwrap(),NativeValue::Float(5.0f32.to_bits()));
+        let NativeValue::GradientTape{..}=NativeValue::GradientTape{capacity:1,slots:vec![],gradients:vec![],backward_ready:false} else { unreachable!() };
+    }
+    #[test]
+    fn gradient_tape_repeated_operands_accumulate_and_values_are_observable() {
+        let source=r#"module gradient_tape_square
+fn main() -> F32
+  let tape = gradient_tape(4)
+  let x = gradient_input(tape, 3.0)
+  let square = gradient_mul(tape, x, x)
+  gradient_backward(tape, square, 1.0)
+  gradient_get(tape, x)
+"#;
+        let program=compile_source(source);
+        assert_eq!(run_program(&decode_program(&encode_program(&program)).unwrap(),"main",&[]).unwrap(),NativeValue::Float(6.0f32.to_bits()));
+    }
+    #[test]
+    fn gradient_tape_rejects_forward_slot_refs_capacity_overflow_and_missing_backward() {
+        let bad_ref=r#"module gradient_tape_bad_ref
+fn main() -> Int
+  let tape = gradient_tape(4)
+  let x = gradient_input(tape, 2.0)
+  gradient_add(tape, x, 9)
+"#;
+        let p=compile_source(bad_ref);
+        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::Type(message)) if message.contains("prior slot")));
+        let full=r#"module gradient_tape_full
+fn main() -> Int
+  let tape = gradient_tape(1)
+  let x = gradient_input(tape, 2.0)
+  gradient_input(tape, 3.0)
+"#;
+        let p=compile_source(full);
+        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::ResourceLimit(message)) if message.contains("capacity")));
+        let no_backward=r#"module gradient_tape_no_backward
+fn main() -> F32
+  let tape = gradient_tape(2)
+  let x = gradient_input(tape, 2.0)
+  gradient_get(tape, x)
+"#;
+        let p=compile_source(no_backward);
+        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::Type(message)) if message.contains("backward")));
+        let invalid=crate::parse("module invalid_gradient_tape\nfn main() -> GradientTape\n  gradient_tape(0)\n").unwrap();
+        assert!(crate::sema::check(&invalid).is_err());
+    }
+    #[test]
+    fn gradient_tape_rejects_nonfinite_inputs_and_gradient_overflow() {
+        let source=r#"module gradient_tape_nonfinite
+fn main() -> F32
+  let tape = gradient_tape(3)
+  let x = gradient_input(tape, 2.0)
+  gradient_backward(tape, x, 1.0)
+  gradient_get(tape, x)
+"#;
+        let mut p=compile_source(source);
+        let code=&mut p.functions.get_mut("main").unwrap().code;
+        let index=code.iter().position(|op|matches!(op,NativeInstr::PushFloat(_))).unwrap();
+        code[index]=NativeInstr::PushFloat(f32::INFINITY.to_bits());
+        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::Type(message)) if message.contains("finite")));
+    }
+}
