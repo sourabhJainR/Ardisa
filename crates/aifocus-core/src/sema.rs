@@ -39,6 +39,13 @@ pub enum TypedConstructMember {
 /// not claim runtime values or executable VM instructions are implemented.
 fn validate_ai_type(ty: &Type, checker: &mut Checker) {
     match &ty.kind {
+        TypeKind::Generic(name, _) if matches!(name.as_str(), "AttentionBlock" | "LoRAAdapter") => {
+            checker.error(
+                "AIF451",
+                format!("{} compile-time shape parameters are not supported yet; use the validated runtime nominal constructor", name),
+                ty.span,
+            );
+        }
         TypeKind::Generic(name, args) if matches!(name.as_str(), "Tensor" | "Embedding" | "QuantizedTensor" | "Probabilistic" | "Guaranteed") => {
             if args.len() != 1 {
                 checker.error("AIF320", format!("AI type '{}' expects one type argument", name), ty.span);
