@@ -3324,7 +3324,7 @@ mod mcts_native_integration_tests {
         assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("parent index")));
 
         let invalid = NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![NativeInstr::MakeMctsTree, NativeInstr::Return] })]) };
-        let artifact = encode_program(&invalid).replace("MakeMctsTree", "MakeMctsTree:unexpected");
+        let artifact = encode_program(&invalid).replace("MakeMctsTree", "MctsBogus");
         assert!(decode_program(&artifact).is_err());
     }
 
