@@ -27,10 +27,20 @@ pub enum NativeInstr {
     PushTensor { shape: Vec<usize>, values: Vec<u32> },
     TensorAdd,
     TensorMatMul,
+    /// Construct a validated nominal multi-head attention configuration.
+    MakeAttentionBlock,
+    /// Apply a nominal attention configuration to rank-2 Q/K/V tensors.
+    AttentionBlockApply,
+    /// Apply nominal attention to a query and compatible retained KVCache.
+    AttentionBlockCached,
     /// Stable scaled dot-product attention over rank-2 Q/K/V tensors.
     AttentionBlock,
     /// Attend over the retained key/value entries of an existing KVCache.
     AttentionCached,
+    /// Construct an immutable nominal LoRA adapter from A/B tensors and scale/rank.
+    MakeLoRAAdapter,
+    /// Apply an immutable LoRA adapter to input, returning the low-rank delta only.
+    LoRAAdapterApply,
     /// Apply a bounded low-rank update: input [batch,in], A [rank,in], B [out,rank].
     LoRAApply,
     /// Build a finite f32 tensor from source-level shape/value integer lists.
@@ -183,6 +193,10 @@ pub enum NativeValue {
     QuantizedTensor { shape: Vec<usize>, scale_bits: u32, zero_point: i8, values: Vec<i8> },
     /// Nominal domain label plus IEEE-754 f32 coordinate bits.
     Embedding { domain: String, values: Vec<u32> },
+    /// Validated nominal attention configuration; owns metadata, not model weights.
+    AttentionBlock { hidden: usize, heads: usize, head_dim: usize, causal: bool },
+    /// Immutable, owned low-rank matrices. Applying returns a delta and never mutates base weights.
+    LoRAAdapter { a_shape: Vec<usize>, a_values: Vec<u32>, b_shape: Vec<usize>, b_values: Vec<u32>, alpha_bits: u32, rank: usize },
     /// Bounded attention cache; float payloads are bit-encoded for deterministic equality.
     KvCache { capacity: usize, key_dim: Option<usize>, value_dim: Option<usize>, entries: Vec<(Vec<u32>, Vec<u32>)> },
     /// Bounded multimodal context with opaque byte payloads and explicit upstream token counts.
@@ -667,10 +681,20 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::TensorAdd);
             } else if callee == "tensor_matmul" && args.len() == 2 {
                 code.push(NativeInstr::TensorMatMul);
+            } else if callee == "attention_block_new" && args.len() == 4 {
+                code.push(NativeInstr::MakeAttentionBlock);
+            } else if callee == "attention_block_apply" && args.len() == 4 {
+                code.push(NativeInstr::AttentionBlockApply);
+            } else if callee == "attention_block_cached" && args.len() == 3 {
+                code.push(NativeInstr::AttentionBlockCached);
             } else if callee == "attention_block" && args.len() == 4 {
                 code.push(NativeInstr::AttentionBlock);
             } else if callee == "attention_cached" && args.len() == 2 {
                 code.push(NativeInstr::AttentionCached);
+            } else if callee == "lora_adapter_new" && args.len() == 4 {
+                code.push(NativeInstr::MakeLoRAAdapter);
+            } else if callee == "lora_adapter_apply" && args.len() == 2 {
+                code.push(NativeInstr::LoRAAdapterApply);
             } else if callee == "lora_apply" && args.len() == 5 {
                 code.push(NativeInstr::LoRAApply);
             } else if callee == "embedding" && args.len() == 2 {
@@ -2003,8 +2027,13 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::PushTensor { shape, values } => format!("PushTensor:{}/{}", shape.iter().map(usize::to_string).collect::<Vec<_>>().join(","), values.iter().map(u32::to_string).collect::<Vec<_>>().join(",")),
         NativeInstr::TensorAdd => "TensorAdd".into(),
         NativeInstr::TensorMatMul => "TensorMatMul".into(),
+        NativeInstr::MakeAttentionBlock => "MakeAttentionBlock".into(),
+        NativeInstr::AttentionBlockApply => "AttentionBlockApply".into(),
+        NativeInstr::AttentionBlockCached => "AttentionBlockCached".into(),
         NativeInstr::AttentionBlock => "AttentionBlock".into(),
         NativeInstr::AttentionCached => "AttentionCached".into(),
+        NativeInstr::MakeLoRAAdapter => "MakeLoRAAdapter".into(),
+        NativeInstr::LoRAAdapterApply => "LoRAAdapterApply".into(),
         NativeInstr::LoRAApply => "LoRAApply".into(),
         NativeInstr::MakeTensor => "MakeTensor".into(),
         NativeInstr::MakeEmbedding => "MakeEmbedding".into(),
@@ -2072,8 +2101,13 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "PushTensor"=>{let (shape, values)=arg.split_once('/').ok_or_else(bad)?; let shape=shape.split(',').map(|v|v.parse::<usize>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; let values=values.split(',').filter(|v|!v.is_empty()).map(|v|v.parse::<u32>().map_err(|_|bad())).collect::<Result<Vec<_>,_>>()?; NativeInstr::PushTensor{shape,values}},
         "TensorAdd"=>NativeInstr::TensorAdd,
         "TensorMatMul"=>NativeInstr::TensorMatMul,
+        "MakeAttentionBlock"=>NativeInstr::MakeAttentionBlock,
+        "AttentionBlockApply"=>NativeInstr::AttentionBlockApply,
+        "AttentionBlockCached"=>NativeInstr::AttentionBlockCached,
         "AttentionBlock"=>NativeInstr::AttentionBlock,
         "AttentionCached"=>NativeInstr::AttentionCached,
+        "MakeLoRAAdapter"=>NativeInstr::MakeLoRAAdapter,
+        "LoRAAdapterApply"=>NativeInstr::LoRAAdapterApply,
         "LoRAApply"=>NativeInstr::LoRAApply,
         "MakeTensor"=>NativeInstr::MakeTensor,
         "MakeEmbedding"=>NativeInstr::MakeEmbedding,
