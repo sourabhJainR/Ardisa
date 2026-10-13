@@ -2336,6 +2336,73 @@ fn validate_quantized_tensor_parts(shape: &[usize], scale_bits: u32, values: &[i
     Ok(())
 }
 
+fn validate_lora_parts(a_shape: &[usize], a_values: &[u32], b_shape: &[usize], b_values: &[u32], alpha_bits: u32, rank: usize, limit: usize) -> Result<(), NativeError> {
+    validate_tensor_parts(a_shape, a_values, limit)?;
+    validate_tensor_parts(b_shape, b_values, limit)?;
+    let alpha = f32::from_bits(alpha_bits);
+    if rank == 0 || rank > 256 || !alpha.is_finite() || a_shape.len() != 2 || b_shape.len() != 2
+        || a_shape[0] != rank || b_shape[1] != rank || a_shape[1] == 0 || b_shape[0] == 0
+        || a_values.iter().chain(b_values).any(|bits| !f32::from_bits(*bits).is_finite()) {
+        return Err(NativeError::Type("LoRAAdapter requires finite A[rank,in], B[out,rank], finite alpha, and rank in 1..=256".into()));
+    }
+    Ok(())
+}
+
+fn attention_multihead(
+    config: &(usize, usize, usize, bool),
+    q_shape: &[usize], q: &[u32],
+    k_shape: &[usize], k: &[u32],
+    v_shape: &[usize], v: &[u32],
+    limits: ExecutionLimits,
+) -> Result<(Vec<usize>, Vec<u32>), NativeError> {
+    let (hidden, heads, head_dim, causal) = *config;
+    validate_tensor_parts(q_shape, q, limits.max_collection_items)?;
+    validate_tensor_parts(k_shape, k, limits.max_collection_items)?;
+    validate_tensor_parts(v_shape, v, limits.max_collection_items)?;
+    if hidden == 0 || heads == 0 || head_dim == 0 || hidden != heads.checked_mul(head_dim).unwrap_or(usize::MAX)
+        || q_shape.len() != 2 || k_shape.len() != 2 || v_shape.len() != 2
+        || q_shape[1] != hidden || k_shape[1] != hidden || v_shape[1] != hidden
+        || k_shape[0] != v_shape[0] || q_shape[0] == 0 || k_shape[0] == 0 {
+        return Err(NativeError::Type("AttentionBlock requires Q[Tq,hidden], K[Tk,hidden], V[Tk,hidden] and compatible configuration".into()));
+    }
+    let (tq, tk) = (q_shape[0], k_shape[0]);
+    let out_count = tq.checked_mul(hidden).ok_or_else(|| NativeError::ResourceLimit("attention output size overflow".into()))?;
+    let work = tq.checked_mul(tk).and_then(|n| n.checked_mul(hidden)).ok_or_else(|| NativeError::ResourceLimit("attention work overflow".into()))?;
+    if out_count > limits.max_collection_items.min(MAX_TENSOR_ELEMENTS) || work > limits.max_value_nodes.saturating_mul(16) {
+        return Err(NativeError::ResourceLimit("AttentionBlock computation exceeds resource budget".into()));
+    }
+    let mut out = vec![0.0f32; out_count];
+    for qi in 0..tq {
+        for head in 0..heads {
+            let offset = head * head_dim;
+            let mut scores = Vec::with_capacity(tk);
+            for ki in 0..tk {
+                if causal && ki > qi { scores.push(f32::NEG_INFINITY); continue; }
+                let mut dot = 0.0f32;
+                for d in 0..head_dim {
+                    dot += f32::from_bits(q[qi*hidden+offset+d]) * f32::from_bits(k[ki*hidden+offset+d]);
+                }
+                let score = dot / (head_dim as f32).sqrt();
+                if !score.is_finite() { return Err(NativeError::Type("AttentionBlock score is non-finite".into())); }
+                scores.push(score);
+            }
+            let max = scores.iter().copied().filter(|x| x.is_finite()).fold(f32::NEG_INFINITY, f32::max);
+            if !max.is_finite() { return Err(NativeError::Type("AttentionBlock row is fully masked".into())); }
+            let mut weights = scores.iter().map(|x| if x.is_finite() { (*x-max).exp() } else { 0.0 }).collect::<Vec<_>>();
+            let total: f32 = weights.iter().sum();
+            if !total.is_finite() || total <= 0.0 { return Err(NativeError::Type("AttentionBlock softmax normalization failed".into())); }
+            for w in &mut weights { *w /= total; }
+            for d in 0..head_dim {
+                let mut sum = 0.0f32;
+                for ki in 0..tk { sum += weights[ki] * f32::from_bits(v[ki*hidden+offset+d]); }
+                if !sum.is_finite() { return Err(NativeError::Type("AttentionBlock output is non-finite".into())); }
+                out[qi*hidden+offset+d] = sum;
+            }
+        }
+    }
+    Ok((vec![tq, hidden], out.into_iter().map(f32::to_bits).collect()))
+}
+
 fn pop_tensor(stack: &mut Vec<NativeValue>, limit: usize) -> Result<(Vec<usize>, Vec<u32>), NativeError> {
     match stack.pop() {
         Some(NativeValue::Tensor { shape, values }) => { validate_tensor_parts(&shape, &values, limit)?; Ok((shape, values)) }
