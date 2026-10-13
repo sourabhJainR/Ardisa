@@ -48,6 +48,13 @@ pub enum NativeInstr {
     VectorIndexInsert { name: String },
     /// Search a VectorIndex by squared Euclidean distance.
     VectorIndexSearch,
+    MakeMctsTree,
+    MctsRoot { name: String },
+    MctsExpand { name: String },
+    MctsChild,
+    MctsUpdate { name: String },
+    MctsBackpropagate { name: String },
+    MctsLen,
     MakeKvCache,
     KvLen,
     KvCapacity,
@@ -467,7 +474,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -637,7 +644,7 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
             code[jump_end] = NativeInstr::Jump(end);
         }
         IrValue::Call { callee, args } => {
-            if callee != "kv_append" && callee != "context_append" && callee != "vector_index_insert" {
+            if callee != "kv_append" && callee != "context_append" && callee != "vector_index_insert" && !matches!(callee.as_str(), "mcts_root" | "mcts_expand" | "mcts_update" | "mcts_backpropagate") {
                 for arg in args { emit_value(arg, code)?; }
             }
             if callee == "chr" && args.len() == 1 {
@@ -674,6 +681,24 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::VectorIndexInsert { name: name.clone() });
             } else if callee == "vector_index_search" && args.len() == 4 {
                 code.push(NativeInstr::VectorIndexSearch);
+            } else if callee == "mcts_tree" && args.len() == 2 {
+                code.push(NativeInstr::MakeMctsTree);
+            } else if callee == "mcts_root" && args.len() == 2 {
+                let IrValue::Name(name) = &args[0] else { return Err(NativeError::Unsupported("mcts_root requires a named MctsTree binding".into())); };
+                emit_value(&args[1], code)?; code.push(NativeInstr::MctsRoot { name: name.clone() });
+            } else if callee == "mcts_expand" && args.len() == 3 {
+                let IrValue::Name(name) = &args[0] else { return Err(NativeError::Unsupported("mcts_expand requires a named MctsTree binding".into())); };
+                emit_value(&args[1], code)?; emit_value(&args[2], code)?; code.push(NativeInstr::MctsExpand { name: name.clone() });
+            } else if callee == "mcts_child" && args.len() == 3 {
+                for arg in args { emit_value(arg, code)?; } code.push(NativeInstr::MctsChild);
+            } else if callee == "mcts_update" && args.len() == 3 {
+                let IrValue::Name(name) = &args[0] else { return Err(NativeError::Unsupported("mcts_update requires a named MctsTree binding".into())); };
+                emit_value(&args[1], code)?; emit_value(&args[2], code)?; code.push(NativeInstr::MctsUpdate { name: name.clone() });
+            } else if callee == "mcts_backpropagate" && args.len() == 3 {
+                let IrValue::Name(name) = &args[0] else { return Err(NativeError::Unsupported("mcts_backpropagate requires a named MctsTree binding".into())); };
+                emit_value(&args[1], code)?; emit_value(&args[2], code)?; code.push(NativeInstr::MctsBackpropagate { name: name.clone() });
+            } else if callee == "mcts_len" && args.len() == 1 {
+                code.push(NativeInstr::MctsLen);
             } else if callee == "kv_cache" && args.len() == 1 {
                 code.push(NativeInstr::MakeKvCache);
             } else if callee == "kv_len" && args.len() == 1 {
