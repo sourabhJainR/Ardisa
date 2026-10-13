@@ -162,7 +162,6 @@ mod tests {
         let mut tape = GradientTape::new(4).unwrap();
         let x = tape.input(f32::MAX).unwrap();
         let y = tape.input(2.0).unwrap();
-        let product = tape.mul(x, y).unwrap();
         assert_eq!(tape.mul(x, y), Err(GradientError::NonFinite));
         assert!(!tape.backward_done);
     }
