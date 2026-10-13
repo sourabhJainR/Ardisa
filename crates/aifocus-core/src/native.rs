@@ -3571,7 +3571,7 @@ fn main() -> Tensor<F32>
 "#;
         let program = compile_source(bad_lora);
         assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(_))));
-        let malformed = encode_program(&NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![NativeInstr::AttentionBlock, NativeInstr::Return] })]) }).replace("AttentionBlock", "AttentionBlock:unexpected");
+        let malformed = encode_program(&NativeProgram { functions: BTreeMap::from([("main".into(), NativeFunction { params: vec![], code: vec![NativeInstr::AttentionBlock, NativeInstr::Return] })]) }).replace("AttentionBlock", "AttentionBlockBogus");
         assert!(decode_program(&malformed).is_err());
     }
 }
