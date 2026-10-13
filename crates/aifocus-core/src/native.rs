@@ -4356,7 +4356,7 @@ fn main() -> F32
     #[test]
     fn gradient_tape_rejects_malformed_artifacts_and_overflowing_intermediates() {
         let source=r#"module gradient_tape_overflow
-fn main() -> F32
+fn main() -> Int
   let tape = gradient_tape(4)
   let x = gradient_input(tape, 2.0)
   let y = gradient_input(tape, 3.0)
