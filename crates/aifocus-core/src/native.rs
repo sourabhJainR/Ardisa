@@ -1558,7 +1558,7 @@ fn run_function(
                 stack.push(NativeValue::Tensor{shape:vec![batch,output_dim],values:output.into_iter().map(f32::to_bits).collect()});
             }
             NativeInstr::MakeActivationCache => { let max_bytes=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("ActivationCache byte budget must be positive".into()))?;let stride=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("ActivationCache stride must be positive".into()))?;let capacity=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("ActivationCache capacity must be positive".into()))?;if capacity==0||capacity>4096||stride==0||stride>4096||max_bytes==0||max_bytes>16_777_216{return Err(NativeError::ResourceLimit("ActivationCache limits exceed supported bounds".into()));}stack.push(NativeValue::ActivationCache{capacity,checkpoint_stride:stride,max_bytes,retained_bytes:0,entries:Vec::new()}); }
-            NativeInstr::ActivationStore{name} => { let (shape,values)=pop_tensor(&mut stack,state.limits.max_collection_items)?;let step=pop_int(&mut stack)?;let step_usize=usize::try_from(step).map_err(|_|NativeError::Type("ActivationCache checkpoint id must be non-negative".into()))?;let cache=locals.get_mut(name).ok_or_else(||NativeError::Type("ActivationCache binding not found".into()))?;let NativeValue::ActivationCache{capacity,checkpoint_stride,max_bytes,retained_bytes,entries}=cache else{return Err(NativeError::Type("activation_store requires ActivationCache".into()));};if step_usize%*checkpoint_stride!=0{return Err(NativeError::Type("ActivationCache checkpoint id must align to checkpoint_stride".into()));}if entries.iter().any(|(id,_,_)|*id==step){return Err(NativeError::Type("duplicate ActivationCache checkpoint id".into()));}if entries.len()>=*capacity{return Err(NativeError::ResourceLimit("ActivationCache checkpoint capacity exhausted".into()));}let bytes=values.len().checked_mul(4).and_then(|n|n.checked_add(shape.len().checked_mul(std::mem::size_of::<usize>())?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte accounting overflow".into()))?;let new_bytes=retained_bytes.checked_add(bytes).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte accounting overflow".into()))?;if new_bytes>*max_bytes{return Err(NativeError::ResourceLimit("ActivationCache retained-byte budget exceeded".into()));}entries.push((step,shape,values));entries.sort_by_key(|(id,_,_)|*id);*retained_bytes=new_bytes;stack.push(NativeValue::Unit); }
+            NativeInstr::ActivationStore{name} => { let (shape,values)=pop_tensor(&mut stack,state.limits.max_collection_items)?;let step=pop_int(&mut stack)?;let cache=locals.get_mut(name).ok_or_else(||NativeError::Type("ActivationCache binding not found".into()))?;store_activation_checkpoint(cache,step,shape,values)?;stack.push(NativeValue::Unit); }
             NativeInstr::ActivationRestore => {let step=pop_int(&mut stack)?;let cache=stack.pop().ok_or_else(||NativeError::InvalidProgram("ActivationCache operand missing".into()))?;let NativeValue::ActivationCache{entries,..}=cache else{return Err(NativeError::Type("activation_restore requires ActivationCache".into()));};let (_,shape,values)=entries.iter().find(|(id,_,_)|*id==step).ok_or_else(||NativeError::Type("ActivationCache checkpoint id not found".into()))?;stack.push(NativeValue::Tensor{shape:shape.clone(),values:values.clone()});}
             NativeInstr::ActivationCacheLen => {let cache=stack.pop().ok_or_else(||NativeError::InvalidProgram("ActivationCache operand missing".into()))?;let NativeValue::ActivationCache{entries,..}=cache else{return Err(NativeError::Type("activation_cache_len requires ActivationCache".into()));};stack.push(NativeValue::Int(entries.len() as i64));}
             NativeInstr::MakeGradientTape => { let capacity=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape capacity must be positive".into()))?; if capacity==0||capacity>4096{return Err(NativeError::ResourceLimit("GradientTape capacity must be in 1..=4096".into()));} stack.push(NativeValue::GradientTape{capacity,slots:Vec::new(),gradients:Vec::new(),backward_ready:false}); }
@@ -2369,6 +2369,21 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "Join"=>NativeInstr::Join{name:unescape_artifact(arg)?},"Cancel"=>NativeInstr::Cancel{name:unescape_artifact(arg)?},
         _=>return Err(bad()),
     })
+}
+
+
+fn store_activation_checkpoint(cache:&mut NativeValue,step:i64,shape:Vec<usize>,values:Vec<u32>)->Result<(),NativeError>{
+    let step_usize=usize::try_from(step).map_err(|_|NativeError::Type("ActivationCache checkpoint id must be non-negative".into()))?;
+    validate_tensor_parts(&shape,&values,MAX_TENSOR_ELEMENTS)?;
+    if values.iter().any(|bits|!f32::from_bits(*bits).is_finite()){return Err(NativeError::Type("ActivationCache values must be finite".into()));}
+    let NativeValue::ActivationCache{capacity,checkpoint_stride,max_bytes,retained_bytes,entries}=cache else{return Err(NativeError::Type("activation_store requires ActivationCache".into()));};
+    if step_usize%*checkpoint_stride!=0{return Err(NativeError::Type("ActivationCache checkpoint id must align to checkpoint_stride".into()));}
+    if entries.iter().any(|(id,_,_)|*id==step){return Err(NativeError::Type("duplicate ActivationCache checkpoint id".into()));}
+    if entries.len()>=*capacity{return Err(NativeError::ResourceLimit("ActivationCache checkpoint capacity exhausted".into()));}
+    let bytes=values.len().checked_mul(4).and_then(|n|n.checked_add(shape.len().checked_mul(std::mem::size_of::<usize>())?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte accounting overflow".into()))?;
+    let new_bytes=retained_bytes.checked_add(bytes).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte accounting overflow".into()))?;
+    if new_bytes>*max_bytes{return Err(NativeError::ResourceLimit("ActivationCache retained-byte budget exceeded".into()));}
+    entries.push((step,shape,values));entries.sort_by_key(|(id,_,_)|*id);*retained_bytes=new_bytes;Ok(())
 }
 
 fn mcts_fields(tree: &NativeValue) -> Result<(usize, usize, &Vec<NativeValue>), NativeError> {
@@ -4488,5 +4503,35 @@ fn main() -> Int
         assert!(crate::sema::check(&invalid).is_err());
         let malformed=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:1024,retained_bytes:0,entries:vec![(0,vec![1],vec![1.0f32.to_bits()])]};
         assert!(matches!(validate_value(&malformed,ExecutionLimits::default()),Err(NativeError::InvalidProgram(message)) if message.contains("accounting")));
+    }
+}
+
+#[cfg(test)]
+mod activation_cache_adversarial_hardening_tests {
+    use super::*;
+    #[test]
+    fn activation_cache_mutations_are_atomic_for_duplicate_budget_and_nonfinite_failures() {
+        let initial=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:12,retained_bytes:12,entries:vec![(0,vec![1],vec![1.0f32.to_bits()])]};
+        let mut cache=initial.clone();
+        assert!(matches!(store_activation_checkpoint(&mut cache,0,vec![1],vec![2.0f32.to_bits()]),Err(NativeError::Type(message)) if message.contains("duplicate")));
+        assert_eq!(cache,initial,"duplicate rejection must leave checkpoint state unchanged");
+        assert!(matches!(store_activation_checkpoint(&mut cache,1,vec![1],vec![2.0f32.to_bits()]),Err(NativeError::ResourceLimit(message)) if message.contains("byte budget")));
+        assert_eq!(cache,initial,"budget rejection must leave checkpoint state unchanged");
+        assert!(matches!(store_activation_checkpoint(&mut cache,1,vec![1],vec![f32::INFINITY.to_bits()]),Err(NativeError::Type(message)) if message.contains("finite")));
+        assert_eq!(cache,initial,"non-finite rejection must leave checkpoint state unchanged");
+        assert!(matches!(store_activation_checkpoint(&mut cache,1,vec![2],vec![2.0f32.to_bits()]),Err(NativeError::InvalidProgram(_))));
+        assert_eq!(cache,initial,"shape rejection must leave checkpoint state unchanged");
+    }
+    #[test]
+    fn activation_cache_validator_rejects_duplicate_ids_and_nonfinite_retained_payloads() {
+        let duplicate=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:1024,retained_bytes:24,entries:vec![(0,vec![1],vec![1.0f32.to_bits()]),(0,vec![1],vec![2.0f32.to_bits()])]};
+        assert!(matches!(validate_value(&duplicate,ExecutionLimits::default()),Err(NativeError::InvalidProgram(message)) if message.contains("duplicate")));
+        let nonfinite=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:1024,retained_bytes:12,entries:vec![(0,vec![1],vec![f32::NAN.to_bits()])]};
+        assert!(matches!(validate_value(&nonfinite,ExecutionLimits::default()),Err(NativeError::Type(message)) if message.contains("finite")));
+        let shape_mismatch=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:1024,retained_bytes:12,entries:vec![(0,vec![2],vec![1.0f32.to_bits()])]};
+        assert!(matches!(validate_value(&shape_mismatch,ExecutionLimits::default()),Err(NativeError::InvalidProgram(_))));
+        let program=NativeProgram{functions:BTreeMap::from([("main".into(),NativeFunction{params:vec![],code:vec![NativeInstr::PushInt(2),NativeInstr::PushInt(1),NativeInstr::PushInt(1024),NativeInstr::MakeActivationCache,NativeInstr::Return]})])};
+        let malformed=encode_program(&program).replace("MakeActivationCache","MakeActivationCacheBogus");
+        assert!(matches!(decode_program(&malformed),Err(NativeError::InvalidProgram(_))));
     }
 }
