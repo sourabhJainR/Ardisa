@@ -2015,7 +2015,15 @@ fn validate_mcts_structure(nodes: &[NativeValue], max_branches: usize) -> Result
             let mut cursor = index;
             let mut depth = 0usize;
             loop {
-                let parent = match &nodes[cursor] { NativeValue::List(fields) => match fields.get(1) { Some(NativeValue::Int(-1)) if cursor == 0 => break, Some(NativeValue::Int(v)) if *v >= 0 => *v as usize, _ => return Err(NativeError::InvalidProgram("invalid MCTS ancestry".into())) }, _ => unreachable!() };
+                let parent = match &nodes[cursor] { NativeValue::List(fields) => match fields.get(1) { Some(NativeValue::Int(-1)) if cursor == 0 => break, Some(NativeValue::Int(v)) if *v >= 0 => *v as usize,
+                        _ => {
+                            return Err(NativeError::InvalidProgram(
+                                "invalid MCTS ancestry".into(),
+                            ));
+                        }
+                    },
+                    _ => unreachable!(),
+                };
                 cursor = parent;
                 depth += 1;
                 if depth >= crate::ai_mcts::MAX_MCTS_DEPTH { return Err(NativeError::ResourceLimit("MCTS depth limit exceeded".into())); }
