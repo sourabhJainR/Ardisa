@@ -43,7 +43,7 @@ pub use ai_mode::{AiModePolicy, Capability, PolicyViolation, ProofPolicy, ProofR
 pub use ai_types::{Alternative, Guaranteed, GraphConflictPolicy, GraphTensor, GraphTensorEdge, GraphTensorNode, Probabilistic};
 pub use ai_routing::{route_top_k, AiRoutingError, DomainVector, ExpertWeight, VectorHit, VectorIndex};
 pub use ai_mcts::{MctsError, MctsNode, MctsTree};
-pub use ai_autograd::{GradientError, GradientNode, GradientOp, GradientTape};
+pub use ai_autograd::{GradientError, GradientTape};
 pub use ai_primitives::{AiNumericType, AiTypeError, DomainEmbedding, Probability as AiProbability, QuantizationScale, QuantizedTensor, TensorShape, TensorValue, encode_tensor_descriptor, encode_embedding, encode_probability, encode_quantized_tensor};
 pub use ai::{
     Distribution, Embedding, Modality, Probability, Quantization, RuntimeError, SemanticValue,
