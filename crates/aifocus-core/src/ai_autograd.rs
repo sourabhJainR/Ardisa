@@ -20,14 +20,14 @@ enum Op {
     Mul { left: usize, right: usize },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Node {
     op: Op,
-    value: f32,
-    gradient: f32,
+    value_bits: u32,
+    gradient_bits: u32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GradientTape {
     max_slots: usize,
     nodes: Vec<Node>,
@@ -46,7 +46,7 @@ impl GradientTape {
         if !value.is_finite() { return Err(GradientError::NonFinite); }
         if self.nodes.len() >= self.max_slots { return Err(GradientError::ResourceLimit); }
         let slot = self.nodes.len();
-        self.nodes.push(Node { op, value, gradient: 0.0 });
+        self.nodes.push(Node { op, value_bits: value.to_bits(), gradient_bits: 0.0f32.to_bits() });
         self.backward_done = false;
         Ok(slot)
     }
@@ -56,8 +56,8 @@ impl GradientTape {
     }
 
     pub fn add(&mut self, left: usize, right: usize) -> Result<usize, GradientError> {
-        let a = self.nodes.get(left).ok_or(GradientError::InvalidSlot)?.value;
-        let b = self.nodes.get(right).ok_or(GradientError::InvalidSlot)?.value;
+        let a = f32::from_bits(self.nodes.get(left).ok_or(GradientError::InvalidSlot)?.value_bits);
+        let b = f32::from_bits(self.nodes.get(right).ok_or(GradientError::InvalidSlot)?.value_bits);
         self.append(Op::Add { left, right }, a + b)
     }
 
@@ -84,8 +84,8 @@ impl GradientTape {
                     gradients[right] += gradient;
                 }
                 Op::Mul { left, right } => {
-                    gradients[left] += gradient * self.nodes[right].value;
-                    gradients[right] += gradient * self.nodes[left].value;
+                    gradients[left] += gradient * f32::from_bits(self.nodes[right].value_bits);
+                    gradients[right] += gradient * f32::from_bits(self.nodes[left].value_bits);
                 }
             }
             if gradients.iter().any(|value| !value.is_finite()) {
@@ -93,19 +93,19 @@ impl GradientTape {
             }
         }
         for (node, gradient) in self.nodes.iter_mut().zip(gradients) {
-            node.gradient = gradient;
+            node.gradient_bits = gradient.to_bits();
         }
         self.backward_done = true;
         Ok(())
     }
 
     pub fn value(&self, slot: usize) -> Result<f32, GradientError> {
-        self.nodes.get(slot).map(|node| node.value).ok_or(GradientError::InvalidSlot)
+        self.nodes.get(slot).map(|node| f32::from_bits(node.value_bits)).ok_or(GradientError::InvalidSlot)
     }
 
     pub fn derivative(&self, slot: usize) -> Result<f32, GradientError> {
         if !self.backward_done { return Err(GradientError::BackwardNotRun); }
-        self.nodes.get(slot).map(|node| node.gradient).ok_or(GradientError::InvalidSlot)
+        self.nodes.get(slot).map(|node| f32::from_bits(node.gradient_bits)).ok_or(GradientError::InvalidSlot)
     }
 
     pub fn len(&self) -> usize { self.nodes.len() }
@@ -116,7 +116,7 @@ impl GradientTape {
             return Err(GradientError::ResourceLimit);
         }
         for (slot, node) in self.nodes.iter().enumerate() {
-            if !node.value.is_finite() || !node.gradient.is_finite() { return Err(GradientError::NonFinite); }
+            if !f32::from_bits(node.value_bits).is_finite() || !f32::from_bits(node.gradient_bits).is_finite() { return Err(GradientError::NonFinite); }
             match node.op {
                 Op::Input => {}
                 Op::Add { left, right } | Op::Mul { left, right } => {
@@ -163,7 +163,7 @@ mod tests {
         let x = tape.input(f32::MAX).unwrap();
         let y = tape.input(2.0).unwrap();
         let product = tape.mul(x, y).unwrap();
-        assert_eq!(tape.value(product), Err(GradientError::NonFinite));
+        assert_eq!(tape.mul(x, y), Err(GradientError::NonFinite));
         assert!(!tape.backward_done);
     }
 }
