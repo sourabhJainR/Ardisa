@@ -3336,4 +3336,23 @@ mod mcts_native_integration_tests {
         let program = compile_program(&crate::ir::lower(&module)).unwrap();
         assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("reward")));
     }
+    #[test]
+    fn mcts_native_enforces_node_and_depth_budgets() {
+        let capacity_source = "module mcts_capacity\nfn main() -> Int\n  let tree = mcts_tree(2, 2)\n  let root = mcts_root(tree, 1)\n  let child = mcts_expand(tree, root, 2)\n  mcts_expand(tree, child, 3)\n  mcts_len(tree)\n";
+        let capacity_module = crate::parse(capacity_source).unwrap();
+        crate::sema::check(&capacity_module).unwrap();
+        let capacity_program = compile_program(&crate::ir::lower(&capacity_module)).unwrap();
+        assert!(matches!(run_program(&capacity_program, "main", &[]), Err(NativeError::ResourceLimit(message)) if message.contains("node limit")));
+
+        let mut source = String::from("module mcts_depth\nfn main() -> Int\n  let tree = mcts_tree(300, 1)\n  let n0 = mcts_root(tree, 0)\n");
+        for index in 1..=256 {
+            source.push_str(&format!("  let n{index} = mcts_expand(tree, n{}, {index})\n", index - 1));
+        }
+        source.push_str("  mcts_len(tree)\n");
+        let module = crate::parse(&source).unwrap();
+        crate::sema::check(&module).unwrap();
+        let program = compile_program(&crate::ir::lower(&module)).unwrap();
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::ResourceLimit(message)) if message.contains("depth limit")));
+    }
+
 }
