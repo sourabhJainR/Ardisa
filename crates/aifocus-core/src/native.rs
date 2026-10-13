@@ -4346,6 +4346,44 @@ fn main() -> Int
     }
 
     #[test]
+    fn gradient_tape_source_to_runtime_roundtrip_computes_deterministic_gradient() {
+        let source = r#"module gradient_tape_e2e
+fn main() -> F32
+  let tape = gradient_tape(16)
+  let x = grad_input(tape, 3.0)
+  let square = grad_mul(tape, x, x)
+  grad_backward(tape, square, 1.0)
+  grad_derivative(tape, x)
+"#;
+        let program = compile_source(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("GradientTape artifact decodes");
+        assert_eq!(encode_program(&decoded), artifact);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Float(6.0f32.to_bits()));
+    }
+
+    #[test]
+    fn gradient_tape_returns_forward_value_and_rejects_invalid_slots() {
+        let source = r#"module gradient_tape_value
+fn main() -> F32
+  let tape = gradient_tape(8)
+  let x = grad_input(tape, 3.0)
+  let square = grad_mul(tape, x, x)
+  grad_value(tape, square)
+"#;
+        let program = compile_source(source);
+        assert_eq!(run_program(&decode_program(&encode_program(&program)).unwrap(), "main", &[]).unwrap(), NativeValue::Float(9.0f32.to_bits()));
+
+        let invalid = r#"module gradient_tape_invalid_slot
+fn main() -> Int
+  let tape = gradient_tape(8)
+  grad_add(tape, 0, 0)
+"#;
+        let program = compile_source(invalid);
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("slot")));
+    }
+
+    #[test]
     fn nominal_moe_router_rejects_empty_logits_and_masks_at_runtime() {
         let source = r#"module moe_empty_logits
 fn main() -> Int
