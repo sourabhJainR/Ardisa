@@ -3906,6 +3906,20 @@ fn main() -> Tensor<F32>
     }
 
     #[test]
+    fn lora_adapter_rejects_nonfinite_alpha_and_aggregate_storage_over_budget() {
+        let a = vec![0.0f32.to_bits(); 10_000];
+        let b = vec![0.0f32.to_bits(); 10_000];
+        assert!(matches!(
+            validate_lora_parts(&[100, 100], &a, &[100, 100], &b, f32::NAN.to_bits(), 100, MAX_TENSOR_ELEMENTS),
+            Err(NativeError::Type(_))
+        ));
+        assert!(matches!(
+            validate_lora_parts(&[100, 100], &a, &[100, 100], &b, 1.0f32.to_bits(), 100, MAX_TENSOR_ELEMENTS),
+            Err(NativeError::ResourceLimit(message)) if message.contains("aggregate")
+        ));
+    }
+
+    #[test]
     fn nominal_constructors_fail_closed_on_invalid_static_shapes_and_generic_forms() {
         let bad_attention = r#"module nominal_bad_attention
 fn main() -> AttentionBlock
