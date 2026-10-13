@@ -4354,6 +4354,37 @@ fn main() -> F32
         assert!(crate::sema::check(&invalid).is_err());
     }
     #[test]
+    fn gradient_tape_rejects_malformed_artifacts_and_overflowing_intermediates() {
+        let source=r#"module gradient_tape_overflow
+fn main() -> F32
+  let tape = gradient_tape(4)
+  let x = gradient_input(tape, 2.0)
+  let y = gradient_input(tape, 3.0)
+  gradient_mul(tape, x, y)
+"#;
+        let mut program=compile_source(source);
+        let code=&mut program.functions.get_mut("main").unwrap().code;
+        let mut replaced=0;
+        for op in code.iter_mut() {
+            if matches!(op,NativeInstr::PushFloat(_)) {
+                *op=NativeInstr::PushFloat(f32::MAX.to_bits()); replaced+=1;
+            }
+        }
+        assert_eq!(replaced,2);
+        assert!(matches!(run_program(&program,"main",&[]),Err(NativeError::Type(message)) if message.contains("intermediate")));
+
+        let valid=compile_source(r#"module gradient_tape_malformed
+fn main() -> Int
+  let tape = gradient_tape(2)
+  let x = gradient_input(tape, 1.0)
+  x
+"#);
+        let malformed=encode_program(&valid).replace("GradientInput:", "GradientInputBogus:");
+        assert!(matches!(decode_program(&malformed),Err(NativeError::InvalidProgram(_))));
+        let invalid=NativeValue::GradientTape { capacity: 2, slots: vec![GradientSlot { value_bits: 1.0f32.to_bits(), op: GradientOp::Add { left: 0, right: 0 } }], gradients: vec![], backward_ready: false };
+        assert!(matches!(validate_value(&invalid,ExecutionLimits::default()),Err(NativeError::InvalidProgram(message)) if message.contains("prior slots")));
+    }
+    #[test]
     fn gradient_tape_rejects_nonfinite_inputs_and_gradient_overflow() {
         let source=r#"module gradient_tape_nonfinite
 fn main() -> F32
