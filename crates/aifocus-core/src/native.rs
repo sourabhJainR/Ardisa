@@ -1741,6 +1741,7 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                     validate_embedding_parts(domain, values, MAX_TENSOR_ELEMENTS)?;
                     add_bytes(domain)?;
                 }
+                NativeInstr::MctsRoot { name } | NativeInstr::MctsExpand { name } | NativeInstr::MctsUpdate { name } | NativeInstr::MctsBackpropagate { name } => { if name.trim().is_empty() { return Err(NativeError::InvalidProgram("MCTS binding name must not be empty".into())); } add_bytes(name)?; },
                 NativeInstr::VectorIndexInsert { name } => {
                     if name.trim().is_empty() {
                         return Err(NativeError::InvalidProgram("VectorIndexInsert binding name must not be empty".into()));
@@ -1880,6 +1881,13 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::MakeVectorIndex => "MakeVectorIndex".into(),
         NativeInstr::VectorIndexInsert { name } => format!("VectorIndexInsert:{}", escape_artifact(name)),
         NativeInstr::VectorIndexSearch => "VectorIndexSearch".into(),
+        NativeInstr::MakeMctsTree => "MakeMctsTree".into(),
+        NativeInstr::MctsRoot { name } => format!("MctsRoot:{}", escape_artifact(name)),
+        NativeInstr::MctsExpand { name } => format!("MctsExpand:{}", escape_artifact(name)),
+        NativeInstr::MctsChild => "MctsChild".into(),
+        NativeInstr::MctsUpdate { name } => format!("MctsUpdate:{}", escape_artifact(name)),
+        NativeInstr::MctsBackpropagate { name } => format!("MctsBackpropagate:{}", escape_artifact(name)),
+        NativeInstr::MctsLen => "MctsLen".into(),
         NativeInstr::MakeKvCache => "MakeKvCache".into(), NativeInstr::KvLen => "KvLen".into(), NativeInstr::KvCapacity => "KvCapacity".into(),
         NativeInstr::KvAppend { name, evict_oldest } => format!("KvAppend:{},{}", escape_artifact(name), evict_oldest),
         NativeInstr::MakeContextWindow => "MakeContextWindow".into(), NativeInstr::ContextLen => "ContextLen".into(), NativeInstr::ContextBytes => "ContextBytes".into(), NativeInstr::ContextTokens => "ContextTokens".into(),
@@ -1939,6 +1947,13 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "MakeVectorIndex"=>NativeInstr::MakeVectorIndex,
         "VectorIndexInsert"=>NativeInstr::VectorIndexInsert{name:unescape_artifact(arg)?},
         "VectorIndexSearch"=>NativeInstr::VectorIndexSearch,
+        "MakeMctsTree"=>NativeInstr::MakeMctsTree,
+        "MctsRoot"=>NativeInstr::MctsRoot{name:unescape_artifact(arg)?},
+        "MctsExpand"=>NativeInstr::MctsExpand{name:unescape_artifact(arg)?},
+        "MctsChild"=>NativeInstr::MctsChild,
+        "MctsUpdate"=>NativeInstr::MctsUpdate{name:unescape_artifact(arg)?},
+        "MctsBackpropagate"=>NativeInstr::MctsBackpropagate{name:unescape_artifact(arg)?},
+        "MctsLen"=>NativeInstr::MctsLen,
         "MakeKvCache"=>NativeInstr::MakeKvCache,"KvLen"=>NativeInstr::KvLen,"KvCapacity"=>NativeInstr::KvCapacity,
         "KvAppend"=>{let (name,policy)=arg.rsplit_once(',').ok_or_else(bad)?; let policy=policy.parse::<bool>().map_err(|_|bad())?; NativeInstr::KvAppend{name:unescape_artifact(name)?,evict_oldest:policy}},
         "MakeContextWindow"=>NativeInstr::MakeContextWindow,"ContextLen"=>NativeInstr::ContextLen,"ContextBytes"=>NativeInstr::ContextBytes,"ContextTokens"=>NativeInstr::ContextTokens,
@@ -2001,7 +2016,7 @@ fn mcts_update(tree: &mut NativeValue, node: usize, reward: f64, backprop: bool)
     let mut path = vec![node]; if backprop { let mut cursor = node; loop { let f = match nodes.get(cursor) { Some(NativeValue::List(v)) => v, _ => return Err(NativeError::InvalidProgram("malformed MCTS node".into())) }; match f.get(1) { Some(NativeValue::Int(-1)) if cursor == 0 => break, Some(NativeValue::Int(p)) if *p >= 0 && (*p as usize) < cursor => { let p = *p as usize; if !matches!(nodes.get(p), Some(NativeValue::List(pf)) if matches!(pf.get(2), Some(NativeValue::List(ch)) if ch.iter().any(|x| matches!(x, NativeValue::Int(v) if *v == cursor as i64)))) { return Err(NativeError::InvalidProgram("MCTS parent-child mismatch".into())); } cursor = p; path.push(cursor); if path.len() >= crate::ai_mcts::MAX_MCTS_DEPTH { return Err(NativeError::ResourceLimit("MCTS depth limit exceeded".into())); } }, _ => return Err(NativeError::InvalidProgram("invalid MCTS parent chain".into())) } } }
     for &idx in &path { let f = match nodes.get(idx) { Some(NativeValue::List(v)) if v.len() == 5 => v, _ => return Err(NativeError::Type("MCTS node index out of bounds".into())) }; let visits = match f.get(3) { Some(NativeValue::Int(v)) if *v >= 0 && *v < i64::MAX => *v, _ => return Err(NativeError::ResourceLimit("MCTS visit counter overflow".into())) }; let old = match f.get(4) { Some(NativeValue::Float(bits)) if f32::from_bits(*bits).is_finite() => f64::from(f32::from_bits(*bits)), _ => return Err(NativeError::InvalidProgram("invalid MCTS value sum".into())) }; let next = old + reward; if !next.is_finite() || next.abs() > crate::ai_mcts::MAX_MCTS_REWARD_ABS * (visits + 1) as f64 || !(next as f32).is_finite() { return Err(NativeError::Type("MCTS accumulated reward exceeds supported bounds".into())); } }
     let NativeValue::List(fields) = tree else { unreachable!() }; let NativeValue::List(nodes) = &mut fields[2] else { unreachable!() };
-    for idx in path { let NativeValue::List(f) = &mut nodes[idx] else { unreachable!() }; let NativeValue::Int(visits) = &mut f[3] else { unreachable!() }; *visits += 1; let old = match f[4] { NativeValue::Float(bits) => f32::from_bits(bits), _ => unreachable!() }; f[4] = NativeValue::Float((f64::from(old) + reward) as f32 .to_bits()); } Ok(())
+    for idx in path { let NativeValue::List(f) = &mut nodes[idx] else { unreachable!() }; let NativeValue::Int(visits) = &mut f[3] else { unreachable!() }; *visits += 1; let old = match f[4] { NativeValue::Float(bits) => f32::from_bits(bits), _ => unreachable!() }; f[4] = NativeValue::Float(((f64::from(old) + reward) as f32).to_bits()); } Ok(())
 }
 fn validate_tensor_parts(shape: &[usize], values: &[u32], max_elements: usize) -> Result<(), NativeError> {
     if shape.is_empty() || shape.len() > 2 || shape.iter().any(|dimension| *dimension == 0) {
