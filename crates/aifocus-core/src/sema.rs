@@ -919,6 +919,42 @@ impl Checker {
                     if !matches!(&cache.kind,TypeKind::Named(n) if n=="ActivationCache") { self.error("AIF522","activation_cache_len requires ActivationCache",args[0].span); }
                     let ty=type_node(TypeKind::Int,expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
                 }
+                if name == "tokenizer_state" {
+                    if args.len()!=4 { self.error("AIF540","tokenizer_state expects vocabulary List<String>, max_pending Int, max_tokens Int, and unknown_id Int (-1 rejects unknowns)",expr.span); return None; }
+                    let vocab=self.check_expr(&args[0],locals)?; let pending=self.check_expr(&args[1],locals)?; let tokens=self.check_expr(&args[2],locals)?; let unknown=self.check_expr(&args[3],locals)?;
+                    if !matches!(&vocab.kind,TypeKind::List(element) if matches!(element.kind,TypeKind::String)) { self.error("AIF541","TokenizerState vocabulary must be List<String>",args[0].span); }
+                    for (ty,arg,label,max) in [(&pending,&args[1],"max_pending",4i64),(&tokens,&args[2],"max_tokens",65536i64)] { if !is_kind(ty,&TypeKind::Int) { self.error("AIF542",format!("TokenizerState {label} must be Int"),arg.span); } if let ExprKind::Int(v)=arg.kind { if v<=0||v>max { self.error("AIF543",format!("TokenizerState {label} must be in 1..={max}"),arg.span); } } }
+                    if !is_kind(&unknown,&TypeKind::Int) { self.error("AIF544","TokenizerState unknown_id must be Int (-1 or non-negative)",args[3].span); }
+                    if let ExprKind::Int(v)=args[3].kind { if v < -1 { self.error("AIF545","TokenizerState unknown_id must be -1 or non-negative",args[3].span); } }
+                    if let ExprKind::List(items)=&args[0].kind { let mut seen=std::collections::BTreeSet::new(); for item in items { if let ExprKind::String(piece)=&item.kind { if piece.chars().count()!=1 || !seen.insert(piece.clone()) { self.error("AIF546","TokenizerState vocabulary entries must be unique single Unicode scalars",item.span); } } } }
+                    let ty=type_node(TypeKind::Named("TokenizerState".into()),expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "tokenizer_feed" {
+                    if args.len()!=2 { self.error("AIF547","tokenizer_feed expects named TokenizerState and List<Int> bytes",expr.span); return None; }
+                    let state=self.check_expr(&args[0],locals)?; let bytes=self.check_expr(&args[1],locals)?;
+                    if !matches!(&state.kind,TypeKind::Named(n) if n=="TokenizerState") { self.error("AIF548","tokenizer_feed requires TokenizerState",args[0].span); }
+                    if !matches!(&bytes.kind,TypeKind::List(element) if matches!(element.kind,TypeKind::Int)) { self.error("AIF549","tokenizer_feed bytes must be List<Int>",args[1].span); }
+                    if !matches!(&args[0].kind,ExprKind::Name(_)) { self.error("AIF550","TokenizerState mutation requires a named binding",args[0].span); }
+                    let ty=type_node(TypeKind::Unit,expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "tokenizer_flush" {
+                    if args.len()!=1 { self.error("AIF551","tokenizer_flush expects named TokenizerState",expr.span); return None; }
+                    let state=self.check_expr(&args[0],locals)?;
+                    if !matches!(&state.kind,TypeKind::Named(n) if n=="TokenizerState") { self.error("AIF552","tokenizer_flush requires TokenizerState",args[0].span); }
+                    if !matches!(&args[0].kind,ExprKind::Name(_)) { self.error("AIF553","TokenizerState mutation requires a named binding",args[0].span); }
+                    let ty=type_node(TypeKind::Unit,expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "tokenizer_token_count" {
+                    if args.len()!=1 { self.error("AIF554","tokenizer_token_count expects TokenizerState",expr.span); return None; }
+                    let state=self.check_expr(&args[0],locals)?; if !matches!(&state.kind,TypeKind::Named(n) if n=="TokenizerState") { self.error("AIF555","tokenizer_token_count requires TokenizerState",args[0].span); }
+                    let ty=type_node(TypeKind::Int,expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "tokenizer_token" {
+                    if args.len()!=2 { self.error("AIF556","tokenizer_token expects TokenizerState and token index Int",expr.span); return None; }
+                    let state=self.check_expr(&args[0],locals)?; let index=self.check_expr(&args[1],locals); if !matches!(&state.kind,TypeKind::Named(n) if n=="TokenizerState") { self.error("AIF557","tokenizer_token requires TokenizerState",args[0].span); }
+                    if let Some(index)=index { if !is_kind(&index,&TypeKind::Int) { self.error("AIF558","tokenizer_token index must be Int",args[1].span); } }
+                    let ty=type_node(TypeKind::Int,expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
                 if name == "gradient_tape" {
                     if args.len()!=1 { self.error("AIF490","gradient_tape expects capacity Int",expr.span); return None; }
                     let capacity=self.check_expr(&args[0],locals)?;
