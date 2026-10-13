@@ -807,6 +807,6 @@ fn main() -> TokenizerState
                 && matches!(&pieces[1].kind, TypedValueKind::String(e) if e=="é"))
             && matches!(args[1].kind, TypedValueKind::Int(4))
             && matches!(args[2].kind, TypedValueKind::Int(16))
-            && matches!(args[3].kind, TypedValueKind::Int(-1))));
+            && matches!(args[3].kind, TypedValueKind::Int(0))));
     }
 }
