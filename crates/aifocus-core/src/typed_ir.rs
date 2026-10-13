@@ -735,7 +735,7 @@ fn make_router() -> MoERouter
   moe_router(4, 2)
 fn route() -> Int
   let router = moe_router(4, 2)
-  let logits = [0.0, 1.0, 1.0, -1.0]
+  let logits = [0.0, 1.0, 1.0, 0.0]
   let mask = [false, false, false, false]
   let routed = moe_route(router, logits, mask)
   routed[0][0]
