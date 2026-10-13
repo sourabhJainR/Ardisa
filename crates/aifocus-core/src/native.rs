@@ -29,6 +29,8 @@ pub enum NativeInstr {
     TensorMatMul,
     /// Stable scaled dot-product attention over rank-2 Q/K/V tensors.
     AttentionBlock,
+    /// Attend over the retained key/value entries of an existing KVCache.
+    AttentionCached,
     /// Apply a bounded low-rank update: input [batch,in], A [rank,in], B [out,rank].
     LoRAApply,
     /// Build a finite f32 tensor from source-level shape/value integer lists.
@@ -667,6 +669,8 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::TensorMatMul);
             } else if callee == "attention_block" && args.len() == 4 {
                 code.push(NativeInstr::AttentionBlock);
+            } else if callee == "attention_cached" && args.len() == 2 {
+                code.push(NativeInstr::AttentionCached);
             } else if callee == "lora_apply" && args.len() == 5 {
                 code.push(NativeInstr::LoRAApply);
             } else if callee == "embedding" && args.len() == 2 {
@@ -917,6 +921,7 @@ fn run_function(
                 | NativeInstr::TensorAdd
                 | NativeInstr::TensorMatMul
                 | NativeInstr::AttentionBlock
+                | NativeInstr::AttentionCached
                 | NativeInstr::LoRAApply
                 | NativeInstr::MakeTensor
                 | NativeInstr::MakeEmbedding
@@ -1251,6 +1256,48 @@ fn run_function(
                         let mut sum = 0.0f32;
                         for ki in 0..tk { sum += weights[ki] * f32::from_bits(value.1[ki*dv+vi]); }
                         if !sum.is_finite() { return Err(NativeError::Type("attention output is non-finite".into())); }
+                        output[qi*dv+vi] = sum;
+                    }
+                }
+                stack.push(NativeValue::Tensor { shape: vec![tq, dv], values: output.into_iter().map(f32::to_bits).collect() });
+            }
+            NativeInstr::AttentionCached => {
+                let cache = match stack.pop() { Some(NativeValue::KvCache { entries, .. }) => entries, _ => return Err(NativeError::Type("attention_cached requires a KvCache".into())) };
+                let query = pop_tensor(&mut stack, state.limits.max_collection_items)?;
+                if query.0.len() != 2 || query.0[1] == 0 || cache.is_empty() {
+                    return Err(NativeError::Type("attention_cached requires a rank-2 query and non-empty KVCache".into()));
+                }
+                let (tq, d) = (query.0[0], query.0[1]);
+                let dv = cache[0].1.len();
+                if cache.iter().any(|(key, value)| key.len() != d || value.len() != dv) || dv == 0 {
+                    return Err(NativeError::Type("attention_cached query/key/value dimensions are incompatible".into()));
+                }
+                let out_count = tq.checked_mul(dv).ok_or_else(|| NativeError::ResourceLimit("cached attention output size overflow".into()))?;
+                let work = tq.checked_mul(cache.len()).and_then(|x| x.checked_mul(d)).ok_or_else(|| NativeError::ResourceLimit("cached attention work size overflow".into()))?;
+                if out_count > state.limits.max_collection_items.min(MAX_TENSOR_ELEMENTS) || work > state.limits.max_value_nodes.saturating_mul(16) {
+                    return Err(NativeError::ResourceLimit("cached attention exceeds resource budget".into()));
+                }
+                let scale = (d as f32).sqrt();
+                if !scale.is_finite() || scale == 0.0 { return Err(NativeError::Type("attention head dimension must be positive".into())); }
+                let mut output = vec![0.0f32; out_count];
+                for qi in 0..tq {
+                    let mut scores = Vec::with_capacity(cache.len());
+                    for (key, _) in &cache {
+                        let mut dot = 0.0f32;
+                        for di in 0..d { dot += f32::from_bits(query.1[qi*d+di]) * f32::from_bits(key[di]); }
+                        let score = dot / scale;
+                        if !score.is_finite() { return Err(NativeError::Type("cached attention score is non-finite".into())); }
+                        scores.push(score);
+                    }
+                    let max_score = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                    let mut weights = scores.iter().map(|s| (*s-max_score).exp()).collect::<Vec<_>>();
+                    let total: f32 = weights.iter().sum();
+                    if !total.is_finite() || total <= 0.0 { return Err(NativeError::Type("cached attention softmax normalization failed".into())); }
+                    for weight in &mut weights { *weight /= total; }
+                    for vi in 0..dv {
+                        let mut sum = 0.0f32;
+                        for (ki, (_, value)) in cache.iter().enumerate() { sum += weights[ki] * f32::from_bits(value[vi]); }
+                        if !sum.is_finite() { return Err(NativeError::Type("cached attention output is non-finite".into())); }
                         output[qi*dv+vi] = sum;
                     }
                 }
@@ -1957,6 +2004,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::TensorAdd => "TensorAdd".into(),
         NativeInstr::TensorMatMul => "TensorMatMul".into(),
         NativeInstr::AttentionBlock => "AttentionBlock".into(),
+        NativeInstr::AttentionCached => "AttentionCached".into(),
         NativeInstr::LoRAApply => "LoRAApply".into(),
         NativeInstr::MakeTensor => "MakeTensor".into(),
         NativeInstr::MakeEmbedding => "MakeEmbedding".into(),
@@ -2025,6 +2073,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "TensorAdd"=>NativeInstr::TensorAdd,
         "TensorMatMul"=>NativeInstr::TensorMatMul,
         "AttentionBlock"=>NativeInstr::AttentionBlock,
+        "AttentionCached"=>NativeInstr::AttentionCached,
         "LoRAApply"=>NativeInstr::LoRAApply,
         "MakeTensor"=>NativeInstr::MakeTensor,
         "MakeEmbedding"=>NativeInstr::MakeEmbedding,
