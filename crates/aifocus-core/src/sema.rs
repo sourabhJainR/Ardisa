@@ -39,6 +39,13 @@ pub enum TypedConstructMember {
 /// not claim runtime values or executable VM instructions are implemented.
 fn validate_ai_type(ty: &Type, checker: &mut Checker) {
     match &ty.kind {
+        TypeKind::Generic(name, _) if matches!(name.as_str(), "AttentionBlock" | "LoRAAdapter") => {
+            checker.error(
+                "AIF451",
+                format!("{} compile-time shape parameters are not supported yet; use the validated runtime nominal constructor", name),
+                ty.span,
+            );
+        }
         TypeKind::Generic(name, args) if matches!(name.as_str(), "Tensor" | "Embedding" | "QuantizedTensor" | "Probabilistic" | "Guaranteed") => {
             if args.len() != 1 {
                 checker.error("AIF320", format!("AI type '{}' expects one type argument", name), ty.span);
@@ -855,6 +862,93 @@ impl Checker {
                     if !is_kind(&tokens, &TypeKind::Int) { self.error("AIF378", "context token count must be Int", args[3].span); }
                     if !matches!(&args[0].kind, ExprKind::Name(_)) { self.error("AIF379", "context_append requires a named mutable ContextWindow binding", args[0].span); }
                     return Some(type_node(TypeKind::Unit, expr.span));
+                }
+                if name == "attention_block_new" {
+                    if args.len() != 4 { self.error("AIF452", "attention_block_new expects hidden, heads, head_dim Int and causal Bool", expr.span); return None; }
+                    let hidden=self.check_expr(&args[0],locals)?; let heads=self.check_expr(&args[1],locals)?; let dim=self.check_expr(&args[2],locals)?; let causal=self.check_expr(&args[3],locals)?;
+                    for (ty,arg) in [(&hidden,&args[0]),(&heads,&args[1]),(&dim,&args[2])] { if !is_kind(ty,&TypeKind::Int) { self.error("AIF453","AttentionBlock dimensions must be Int",arg.span); } }
+                    if !is_kind(&causal,&TypeKind::Bool) { self.error("AIF454","AttentionBlock causal flag must be Bool",args[3].span); }
+                    if let (ExprKind::Int(h),ExprKind::Int(n),ExprKind::Int(d))=(&args[0].kind,&args[1].kind,&args[2].kind) {
+                        if *h<=0 || *n<=0 || *d<=0 || *n>256 || n.checked_mul(*d) != Some(*h) { self.error("AIF455","AttentionBlock requires positive dimensions and hidden == heads * head_dim (heads <= 256)",expr.span); }
+                    }
+                    let ty=type_node(TypeKind::Named("AttentionBlock".into()),expr.span); self.inferred_types.insert(expr.id,ty.clone()); return Some(ty);
+                }
+                if name == "attention_block_apply" {
+                    if args.len()!=4 { self.error("AIF456","attention_block_apply expects AttentionBlock, Q, K, V tensors",expr.span); return None; }
+                    let block=self.check_expr(&args[0],locals)?; let q=self.check_expr(&args[1],locals)?; let k=self.check_expr(&args[2],locals)?; let v=self.check_expr(&args[3],locals)?;
+                    if !matches!(&block.kind,TypeKind::Named(n) if n=="AttentionBlock"){self.error("AIF457","attention_block_apply requires an AttentionBlock value",args[0].span);}
+                    let tensor=|ty:&Type|matches!(&ty.kind,TypeKind::Generic(n,a) if n=="Tensor"&&a.len()==1&&matches!(&a[0].kind,TypeKind::Named(e) if e=="F32"));
+                    for (ty,arg) in [(&q,&args[1]),(&k,&args[2]),(&v,&args[3])] { if !tensor(ty){self.error("AIF458","AttentionBlock Q/K/V must be Tensor<F32>",arg.span);} }
+                    let ty=type_node(TypeKind::Generic("Tensor".into(),vec![type_node(TypeKind::Named("F32".into()),expr.span)]),expr.span);self.inferred_types.insert(expr.id,ty.clone());return Some(ty);
+                }
+                if name == "attention_block_cached" {
+                    if args.len()!=3 { self.error("AIF459","attention_block_cached expects AttentionBlock, query Tensor<F32>, and KvCache",expr.span);return None; }
+                    let block=self.check_expr(&args[0],locals)?;let q=self.check_expr(&args[1],locals)?;let cache=self.check_expr(&args[2],locals)?;
+                    if !matches!(&block.kind,TypeKind::Named(n) if n=="AttentionBlock"){self.error("AIF460","attention_block_cached requires an AttentionBlock",args[0].span);}
+                    if !matches!(&q.kind,TypeKind::Generic(n,a) if n=="Tensor"&&a.len()==1&&matches!(&a[0].kind,TypeKind::Named(e) if e=="F32")){self.error("AIF461","attention_block_cached query must be Tensor<F32>",args[1].span);}
+                    if !matches!(&cache.kind,TypeKind::Named(n) if n=="KvCache"){self.error("AIF462","attention_block_cached requires KvCache",args[2].span);}
+                    let ty=type_node(TypeKind::Generic("Tensor".into(),vec![type_node(TypeKind::Named("F32".into()),expr.span)]),expr.span);self.inferred_types.insert(expr.id,ty.clone());return Some(ty);
+                }
+                if name == "lora_adapter_new" {
+                    if args.len()!=4 { self.error("AIF463","lora_adapter_new expects A, B Tensor<F32>, alpha F32/Int, rank Int",expr.span);return None; }
+                    let a=self.check_expr(&args[0],locals)?;let b=self.check_expr(&args[1],locals)?;let alpha=self.check_expr(&args[2],locals)?;let rank=self.check_expr(&args[3],locals)?;
+                    let tensor=|ty:&Type|matches!(&ty.kind,TypeKind::Generic(n,a) if n=="Tensor"&&a.len()==1&&matches!(&a[0].kind,TypeKind::Named(e) if e=="F32"));
+                    for (ty,arg) in [(&a,&args[0]),(&b,&args[1])] {if !tensor(ty){self.error("AIF464","LoRAAdapter A/B must be Tensor<F32>",arg.span);}}
+                    if !is_kind(&alpha,&TypeKind::Int)&&!matches!(&alpha.kind,TypeKind::Named(n) if n=="F32"){self.error("AIF465","LoRAAdapter alpha must be F32 or Int",args[2].span);}
+                    if !is_kind(&rank,&TypeKind::Int){self.error("AIF466","LoRAAdapter rank must be Int",args[3].span);}
+                    if let ExprKind::Int(v)=args[3].kind {if v<=0||v>256{self.error("AIF467","LoRAAdapter rank must be in 1..=256",args[3].span);}}
+                    let ty=type_node(TypeKind::Named("LoRAAdapter".into()),expr.span);self.inferred_types.insert(expr.id,ty.clone());return Some(ty);
+                }
+                if name == "lora_adapter_apply" {
+                    if args.len()!=2 {self.error("AIF468","lora_adapter_apply expects LoRAAdapter and input Tensor<F32>",expr.span);return None;}
+                    let adapter=self.check_expr(&args[0],locals)?;let input=self.check_expr(&args[1],locals)?;
+                    if !matches!(&adapter.kind,TypeKind::Named(n) if n=="LoRAAdapter"){self.error("AIF469","lora_adapter_apply requires a LoRAAdapter value",args[0].span);}
+                    if !matches!(&input.kind,TypeKind::Generic(n,a) if n=="Tensor"&&a.len()==1&&matches!(&a[0].kind,TypeKind::Named(e) if e=="F32")){self.error("AIF470","LoRAAdapter input must be Tensor<F32>",args[1].span);}
+                    let ty=type_node(TypeKind::Generic("Tensor".into(),vec![type_node(TypeKind::Named("F32".into()),expr.span)]),expr.span);self.inferred_types.insert(expr.id,ty.clone());return Some(ty);
+                }
+                if name == "attention_block" {
+                    if args.len() != 4 { self.error("AIF440", "attention_block expects Q, K, V Tensor<F32> values and a causal Bool", expr.span); return None; }
+                    let q = self.check_expr(&args[0], locals)?;
+                    let k = self.check_expr(&args[1], locals)?;
+                    let v = self.check_expr(&args[2], locals)?;
+                    let causal = self.check_expr(&args[3], locals)?;
+                    let tensor = |ty: &Type| matches!(&ty.kind, TypeKind::Generic(name, args) if name == "Tensor" && args.len() == 1 && matches!(&args[0].kind, TypeKind::Named(element) if element == "F32"));
+                    for (ty, arg) in [(&q, &args[0]), (&k, &args[1]), (&v, &args[2])] {
+                        if !tensor(ty) { self.error("AIF441", "attention_block Q/K/V must be Tensor<F32>", arg.span); }
+                    }
+                    if !is_kind(&causal, &TypeKind::Bool) { self.error("AIF442", "attention_block causal flag must be Bool", args[3].span); }
+                    let ty = type_node(TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
+                if name == "attention_cached" {
+                    if args.len() != 2 { self.error("AIF448", "attention_cached expects query Tensor<F32> and a KvCache", expr.span); return None; }
+                    let query = self.check_expr(&args[0], locals)?;
+                    let cache = self.check_expr(&args[1], locals)?;
+                    if !matches!(&query.kind, TypeKind::Generic(name, args) if name == "Tensor" && args.len() == 1 && matches!(&args[0].kind, TypeKind::Named(element) if element == "F32")) {
+                        self.error("AIF449", "attention_cached query must be Tensor<F32>", args[0].span);
+                    }
+                    if !matches!(&cache.kind, TypeKind::Named(name) if name == "KvCache") {
+                        self.error("AIF450", "attention_cached requires a KvCache", args[1].span);
+                    }
+                    let ty = type_node(TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
+                }
+                if name == "lora_apply" {
+                    if args.len() != 5 { self.error("AIF443", "lora_apply expects input, A, B Tensor<F32>, alpha F32, and rank Int", expr.span); return None; }
+                    let input = self.check_expr(&args[0], locals)?;
+                    let a = self.check_expr(&args[1], locals)?;
+                    let b = self.check_expr(&args[2], locals)?;
+                    let alpha = self.check_expr(&args[3], locals)?;
+                    let rank = self.check_expr(&args[4], locals)?;
+                    let tensor = |ty: &Type| matches!(&ty.kind, TypeKind::Generic(name, args) if name == "Tensor" && args.len() == 1 && matches!(&args[0].kind, TypeKind::Named(element) if element == "F32"));
+                    for (ty, arg) in [(&input, &args[0]), (&a, &args[1]), (&b, &args[2])] {
+                        if !tensor(ty) { self.error("AIF444", "lora_apply input/A/B must be Tensor<F32>", arg.span); }
+                    }
+                    if !is_kind(&alpha, &TypeKind::Int) && !matches!(&alpha.kind, TypeKind::Named(name) if name == "F32") { self.error("AIF445", "lora_apply alpha must be F32 or Int", args[3].span); }
+                    if !is_kind(&rank, &TypeKind::Int) { self.error("AIF446", "lora_apply rank must be Int", args[4].span); }
+                    if let ExprKind::Int(value) = args[4].kind { if value <= 0 || value > 256 { self.error("AIF447", "lora_apply rank must be in 1..=256", args[4].span); } }
+                    let ty = type_node(TypeKind::Generic("Tensor".into(), vec![type_node(TypeKind::Named("F32".into()), expr.span)]), expr.span);
+                    self.inferred_types.insert(expr.id, ty.clone()); return Some(ty);
                 }
                 if name == "tensor" {
                     if args.len() != 2 { self.error("AIF340", "tensor expects shape and value lists", expr.span); return None; }
