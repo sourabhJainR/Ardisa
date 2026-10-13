@@ -1648,7 +1648,8 @@ fn run_function(
                 let multiply = matches!(instr, NativeInstr::GradMul { .. });
                 let tape = locals.get_mut(name).ok_or_else(|| NativeError::Type("GradientTape binding not found".into()))?;
                 let NativeValue::GradientTape(tape) = tape else { return Err(NativeError::Type("gradient operation requires GradientTape".into())); };
-                let slot = if multiply { tape.mul(left, right) } else { tape.add(left, right) }.map_err(gradient_error_to_native)?;
+                let result = if multiply { tape.mul(left, right) } else { tape.add(left, right) };
+                let slot = result.map_err(gradient_error_to_native)?;
                 stack.push(NativeValue::Int(slot as i64));
             }
             NativeInstr::GradBackward { name } => {
