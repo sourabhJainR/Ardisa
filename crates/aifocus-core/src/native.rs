@@ -1199,6 +1199,74 @@ fn run_function(
                 }
                 stack.push(NativeValue::Tensor { shape: vec![m, n], values });
             }
+            NativeInstr::MakeMctsTree => {
+                let branches = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS branch bound must be positive".into()))?;
+                let nodes = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS node bound must be positive".into()))?;
+                if nodes == 0 || nodes > crate::ai_mcts::MAX_MCTS_NODES || branches == 0 || branches > crate::ai_mcts::MAX_MCTS_BRANCHES { return Err(NativeError::ResourceLimit("MCTS bounds exceed supported limits".into())); }
+                stack.push(NativeValue::List(vec![NativeValue::Int(nodes as i64), NativeValue::Int(branches as i64), NativeValue::List(Vec::new())]));
+            }
+            NativeInstr::MctsRoot { name } => {
+                let state = u64::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS state id must be non-negative".into()))?;
+                let tree = locals.get_mut(name).ok_or_else(|| NativeError::Type("MCTS tree binding not found".into()))?;
+                mcts_root(tree, state)?; stack.push(NativeValue::Int(0));
+            }
+            NativeInstr::MctsExpand { name } => {
+                let state = u64::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS state id must be non-negative".into()))?;
+                let parent = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS parent index must be non-negative".into()))?;
+                let tree = locals.get_mut(name).ok_or_else(|| NativeError::Type("MCTS tree binding not found".into()))?;
+                let index = mcts_expand(tree, parent, state)?; stack.push(NativeValue::Int(index as i64));
+            }
+            NativeInstr::MctsChild => {
+                let ordinal = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS child ordinal must be non-negative".into()))?;
+                let parent = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS parent index must be non-negative".into()))?;
+                let tree = stack.pop().ok_or_else(|| NativeError::Type("mcts_child missing tree".into()))?;
+                stack.push(NativeValue::Int(mcts_child(&tree, parent, ordinal)? as i64));
+            }
+            NativeInstr::MctsUpdate { name } | NativeInstr::MctsBackpropagate { name } => {
+                let reward = match stack.pop() { Some(NativeValue::Float(bits)) if f32::from_bits(bits).is_finite() && f32::from_bits(bits).abs() <= crate::ai_mcts::MAX_MCTS_REWARD_ABS as f32 => f64::from(f32::from_bits(bits)), _ => return Err(NativeError::Type("MCTS reward must be finite bounded F32".into())) };
+                let node = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS node index must be non-negative".into()))?;
+                let backprop = matches!(instr, NativeInstr::MctsBackpropagate { .. });
+                let tree = locals.get_mut(name).ok_or_else(|| NativeError::Type("MCTS tree binding not found".into()))?;
+                mcts_update(tree, node, reward, backprop)?; stack.push(NativeValue::Unit);
+            }
+            NativeInstr::MctsLen => {
+                let tree = stack.pop().ok_or_else(|| NativeError::Type("mcts_len missing tree".into()))?;
+                stack.push(NativeValue::Int(mcts_len(&tree)? as i64));
+            }
+            NativeInstr::MakeMctsTree => {
+                let branches = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS branch bound must be positive".into()))?;
+                let nodes = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS node bound must be positive".into()))?;
+                if nodes == 0 || nodes > crate::ai_mcts::MAX_MCTS_NODES || branches == 0 || branches > crate::ai_mcts::MAX_MCTS_BRANCHES { return Err(NativeError::ResourceLimit("MCTS bounds exceed supported limits".into())); }
+                stack.push(NativeValue::List(vec![NativeValue::Int(nodes as i64), NativeValue::Int(branches as i64), NativeValue::List(Vec::new())]));
+            }
+            NativeInstr::MctsRoot { name } => {
+                let state = u64::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS state id must be non-negative".into()))?;
+                let tree = locals.get_mut(name).ok_or_else(|| NativeError::Type("MCTS tree binding not found".into()))?;
+                mcts_root(tree, state)?; stack.push(NativeValue::Int(0));
+            }
+            NativeInstr::MctsExpand { name } => {
+                let state = u64::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS state id must be non-negative".into()))?;
+                let parent = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS parent index must be non-negative".into()))?;
+                let tree = locals.get_mut(name).ok_or_else(|| NativeError::Type("MCTS tree binding not found".into()))?;
+                let index = mcts_expand(tree, parent, state)?; stack.push(NativeValue::Int(index as i64));
+            }
+            NativeInstr::MctsChild => {
+                let ordinal = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS child ordinal must be non-negative".into()))?;
+                let parent = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS parent index must be non-negative".into()))?;
+                let tree = stack.pop().ok_or_else(|| NativeError::Type("mcts_child missing tree".into()))?;
+                stack.push(NativeValue::Int(mcts_child(&tree, parent, ordinal)? as i64));
+            }
+            NativeInstr::MctsUpdate { name } | NativeInstr::MctsBackpropagate { name } => {
+                let reward = match stack.pop() { Some(NativeValue::Float(bits)) if f32::from_bits(bits).is_finite() && f32::from_bits(bits).abs() <= crate::ai_mcts::MAX_MCTS_REWARD_ABS as f32 => f64::from(f32::from_bits(bits)), _ => return Err(NativeError::Type("MCTS reward must be finite bounded F32".into())) };
+                let node = usize::try_from(pop_int(&mut stack)?).map_err(|_| NativeError::Type("MCTS node index must be non-negative".into()))?;
+                let backprop = matches!(instr, NativeInstr::MctsBackpropagate { .. });
+                let tree = locals.get_mut(name).ok_or_else(|| NativeError::Type("MCTS tree binding not found".into()))?;
+                mcts_update(tree, node, reward, backprop)?; stack.push(NativeValue::Unit);
+            }
+            NativeInstr::MctsLen => {
+                let tree = stack.pop().ok_or_else(|| NativeError::Type("mcts_len missing tree".into()))?;
+                stack.push(NativeValue::Int(mcts_len(&tree)? as i64));
+            }
             NativeInstr::MakeKvCache => {
                 let capacity = match stack.pop() { Some(NativeValue::Int(value)) if value > 0 => usize::try_from(value).map_err(|_| NativeError::ResourceLimit("KVCache capacity overflow".into()))?, _ => return Err(NativeError::Type("kv_cache capacity must be a positive Int".into())) };
                 let cache = KvCache::new(capacity).map_err(|error| NativeError::Type(format!("invalid KVCache capacity: {error:?}")))?;
@@ -1895,6 +1963,46 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
     })
 }
 
+fn mcts_fields(tree: &NativeValue) -> Result<(usize, usize, &Vec<NativeValue>), NativeError> {
+    let NativeValue::List(fields) = tree else { return Err(NativeError::Type("expected MctsTree".into())); };
+    if fields.len() != 3 { return Err(NativeError::InvalidProgram("malformed MctsTree".into())); }
+    let max_nodes = match fields.first() { Some(NativeValue::Int(v)) if *v > 0 && *v as usize <= crate::ai_mcts::MAX_MCTS_NODES => *v as usize, _ => return Err(NativeError::InvalidProgram("invalid MCTS node limit".into())) };
+    let max_branches = match fields.get(1) { Some(NativeValue::Int(v)) if *v > 0 && *v as usize <= crate::ai_mcts::MAX_MCTS_BRANCHES => *v as usize, _ => return Err(NativeError::InvalidProgram("invalid MCTS branch limit".into())) };
+    let nodes = match fields.get(2) { Some(NativeValue::List(v)) => v, _ => return Err(NativeError::InvalidProgram("invalid MCTS node arena".into())) };
+    if nodes.len() > max_nodes { return Err(NativeError::ResourceLimit("MCTS node limit exceeded".into())); }
+    Ok((max_nodes, max_branches, nodes))
+}
+fn mcts_node(state: u64, parent: Option<usize>) -> NativeValue {
+    NativeValue::List(vec![NativeValue::Int(state as i64), NativeValue::Int(parent.map(|p| p as i64).unwrap_or(-1)), NativeValue::List(Vec::new()), NativeValue::Int(0), NativeValue::Float(0.0f32.to_bits())])
+}
+fn mcts_root(tree: &mut NativeValue, state: u64) -> Result<(), NativeError> {
+    let (max_nodes, _, nodes) = mcts_fields(tree)?; if !nodes.is_empty() { return Err(NativeError::Type("MCTS root already exists".into())); } if max_nodes == 0 { return Err(NativeError::ResourceLimit("MCTS node limit exceeded".into())); }
+    let NativeValue::List(fields) = tree else { unreachable!() }; let NativeValue::List(nodes) = &mut fields[2] else { unreachable!() }; nodes.push(mcts_node(state, None)); Ok(())
+}
+fn mcts_expand(tree: &mut NativeValue, parent: usize, state: u64) -> Result<usize, NativeError> {
+    let (max_nodes, max_branches, nodes) = mcts_fields(tree)?;
+    if parent >= nodes.len() { return Err(NativeError::Type("MCTS parent index out of bounds".into())); }
+    let fields = match &nodes[parent] { NativeValue::List(v) if v.len() == 5 => v, _ => return Err(NativeError::InvalidProgram("malformed MCTS node".into())) };
+    let children = match fields.get(2) { Some(NativeValue::List(v)) => v, _ => return Err(NativeError::InvalidProgram("malformed MCTS children".into())) };
+    if children.len() >= max_branches { return Err(NativeError::ResourceLimit("MCTS branch limit exceeded".into())); } if nodes.len() >= max_nodes { return Err(NativeError::ResourceLimit("MCTS node limit exceeded".into())); }
+    if children.iter().any(|v| matches!(v, NativeValue::Int(i) if *i >= 0 && matches!(nodes.get(*i as usize), Some(NativeValue::List(n)) if matches!(n.first(), Some(NativeValue::Int(id)) if *id == state as i64)))) { return Err(NativeError::Type("duplicate MCTS child state".into())); }
+    let mut depth = 0; let mut cursor = parent; loop { let f = match nodes.get(cursor) { Some(NativeValue::List(v)) => v, _ => return Err(NativeError::InvalidProgram("invalid MCTS parent".into())) }; match f.get(1) { Some(NativeValue::Int(-1)) if cursor == 0 => break, Some(NativeValue::Int(p)) if *p >= 0 && (*p as usize) < cursor => { cursor = *p as usize; depth += 1; if depth >= crate::ai_mcts::MAX_MCTS_DEPTH { return Err(NativeError::ResourceLimit("MCTS depth limit exceeded".into())); } }, _ => return Err(NativeError::InvalidProgram("invalid MCTS parent chain".into())) } }
+    let index = nodes.len(); let NativeValue::List(fields) = tree else { unreachable!() }; let NativeValue::List(nodes) = &mut fields[2] else { unreachable!() };
+    nodes.push(mcts_node(state, Some(parent))); let NativeValue::List(parent_fields) = &mut nodes[parent] else { unreachable!() }; let NativeValue::List(children) = &mut parent_fields[2] else { unreachable!() }; children.push(NativeValue::Int(index as i64)); Ok(index)
+}
+fn mcts_child(tree: &NativeValue, parent: usize, ordinal: usize) -> Result<usize, NativeError> {
+    let (_, _, nodes) = mcts_fields(tree)?; let fields = match nodes.get(parent) { Some(NativeValue::List(v)) => v, _ => return Err(NativeError::Type("MCTS parent index out of bounds".into())) };
+    match fields.get(2) { Some(NativeValue::List(children)) => match children.get(ordinal) { Some(NativeValue::Int(v)) if *v >= 0 => Ok(*v as usize), _ => Err(NativeError::Type("MCTS child ordinal out of bounds".into())) }, _ => Err(NativeError::InvalidProgram("malformed MCTS child list".into())) }
+}
+fn mcts_len(tree: &NativeValue) -> Result<usize, NativeError> { Ok(mcts_fields(tree)?.2.len()) }
+fn mcts_update(tree: &mut NativeValue, node: usize, reward: f64, backprop: bool) -> Result<(), NativeError> {
+    if !reward.is_finite() || reward.abs() > crate::ai_mcts::MAX_MCTS_REWARD_ABS { return Err(NativeError::Type("MCTS reward is outside finite bounds".into())); }
+    let (_, _, nodes) = mcts_fields(tree)?; if node >= nodes.len() { return Err(NativeError::Type("MCTS node index out of bounds".into())); }
+    let mut path = vec![node]; if backprop { let mut cursor = node; loop { let f = match nodes.get(cursor) { Some(NativeValue::List(v)) => v, _ => return Err(NativeError::InvalidProgram("malformed MCTS node".into())) }; match f.get(1) { Some(NativeValue::Int(-1)) if cursor == 0 => break, Some(NativeValue::Int(p)) if *p >= 0 && (*p as usize) < cursor => { let p = *p as usize; if !matches!(nodes.get(p), Some(NativeValue::List(pf)) if matches!(pf.get(2), Some(NativeValue::List(ch)) if ch.iter().any(|x| matches!(x, NativeValue::Int(v) if *v == cursor as i64)))) { return Err(NativeError::InvalidProgram("MCTS parent-child mismatch".into())); } cursor = p; path.push(cursor); if path.len() >= crate::ai_mcts::MAX_MCTS_DEPTH { return Err(NativeError::ResourceLimit("MCTS depth limit exceeded".into())); } }, _ => return Err(NativeError::InvalidProgram("invalid MCTS parent chain".into())) } } }
+    for &idx in &path { let f = match nodes.get(idx) { Some(NativeValue::List(v)) if v.len() == 5 => v, _ => return Err(NativeError::Type("MCTS node index out of bounds".into())) }; let visits = match f.get(3) { Some(NativeValue::Int(v)) if *v >= 0 && *v < i64::MAX => *v, _ => return Err(NativeError::ResourceLimit("MCTS visit counter overflow".into())) }; let old = match f.get(4) { Some(NativeValue::Float(bits)) if f32::from_bits(*bits).is_finite() => f64::from(f32::from_bits(*bits)), _ => return Err(NativeError::InvalidProgram("invalid MCTS value sum".into())) }; let next = old + reward; if !next.is_finite() || next.abs() > crate::ai_mcts::MAX_MCTS_REWARD_ABS * (visits + 1) as f64 || !(next as f32).is_finite() { return Err(NativeError::Type("MCTS accumulated reward exceeds supported bounds".into())); } }
+    let NativeValue::List(fields) = tree else { unreachable!() }; let NativeValue::List(nodes) = &mut fields[2] else { unreachable!() };
+    for idx in path { let NativeValue::List(f) = &mut nodes[idx] else { unreachable!() }; let NativeValue::Int(visits) = &mut f[3] else { unreachable!() }; *visits += 1; let old = match f[4] { NativeValue::Float(bits) => f32::from_bits(bits), _ => unreachable!() }; f[4] = NativeValue::Float((f64::from(old) + reward) as f32 .to_bits()); } Ok(())
+}
 fn validate_tensor_parts(shape: &[usize], values: &[u32], max_elements: usize) -> Result<(), NativeError> {
     if shape.is_empty() || shape.len() > 2 || shape.iter().any(|dimension| *dimension == 0) {
         return Err(NativeError::InvalidProgram("tensor shape must have rank 1 or 2 and positive dimensions".into()));
