@@ -4181,7 +4181,7 @@ fn main() -> Int
         let function = program.functions.get_mut("main").unwrap();
         let index = function.code.iter().position(|instruction| matches!(instruction, NativeInstr::PushFloat(_))).unwrap();
         function.code[index] = NativeInstr::PushFloat(f32::INFINITY.to_bits());
-        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::InvalidProgram(message)) if message.contains("finite")));
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("finite")));
     }
 }
 
@@ -4260,7 +4260,7 @@ fn main() -> Int
         let function = program.functions.get_mut("main").unwrap();
         let index = function.code.iter().position(|instruction| matches!(instruction, NativeInstr::PushFloat(_))).unwrap();
         function.code[index] = NativeInstr::PushFloat(f32::INFINITY.to_bits());
-        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::InvalidProgram(message)) if message.contains("finite")));
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("finite")));
 
         let overflow = r#"module vector_distance_overflow
 fn main() -> Int
@@ -4433,7 +4433,7 @@ fn main() -> F32
         let code=&mut p.functions.get_mut("main").unwrap().code;
         let index=code.iter().position(|op|matches!(op,NativeInstr::PushFloat(_))).unwrap();
         code[index]=NativeInstr::PushFloat(f32::INFINITY.to_bits());
-        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::InvalidProgram(message)) if message.contains("finite")));
+        assert!(matches!(run_program(&p,"main",&[]),Err(NativeError::Type(message)) if message.contains("finite")));
     }
 }
 
