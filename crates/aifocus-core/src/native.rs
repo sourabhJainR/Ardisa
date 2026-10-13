@@ -387,6 +387,7 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                 let mut seen = std::collections::BTreeSet::new();
                 for piece in vocabulary { if piece.chars().count()!=1 || !seen.insert(piece) { return Err(NativeError::InvalidProgram("TokenizerState vocabulary must contain unique single Unicode scalars".into())); } }
                 if unknown_id.is_some_and(|id| id < 0) { return Err(NativeError::InvalidProgram("TokenizerState unknown token id must be non-negative".into())); }
+                if tokens.iter().any(|id| *id < 0 || (usize::try_from(*id).map_or(true, |index| index >= vocabulary.len()) && Some(*id) != *unknown_id)) { return Err(NativeError::InvalidProgram("TokenizerState contains a token id outside its vocabulary/unknown-id contract".into())); }
                 if !pending.is_empty() {
                     match std::str::from_utf8(pending) {
                         Ok(_) => return Err(NativeError::InvalidProgram("TokenizerState pending bytes must be an incomplete UTF-8 suffix".into())),
