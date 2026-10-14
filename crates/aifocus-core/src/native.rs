@@ -1894,9 +1894,13 @@ fn run_function(
             }
             NativeInstr::Chr => {
                 let value = pop_int(&mut stack)?;
-                let byte = u8::try_from(value)
-                    .map_err(|_| NativeError::Type("chr requires a byte in 0..=255".into()))?;
-                stack.push(NativeValue::String(char::from(byte).to_string()));
+                let scalar = u32::try_from(value)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .ok_or_else(|| NativeError::Type(
+                        "chr requires a valid Unicode scalar value (0..=0x10FFFF, excluding surrogates)".into()
+                    ))?;
+                stack.push(NativeValue::String(scalar.to_string()));
             }
             NativeInstr::MakeOk => {
                 let value = stack
