@@ -898,6 +898,8 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 };
                 emit_value(&args[1], code)?;
                 code.push(NativeInstr::Append(name.clone()));
+                // `push` is a Unit-valued expression; keep expression-statement Pop balanced.
+                code.push(NativeInstr::PushUnit);
             } else {
                 code.push(NativeInstr::Call {
                     callee: callee.clone(),
