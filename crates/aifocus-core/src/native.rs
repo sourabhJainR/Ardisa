@@ -889,6 +889,7 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 emit_value(&args[3], code)?;
                 code.push(NativeInstr::ContextAppend { name: name.clone() });
             } else if callee == "len" && args.len() == 1 {
+                emit_value(&args[0], code)?;
                 code.push(NativeInstr::Len);
             } else if callee == "push" && args.len() == 2 {
                 let crate::ir::IrValue::Name(name) = &args[0] else {
