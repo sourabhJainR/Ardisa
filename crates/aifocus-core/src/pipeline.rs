@@ -453,4 +453,48 @@ fn main() -> Tensor<F32>
             native::NativeValue::Int(42)
         );
     }
+
+    #[test]
+    fn string_indexing_is_explicitly_utf8_byte_based() {
+        let source = r#"module unicode_byte_index
+fn main() -> Int
+  "é"[0]
+"#;
+        let compiled = compile_source(source).expect("Unicode string index fixture compiles");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("byte index executes"),
+            native::NativeValue::Int(195),
+            "string indexing currently returns the first UTF-8 byte, not a Unicode scalar"
+        );
+    }
+
+    #[test]
+    fn list_indexing_returns_values_and_rejects_out_of_bounds() {
+        let valid = r#"module list_index_valid
+fn main() -> Int
+  [10, 20, 30][1]
+"#;
+        let compiled = compile_source(valid).expect("list index fixture compiles");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("valid list index executes"),
+            native::NativeValue::Int(20)
+        );
+
+        let invalid = r#"module list_index_oob
+fn main() -> Int
+  [10, 20, 30][3]
+"#;
+        let compiled = compile_source(invalid).expect("out-of-bounds fixture compiles to runtime check");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert!(
+            matches!(
+                native::run_program(&program, "main", &[]),
+                Err(native::NativeError::Type(message)) if message.contains("out of bounds")
+            ),
+            "out-of-bounds list access must fail explicitly"
+        );
+    }
+
 }
