@@ -889,6 +889,7 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 emit_value(&args[3], code)?;
                 code.push(NativeInstr::ContextAppend { name: name.clone() });
             } else if callee == "len" && args.len() == 1 {
+                emit_value(&args[0], code)?;
                 code.push(NativeInstr::Len);
             } else if callee == "push" && args.len() == 2 {
                 let crate::ir::IrValue::Name(name) = &args[0] else {
@@ -897,9 +898,8 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                     ));
                 };
                 emit_value(&args[1], code)?;
+                // Append itself leaves the Unit result required by expression statements.
                 code.push(NativeInstr::Append(name.clone()));
-                // `push` is a Unit-valued expression; keep expression-statement Pop balanced.
-                code.push(NativeInstr::PushUnit);
             } else {
                 code.push(NativeInstr::Call {
                     callee: callee.clone(),
