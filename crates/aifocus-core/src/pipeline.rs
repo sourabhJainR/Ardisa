@@ -508,8 +508,9 @@ fn main() -> Int
         let compiled = compile_source(source).expect("list mutation fixture compiles");
         let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
         assert_eq!(
-            native::run_program(&program, "main", &[]).expect("list mutation executes"),
-            native::NativeValue::Int(60)
+            native::run_program(&program, "main", &[]).unwrap_or_else(|error| panic!("list mutation executes: {error:?}; native code: {:?}", program.functions["main"].code)),
+            native::NativeValue::Int(60),
+            "native code: {:?}", program.functions["main"].code
         );
     }
 
@@ -524,8 +525,9 @@ fn main() -> Int
         let compiled = compile_source(source).expect("list push length fixture compiles");
         let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
         assert_eq!(
-            native::run_program(&program, "main", &[]).expect("list push length executes"),
-            native::NativeValue::Int(3)
+            native::run_program(&program, "main", &[]).unwrap_or_else(|error| panic!("list push length executes: {error:?}; native code: {:?}", program.functions["main"].code)),
+            native::NativeValue::Int(3),
+            "native code: {:?}", program.functions["main"].code
         );
     }
 
