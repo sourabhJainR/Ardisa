@@ -1157,7 +1157,7 @@ impl Checker {
                     }
                     let argument_type = self.check_expr(&args[0], locals)?;
                     if !is_kind(&argument_type, &TypeKind::Int) {
-                        self.error("AIF331", "chr requires an Int byte value", args[0].span);
+                        self.error("AIF331", "chr requires an Int Unicode scalar value", args[0].span);
                         return None;
                     }
                     return Some(type_node(TypeKind::String, expr.span));
