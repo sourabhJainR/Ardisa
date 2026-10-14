@@ -1,0 +1,8 @@
+module web_app_example
+
+// The Ardisa-owned application logic used by the demo HTTP endpoint.
+fn status_code() -> Int
+  200
+
+fn main() -> Int
+  status_code()
