@@ -10,7 +10,7 @@ fn execute(source: &str) -> Result<NativeValue, NativeError> {
 fn indexed_list_assignment_updates_the_selected_element() {
     let source = r#"module list_indexed_assignment
 fn main() -> Int
-  let mut values = [10, 20, 30]
+  let values = [10, 20, 30]
   set values[1] = 99
   values[1]
 "#;
@@ -24,7 +24,7 @@ fn main() -> Int
 fn indexed_list_assignment_out_of_bounds_fails_closed() {
     let source = r#"module list_indexed_assignment_oob
 fn main() -> Int
-  let mut values = [10, 20, 30]
+  let values = [10, 20, 30]
   set values[3] = 99
   values[0]
 "#;
