@@ -512,6 +512,14 @@ impl Checker {
     }
 
     fn check_expr(&mut self, expr: &Expr, locals: &HashMap<String, Type>) -> Option<Type> {
+        let result = self.check_expr_inner(expr, locals);
+        if let Some(ty) = &result {
+            self.inferred_types.insert(expr.id, ty.clone());
+        }
+        result
+    }
+
+    fn check_expr_inner(&mut self, expr: &Expr, locals: &HashMap<String, Type>) -> Option<Type> {
         let result = match &expr.kind {
             ExprKind::Int(_) => Some(type_node(TypeKind::Int, expr.span)),
             ExprKind::Float(_) => Some(type_node(TypeKind::Named("F32".into()), expr.span)),
