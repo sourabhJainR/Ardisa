@@ -497,4 +497,36 @@ fn main() -> Int
         );
     }
 
+    #[test]
+    fn list_push_preserves_source_to_runtime_values_and_supports_indexing() {
+        let source = r#"module list_mutation_contract
+fn main() -> Int
+  let values = [10, 20, 30]
+  push(values, 40)
+  values[1] + values[3]
+"#;
+        let compiled = compile_source(source).expect("list mutation fixture compiles");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("list mutation executes"),
+            native::NativeValue::Int(60)
+        );
+    }
+
+    #[test]
+    fn list_push_updates_length_in_source_to_runtime_execution() {
+        let source = r#"module list_push_length_contract
+fn main() -> Int
+  let values = [10, 20]
+  push(values, 30)
+  len(values)
+"#;
+        let compiled = compile_source(source).expect("list push length fixture compiles");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("list push length executes"),
+            native::NativeValue::Int(3)
+        );
+    }
+
 }
