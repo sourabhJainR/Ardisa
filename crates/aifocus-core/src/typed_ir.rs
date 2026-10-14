@@ -786,4 +786,27 @@ fn search() -> Int
         assert!(matches!(&search.kind, TypedValueKind::Call { callee, args }
             if callee == "vector_index_search" && args.len() == 4 && args[0].ty == TypeKind::Named("VectorIndex".into())));
     }
+
+    #[test]
+    fn tokenizer_state_nominal_identity_and_vocabulary_metadata_survive_typed_ir() {
+        let module = crate::parse(r#"module tokenizer_typed_ir
+fn main() -> TokenizerState
+  tokenizer_state(["a", "é"], 4, 16, 0)
+"#).unwrap();
+        let typed = lower(&module).expect("TokenizerState lowers to typed IR");
+        assert_eq!(typed.functions[0].return_type, TypeKind::Named("TokenizerState".into()));
+        let op = match &typed.functions[0].blocks[0].ops[0] {
+            TypedIrOp::Expr(value) => value,
+            other => panic!("expected TokenizerState constructor expression, got {other:?}"),
+        };
+        assert_eq!(op.ty, TypeKind::Named("TokenizerState".into()));
+        assert!(matches!(&op.kind, TypedValueKind::Call { callee, args }
+            if callee == "tokenizer_state"
+            && matches!(&args[0].kind, TypedValueKind::List(pieces) if pieces.len()==2
+                && matches!(&pieces[0].kind, TypedValueKind::String(a) if a=="a")
+                && matches!(&pieces[1].kind, TypedValueKind::String(e) if e=="é"))
+            && matches!(args[1].kind, TypedValueKind::Int(4))
+            && matches!(args[2].kind, TypedValueKind::Int(16))
+            && matches!(args[3].kind, TypedValueKind::Int(0))));
+    }
 }

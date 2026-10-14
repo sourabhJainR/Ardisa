@@ -320,6 +320,7 @@ fn display_value(value: &ardisa_core::NativeValue) -> String {
         }
         ardisa_core::NativeValue::GradientTape { capacity, slots, backward_ready, .. } => format!("GradientTape(slots={}, capacity={}, backward_ready={})", slots.len(), capacity, backward_ready),
         ardisa_core::NativeValue::ActivationCache { capacity, checkpoint_stride, retained_bytes, entries, .. } => format!("ActivationCache(checkpoints={}, capacity={}, stride={}, bytes={})", entries.len(), capacity, checkpoint_stride, retained_bytes),
+        ardisa_core::NativeValue::TokenizerState { vocabulary, pending, tokens, max_tokens, unknown_id, .. } => format!("TokenizerState(vocabulary={}, tokens={}/{}, pending_bytes={}, unknown_id={:?})", vocabulary.len(), tokens.len(), max_tokens, pending.len(), unknown_id),
         ardisa_core::NativeValue::Tensor { shape, values } => {
             let dimensions = shape.iter().map(usize::to_string).collect::<Vec<_>>().join("x");
             let rendered = values.iter().map(|bits| f32::from_bits(*bits).to_string()).collect::<Vec<_>>().join(", ");

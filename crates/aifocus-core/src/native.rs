@@ -29,6 +29,7 @@ pub enum NativeInstr {
     TensorMatMul,
     MakeActivationCache, ActivationStore { name: String }, ActivationRestore, ActivationCacheLen,
     MakeGradientTape,
+    MakeTokenizerState, TokenizerFeed { name: String }, TokenizerFlush { name: String }, TokenizerTokenCount, TokenizerToken,
     GradientInput { name: String }, GradientAdd { name: String }, GradientMul { name: String }, GradientBackward { name: String }, GradientValue, GradientGet,
     /// Construct a validated nominal multi-head attention configuration.
     MakeAttentionBlock,
@@ -204,6 +205,8 @@ pub enum NativeValue {
     Tensor { shape: Vec<usize>, values: Vec<u32> },
     ActivationCache { capacity: usize, checkpoint_stride: usize, max_bytes: usize, retained_bytes: usize, entries: Vec<(i64, Vec<usize>, Vec<u32>)> },
     GradientTape { capacity: usize, slots: Vec<GradientSlot>, gradients: Vec<u32>, backward_ready: bool },
+    /// Incremental UTF-8 tokenizer with a one-scalar explicit vocabulary and bounded pending bytes/output.
+    TokenizerState { vocabulary: Vec<String>, pending: Vec<u8>, tokens: Vec<i64>, max_pending: usize, max_tokens: usize, unknown_id: Option<i64> },
     /// Signed-int8 tensor payload and quantization metadata; scale is f32 bits.
     QuantizedTensor { shape: Vec<usize>, scale_bits: u32, zero_point: i8, values: Vec<i8> },
     /// Nominal domain label plus IEEE-754 f32 coordinate bits.
@@ -377,6 +380,22 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                 for (step,shape,values) in entries { if *step<0 || (*step as usize)%*checkpoint_stride!=0 || !ids.insert(*step) { return Err(NativeError::InvalidProgram("invalid or duplicate ActivationCache checkpoint id".into())); } validate_tensor_parts(shape,values,MAX_TENSOR_ELEMENTS)?; if values.iter().any(|bits|!f32::from_bits(*bits).is_finite()) { return Err(NativeError::Type("ActivationCache values must be finite".into())); } bytes=bytes.checked_add(values.len().checked_mul(4).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?).and_then(|n|n.checked_add(shape.len().checked_mul(std::mem::size_of::<usize>())?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?; }
                 if bytes!=*retained_bytes || bytes>*max_bytes { return Err(NativeError::InvalidProgram("ActivationCache retained-byte accounting mismatch".into())); }
             }
+            NativeValue::TokenizerState { vocabulary, pending, tokens, max_pending, max_tokens, unknown_id } => {
+                if vocabulary.is_empty() || vocabulary.len() > limits.max_collection_items || *max_pending == 0 || *max_pending > 4 || *max_tokens == 0 || *max_tokens > limits.max_collection_items || tokens.len() > *max_tokens || pending.len() > *max_pending {
+                    return Err(NativeError::InvalidProgram("invalid TokenizerState capacity or buffer state".into()));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for piece in vocabulary { if piece.chars().count()!=1 || !seen.insert(piece) { return Err(NativeError::InvalidProgram("TokenizerState vocabulary must contain unique single Unicode scalars".into())); } }
+                if unknown_id.is_some_and(|id| id < 0) { return Err(NativeError::InvalidProgram("TokenizerState unknown token id must be non-negative".into())); }
+                if tokens.iter().any(|id| *id < 0 || (usize::try_from(*id).map_or(true, |index| index >= vocabulary.len()) && Some(*id) != *unknown_id)) { return Err(NativeError::InvalidProgram("TokenizerState contains a token id outside its vocabulary/unknown-id contract".into())); }
+                if !pending.is_empty() {
+                    match std::str::from_utf8(pending) {
+                        Ok(_) => return Err(NativeError::InvalidProgram("TokenizerState pending bytes must be an incomplete UTF-8 suffix".into())),
+                        Err(error) if error.error_len().is_some() || error.valid_up_to()!=0 => return Err(NativeError::InvalidProgram("TokenizerState pending bytes must be an incomplete UTF-8 suffix".into())),
+                        Err(_) => {}
+                    }
+                }
+            }
             NativeValue::GradientTape { capacity, slots, gradients, backward_ready } => {
                 if *capacity == 0 || *capacity > 4096 || slots.len() > *capacity || (*backward_ready && gradients.len() != slots.len()) || (!*backward_ready && !gradients.is_empty()) { return Err(NativeError::InvalidProgram("invalid GradientTape capacity or gradient state".into())); }
                 for (index, slot) in slots.iter().enumerate() { if !f32::from_bits(slot.value_bits).is_finite() { return Err(NativeError::Type("GradientTape values must be finite".into())); } let valid=match slot.op { GradientOp::Input=>true,GradientOp::Add{left,right}|GradientOp::Mul{left,right}=>left<index&&right<index }; if !valid{return Err(NativeError::InvalidProgram("GradientTape slot references must point to prior slots".into()));} }
@@ -451,6 +470,7 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
             }
             NativeValue::ActivationCache { entries, .. } => { for (_,shape,values) in entries { nodes=nodes.checked_add(shape.len()).and_then(|n|n.checked_add(values.len())).ok_or_else(||NativeError::ResourceLimit("ActivationCache footprint accounting overflow".into()))?; } }
             NativeValue::GradientTape { slots, gradients, .. } => { nodes=nodes.checked_add(slots.len()).and_then(|n|n.checked_add(gradients.len())).ok_or_else(||NativeError::ResourceLimit("GradientTape footprint accounting overflow".into()))?; }
+            NativeValue::TokenizerState { vocabulary, pending, tokens, .. } => { nodes=nodes.checked_add(vocabulary.len()).and_then(|n|n.checked_add(tokens.len())).and_then(|n|n.checked_add(pending.len())).ok_or_else(||NativeError::ResourceLimit("TokenizerState footprint accounting overflow".into()))?; for piece in vocabulary { string_bytes=string_bytes.checked_add(piece.len()).ok_or_else(||NativeError::ResourceLimit("TokenizerState vocabulary byte accounting overflow".into()))?; } }
             NativeValue::LoRAAdapter { a_values, b_values, .. } => {
                 nodes = nodes.checked_add(a_values.len()).and_then(|n| n.checked_add(b_values.len()))
                     .ok_or_else(|| NativeError::ResourceLimit("LoRAAdapter footprint accounting overflow".into()))?;
@@ -580,7 +600,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape" | "ActivationCache"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape" | "ActivationCache" | "TokenizerState"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -772,6 +792,11 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
             else if callee == "activation_restore" && args.len() == 2 { code.push(NativeInstr::ActivationRestore); }
             else if callee == "activation_cache_len" && args.len() == 1 { code.push(NativeInstr::ActivationCacheLen); }
             else if callee == "gradient_tape" && args.len() == 1 { code.push(NativeInstr::MakeGradientTape); }
+            else if callee == "tokenizer_state" && args.len() == 4 { code.push(NativeInstr::MakeTokenizerState); }
+            else if callee == "tokenizer_feed" && args.len() == 2 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("tokenizer_feed requires named TokenizerState".into()));}; emit_value(&args[1],code)?; code.push(NativeInstr::TokenizerFeed{name:name.clone()}); }
+            else if callee == "tokenizer_flush" && args.len() == 1 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("tokenizer_flush requires named TokenizerState".into()));}; code.push(NativeInstr::TokenizerFlush{name:name.clone()}); }
+            else if callee == "tokenizer_token_count" && args.len() == 1 { emit_value(&args[0],code)?; code.push(NativeInstr::TokenizerTokenCount); }
+            else if callee == "tokenizer_token" && args.len() == 2 { emit_value(&args[0],code)?; emit_value(&args[1],code)?; code.push(NativeInstr::TokenizerToken); }
             else if callee == "gradient_input" && args.len() == 2 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_input requires named GradientTape".into()));}; emit_value(&args[1],code)?; code.push(NativeInstr::GradientInput{name:name.clone()}); }
             else if callee == "gradient_add" && args.len() == 3 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_add requires named GradientTape".into()));}; emit_value(&args[1],code)?;emit_value(&args[2],code)?;code.push(NativeInstr::GradientAdd{name:name.clone()}); }
             else if callee == "gradient_mul" && args.len() == 3 { let IrValue::Name(name)=&args[0] else{return Err(NativeError::Unsupported("gradient_mul requires named GradientTape".into()));}; emit_value(&args[1],code)?;emit_value(&args[2],code)?;code.push(NativeInstr::GradientMul{name:name.clone()}); }
@@ -1046,7 +1071,7 @@ fn run_function(
                 | NativeInstr::TensorAdd
                 | NativeInstr::TensorMatMul
                 | NativeInstr::MakeActivationCache | NativeInstr::ActivationStore { .. } | NativeInstr::ActivationRestore | NativeInstr::ActivationCacheLen
-                | NativeInstr::MakeGradientTape | NativeInstr::GradientInput { .. } | NativeInstr::GradientAdd { .. } | NativeInstr::GradientMul { .. } | NativeInstr::GradientBackward { .. } | NativeInstr::GradientValue | NativeInstr::GradientGet
+                | NativeInstr::MakeGradientTape | NativeInstr::MakeTokenizerState | NativeInstr::TokenizerFeed { .. } | NativeInstr::TokenizerFlush { .. } | NativeInstr::TokenizerTokenCount | NativeInstr::TokenizerToken | NativeInstr::GradientInput { .. } | NativeInstr::GradientAdd { .. } | NativeInstr::GradientMul { .. } | NativeInstr::GradientBackward { .. } | NativeInstr::GradientValue | NativeInstr::GradientGet
                 | NativeInstr::MakeAttentionBlock
                 | NativeInstr::AttentionBlockApply
                 | NativeInstr::AttentionBlockCached
@@ -1561,6 +1586,33 @@ fn run_function(
             NativeInstr::ActivationStore{name} => { let (shape,values)=pop_tensor(&mut stack,state.limits.max_collection_items)?;let step=pop_int(&mut stack)?;let cache=locals.get_mut(name).ok_or_else(||NativeError::Type("ActivationCache binding not found".into()))?;store_activation_checkpoint(cache,step,shape,values)?;stack.push(NativeValue::Unit); }
             NativeInstr::ActivationRestore => {let step=pop_int(&mut stack)?;let cache=stack.pop().ok_or_else(||NativeError::InvalidProgram("ActivationCache operand missing".into()))?;let NativeValue::ActivationCache{entries,..}=cache else{return Err(NativeError::Type("activation_restore requires ActivationCache".into()));};let (_,shape,values)=entries.iter().find(|(id,_,_)|*id==step).ok_or_else(||NativeError::Type("ActivationCache checkpoint id not found".into()))?;stack.push(NativeValue::Tensor{shape:shape.clone(),values:values.clone()});}
             NativeInstr::ActivationCacheLen => {let cache=stack.pop().ok_or_else(||NativeError::InvalidProgram("ActivationCache operand missing".into()))?;let NativeValue::ActivationCache{entries,..}=cache else{return Err(NativeError::Type("activation_cache_len requires ActivationCache".into()));};stack.push(NativeValue::Int(entries.len() as i64));}
+            NativeInstr::MakeTokenizerState => {
+                let unknown=pop_int(&mut stack)?; let unknown_id=if unknown == 0 { None } else if unknown > 0 { Some(unknown-1) } else { return Err(NativeError::Type("TokenizerState unknown_id encoding must be zero (reject) or a positive id-plus-one".into())); };
+                let max_tokens=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("TokenizerState max_tokens must be positive".into()))?;
+                let max_pending=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("TokenizerState max_pending must be positive".into()))?;
+                let vocabulary=match stack.pop(){Some(NativeValue::List(values))=>values.into_iter().map(|v|match v{NativeValue::String(piece)=>Ok(piece),_=>Err(NativeError::Type("TokenizerState vocabulary must contain strings".into()))}).collect::<Result<Vec<_>,_>>()?,_=>return Err(NativeError::Type("TokenizerState vocabulary must be List<String>".into()))};
+                if vocabulary.is_empty()||vocabulary.len()>state.limits.max_collection_items||max_pending==0||max_pending>4||max_tokens==0||max_tokens>state.limits.max_collection_items{return Err(NativeError::ResourceLimit("TokenizerState vocabulary and limits are outside supported bounds".into()));}
+                let mut seen=std::collections::BTreeSet::new(); for piece in &vocabulary {if piece.chars().count()!=1||!seen.insert(piece.clone()){return Err(NativeError::Type("TokenizerState vocabulary must contain unique single Unicode scalars".into()));}}
+                if unknown_id.is_some_and(|id|id<0){return Err(NativeError::Type("TokenizerState unknown id must be non-negative".into()));}
+                stack.push(NativeValue::TokenizerState{vocabulary,pending:Vec::new(),tokens:Vec::new(),max_pending,max_tokens,unknown_id});
+            }
+            NativeInstr::TokenizerFeed{name} => {
+                let bytes=match stack.pop(){Some(NativeValue::List(values))=>values.into_iter().map(|v|match v{NativeValue::Int(n) if (0..=255).contains(&n)=>Ok(n as u8),_=>Err(NativeError::Type("tokenizer_feed bytes must be Int values in 0..=255".into()))}).collect::<Result<Vec<_>,_>>()?,_=>return Err(NativeError::Type("tokenizer_feed expects List<Int> bytes".into()))};
+                let value=locals.get_mut(name).ok_or_else(||NativeError::Type("TokenizerState binding not found".into()))?;
+                let NativeValue::TokenizerState{vocabulary,pending,tokens,max_pending,max_tokens,unknown_id}=value else{return Err(NativeError::Type("tokenizer_feed requires TokenizerState".into()));};
+                let mut candidate=pending.clone();candidate.extend(bytes);
+                let decoded=match std::str::from_utf8(&candidate){Ok(text)=>(text.len(),text.to_string()),Err(error)=>{if error.error_len().is_some(){return Err(NativeError::Type("tokenizer_feed rejected invalid UTF-8".into()));}(error.valid_up_to(),std::str::from_utf8(&candidate[..error.valid_up_to()]).map_err(|_|NativeError::InvalidProgram("UTF-8 valid-prefix accounting failed".into()))?.to_string())}};
+                let mut emitted=Vec::new();for ch in decoded.1.chars(){let piece=ch.to_string();let id=vocabulary.iter().position(|v|v==&piece).map(|v|v as i64).or(*unknown_id).ok_or_else(||NativeError::Type(format!("TokenizerState unknown vocabulary scalar {:?}",piece)))?;emitted.push(id);}
+                let remain=candidate[decoded.0..].to_vec();if remain.len()>*max_pending{return Err(NativeError::ResourceLimit("TokenizerState pending UTF-8 bytes exceed configured limit".into()));}if tokens.len().checked_add(emitted.len()).is_none_or(|n|n>*max_tokens){return Err(NativeError::ResourceLimit("TokenizerState token output capacity exhausted".into()));}
+                tokens.extend(emitted);*pending=remain;stack.push(NativeValue::Unit);
+            }
+            NativeInstr::TokenizerFlush{name} => {
+                let value=locals.get_mut(name).ok_or_else(||NativeError::Type("TokenizerState binding not found".into()))?;
+                let NativeValue::TokenizerState{pending,..}=value else{return Err(NativeError::Type("tokenizer_flush requires TokenizerState".into()));};
+                if !pending.is_empty(){return Err(NativeError::Type("tokenizer_flush cannot finish an incomplete UTF-8 sequence".into()));}stack.push(NativeValue::Unit);
+            }
+            NativeInstr::TokenizerTokenCount => {let value=stack.pop().ok_or_else(||NativeError::InvalidProgram("TokenizerState operand missing".into()))?;let NativeValue::TokenizerState{tokens,..}=value else{return Err(NativeError::Type("tokenizer_token_count requires TokenizerState".into()));};stack.push(NativeValue::Int(tokens.len() as i64));}
+            NativeInstr::TokenizerToken => {let index=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("tokenizer_token index must be non-negative".into()))?;let value=stack.pop().ok_or_else(||NativeError::InvalidProgram("TokenizerState operand missing".into()))?;let NativeValue::TokenizerState{tokens,..}=value else{return Err(NativeError::Type("tokenizer_token requires TokenizerState".into()));};stack.push(NativeValue::Int(*tokens.get(index).ok_or_else(||NativeError::Type("tokenizer_token index out of bounds".into()))?));}
             NativeInstr::MakeGradientTape => { let capacity=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape capacity must be positive".into()))?; if capacity==0||capacity>4096{return Err(NativeError::ResourceLimit("GradientTape capacity must be in 1..=4096".into()));} stack.push(NativeValue::GradientTape{capacity,slots:Vec::new(),gradients:Vec::new(),backward_ready:false}); }
             NativeInstr::GradientInput{name} => { let value=pop_float(&mut stack)?; let tape=locals.get_mut(name).ok_or_else(||NativeError::Type("GradientTape binding not found".into()))?; let NativeValue::GradientTape{capacity,slots,gradients,backward_ready}=tape else{return Err(NativeError::Type("gradient_input requires GradientTape".into()));}; if slots.len()>=*capacity{return Err(NativeError::ResourceLimit("GradientTape slot capacity exhausted".into()));} slots.push(GradientSlot{value_bits:value.to_bits(),op:GradientOp::Input});gradients.clear();*backward_ready=false;stack.push(NativeValue::Int((slots.len()-1) as i64)); }
             NativeInstr::GradientAdd{name} | NativeInstr::GradientMul{name} => { let right=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape slot id must be non-negative".into()))?; let left=usize::try_from(pop_int(&mut stack)?).map_err(|_|NativeError::Type("GradientTape slot id must be non-negative".into()))?; let is_mul=matches!(instr,NativeInstr::GradientMul{..}); let tape=locals.get_mut(name).ok_or_else(||NativeError::Type("GradientTape binding not found".into()))?; let NativeValue::GradientTape{capacity,slots,gradients,backward_ready}=tape else{return Err(NativeError::Type("gradient operation requires GradientTape".into()));}; if left>=slots.len()||right>=slots.len(){return Err(NativeError::Type("GradientTape slot reference must exist before use".into()));} if slots.len()>=*capacity{return Err(NativeError::ResourceLimit("GradientTape slot capacity exhausted".into()));} let a=f32::from_bits(slots[left].value_bits);let b=f32::from_bits(slots[right].value_bits);let value=if is_mul{a*b}else{a+b};if !value.is_finite(){return Err(NativeError::Type("GradientTape intermediate must be finite".into()));} let op=if is_mul{GradientOp::Mul{left,right}}else{GradientOp::Add{left,right}};slots.push(GradientSlot{value_bits:value.to_bits(),op});gradients.clear();*backward_ready=false;stack.push(NativeValue::Int((slots.len()-1) as i64)); }
@@ -2240,7 +2292,8 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::TensorAdd => "TensorAdd".into(),
         NativeInstr::TensorMatMul => "TensorMatMul".into(),
         NativeInstr::MakeActivationCache=>"MakeActivationCache".into(), NativeInstr::ActivationStore{name}=>format!("ActivationStore:{}",escape_artifact(name)), NativeInstr::ActivationRestore=>"ActivationRestore".into(), NativeInstr::ActivationCacheLen=>"ActivationCacheLen".into(),
-        NativeInstr::MakeGradientTape => "MakeGradientTape".into(), NativeInstr::GradientInput{name}=>format!("GradientInput:{}",escape_artifact(name)), NativeInstr::GradientAdd{name}=>format!("GradientAdd:{}",escape_artifact(name)), NativeInstr::GradientMul{name}=>format!("GradientMul:{}",escape_artifact(name)), NativeInstr::GradientBackward{name}=>format!("GradientBackward:{}",escape_artifact(name)), NativeInstr::GradientValue=>"GradientValue".into(), NativeInstr::GradientGet=>"GradientGet".into(),
+        NativeInstr::MakeGradientTape => "MakeGradientTape".into(),
+        NativeInstr::MakeTokenizerState => "MakeTokenizerState".into(), NativeInstr::TokenizerFeed{name}=>format!("TokenizerFeed:{}",escape_artifact(name)), NativeInstr::TokenizerFlush{name}=>format!("TokenizerFlush:{}",escape_artifact(name)), NativeInstr::TokenizerTokenCount=>"TokenizerTokenCount".into(), NativeInstr::TokenizerToken=>"TokenizerToken".into(), NativeInstr::GradientInput{name}=>format!("GradientInput:{}",escape_artifact(name)), NativeInstr::GradientAdd{name}=>format!("GradientAdd:{}",escape_artifact(name)), NativeInstr::GradientMul{name}=>format!("GradientMul:{}",escape_artifact(name)), NativeInstr::GradientBackward{name}=>format!("GradientBackward:{}",escape_artifact(name)), NativeInstr::GradientValue=>"GradientValue".into(), NativeInstr::GradientGet=>"GradientGet".into(),
         NativeInstr::MakeAttentionBlock => "MakeAttentionBlock".into(),
         NativeInstr::AttentionBlockApply => "AttentionBlockApply".into(),
         NativeInstr::AttentionBlockCached => "AttentionBlockCached".into(),
@@ -2318,7 +2371,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "TensorAdd"=>NativeInstr::TensorAdd,
         "TensorMatMul"=>NativeInstr::TensorMatMul,
         "MakeActivationCache"=>NativeInstr::MakeActivationCache, "ActivationStore"=>NativeInstr::ActivationStore{name:unescape_artifact(arg)?}, "ActivationRestore"=>NativeInstr::ActivationRestore, "ActivationCacheLen"=>NativeInstr::ActivationCacheLen,
-        "MakeGradientTape"=>NativeInstr::MakeGradientTape, "GradientInput"=>NativeInstr::GradientInput{name:unescape_artifact(arg)?}, "GradientAdd"=>NativeInstr::GradientAdd{name:unescape_artifact(arg)?}, "GradientMul"=>NativeInstr::GradientMul{name:unescape_artifact(arg)?}, "GradientBackward"=>NativeInstr::GradientBackward{name:unescape_artifact(arg)?}, "GradientValue"=>NativeInstr::GradientValue, "GradientGet"=>NativeInstr::GradientGet,
+        "MakeGradientTape"=>NativeInstr::MakeGradientTape, "MakeTokenizerState"=>NativeInstr::MakeTokenizerState, "TokenizerFeed"=>NativeInstr::TokenizerFeed{name:unescape_artifact(arg)?}, "TokenizerFlush"=>NativeInstr::TokenizerFlush{name:unescape_artifact(arg)?}, "TokenizerTokenCount"=>NativeInstr::TokenizerTokenCount, "TokenizerToken"=>NativeInstr::TokenizerToken, "GradientInput"=>NativeInstr::GradientInput{name:unescape_artifact(arg)?}, "GradientAdd"=>NativeInstr::GradientAdd{name:unescape_artifact(arg)?}, "GradientMul"=>NativeInstr::GradientMul{name:unescape_artifact(arg)?}, "GradientBackward"=>NativeInstr::GradientBackward{name:unescape_artifact(arg)?}, "GradientValue"=>NativeInstr::GradientValue, "GradientGet"=>NativeInstr::GradientGet,
         "MakeAttentionBlock"=>NativeInstr::MakeAttentionBlock,
         "AttentionBlockApply"=>NativeInstr::AttentionBlockApply,
         "AttentionBlockCached"=>NativeInstr::AttentionBlockCached,
@@ -4503,6 +4556,82 @@ fn main() -> Int
         assert!(crate::sema::check(&invalid).is_err());
         let malformed=NativeValue::ActivationCache{capacity:2,checkpoint_stride:1,max_bytes:1024,retained_bytes:0,entries:vec![(0,vec![1],vec![1.0f32.to_bits()])]};
         assert!(matches!(validate_value(&malformed,ExecutionLimits::default()),Err(NativeError::InvalidProgram(message)) if message.contains("accounting")));
+    }
+
+    #[test]
+    fn tokenizer_state_handles_split_utf8_incrementally_and_roundtrips_deterministically() {
+        let source = r#"module tokenizer_split_utf8
+fn main() -> Int
+  let state = tokenizer_state(["a", "é"], 4, 8, 0)
+  tokenizer_feed(state, [195])
+  let before = tokenizer_token_count(state)
+  tokenizer_feed(state, [169])
+  tokenizer_flush(state)
+  tokenizer_token(state, 0)
+"#;
+        let program = compile_source(source);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("TokenizerState artifact decodes");
+        assert_eq!(encode_program(&decoded), artifact);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(1));
+    }
+
+    #[test]
+    fn tokenizer_state_rejects_invalid_utf8_unknown_scalars_and_incomplete_flush() {
+        let invalid = compile_source(r#"module tokenizer_invalid
+fn main() -> Int
+  let state = tokenizer_state(["a"], 4, 8, 0)
+  tokenizer_feed(state, [255])
+  tokenizer_token_count(state)
+"#);
+        assert!(matches!(run_program(&invalid, "main", &[]), Err(NativeError::Type(message)) if message.contains("invalid UTF-8")));
+        let unknown = compile_source(r#"module tokenizer_unknown
+fn main() -> Int
+  let state = tokenizer_state(["a"], 4, 8, 0)
+  tokenizer_feed(state, [98])
+  tokenizer_token_count(state)
+"#);
+        assert!(matches!(run_program(&unknown, "main", &[]), Err(NativeError::Type(message)) if message.contains("unknown vocabulary")));
+        let incomplete = compile_source(r#"module tokenizer_incomplete
+fn main() -> Int
+  let state = tokenizer_state(["a", "é"], 4, 8, 0)
+  tokenizer_feed(state, [195])
+  tokenizer_flush(state)
+  tokenizer_token_count(state)
+"#);
+        assert!(matches!(run_program(&incomplete, "main", &[]), Err(NativeError::Type(message)) if message.contains("incomplete UTF-8")));
+    }
+
+    #[test]
+    fn tokenizer_state_unknown_fallback_and_token_budget_are_deterministic() {
+        let fallback = compile_source(r#"module tokenizer_fallback
+fn main() -> Int
+  let state = tokenizer_state(["a"], 4, 8, 100)
+  tokenizer_feed(state, [98])
+  tokenizer_token(state, 0)
+"#);
+        assert_eq!(run_program(&decode_program(&encode_program(&fallback)).unwrap(), "main", &[]).unwrap(), NativeValue::Int(99));
+        let full = compile_source(r#"module tokenizer_full
+fn main() -> Int
+  let state = tokenizer_state(["a"], 4, 1, 0)
+  tokenizer_feed(state, [97, 97])
+  tokenizer_token_count(state)
+"#);
+        assert!(matches!(run_program(&full, "main", &[]), Err(NativeError::ResourceLimit(message)) if message.contains("capacity exhausted")));
+    }
+
+    #[test]
+    fn tokenizer_state_rejects_duplicate_or_multiscalar_vocabulary_entries() {
+        let duplicate = crate::parse(r#"module tokenizer_duplicate
+fn main() -> TokenizerState
+  tokenizer_state(["a", "a"], 4, 8, 0)
+"#).unwrap();
+        assert!(crate::sema::check(&duplicate).is_err());
+        let multi = crate::parse(r#"module tokenizer_multiscalar
+fn main() -> TokenizerState
+  tokenizer_state(["ab"], 4, 8, 0)
+"#).unwrap();
+        assert!(crate::sema::check(&multi).is_err());
     }
 }
 
