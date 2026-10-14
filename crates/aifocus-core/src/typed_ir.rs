@@ -484,11 +484,11 @@ fn optimize_value(value: &mut TypedValue) {
             optimize_value(right);
             if let (TypedValueKind::Int(a), TypedValueKind::Int(b)) = (&left.kind, &right.kind) {
                 let folded = match op {
-                    BinaryOp::Add => Some(TypedValueKind::Int(a + b)),
-                    BinaryOp::Sub => Some(TypedValueKind::Int(a - b)),
-                    BinaryOp::Mul => Some(TypedValueKind::Int(a * b)),
-                    BinaryOp::Div if *b != 0 => Some(TypedValueKind::Int(a / b)),
-                    BinaryOp::Mod if *b != 0 => Some(TypedValueKind::Int(a % b)),
+                    BinaryOp::Add => a.checked_add(*b).map(TypedValueKind::Int),
+                    BinaryOp::Sub => a.checked_sub(*b).map(TypedValueKind::Int),
+                    BinaryOp::Mul => a.checked_mul(*b).map(TypedValueKind::Int),
+                    BinaryOp::Div if *b != 0 => a.checked_div(*b).map(TypedValueKind::Int),
+                    BinaryOp::Mod if *b != 0 => a.checked_rem(*b).map(TypedValueKind::Int),
                     BinaryOp::Equal => Some(TypedValueKind::Bool(a == b)),
                     BinaryOp::NotEqual => Some(TypedValueKind::Bool(a != b)),
                     BinaryOp::Less => Some(TypedValueKind::Bool(a < b)),

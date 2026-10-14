@@ -74,11 +74,11 @@ fn fold_value(value: IrValue) -> IrValue {
             let left = fold_value(*left);
             let right = fold_value(*right);
             match (&op, &left, &right) {
-                (crate::BinaryOp::Add, IrValue::Int(a), IrValue::Int(b)) => IrValue::Int(a + b),
-                (crate::BinaryOp::Sub, IrValue::Int(a), IrValue::Int(b)) => IrValue::Int(a - b),
-                (crate::BinaryOp::Mul, IrValue::Int(a), IrValue::Int(b)) => IrValue::Int(a * b),
-                (crate::BinaryOp::Div, IrValue::Int(a), IrValue::Int(b)) if *b != 0 => IrValue::Int(a / b),
-                (crate::BinaryOp::Mod, IrValue::Int(a), IrValue::Int(b)) if *b != 0 => IrValue::Int(a % b),
+                (crate::BinaryOp::Add, IrValue::Int(a), IrValue::Int(b)) => a.checked_add(*b).map(IrValue::Int).unwrap_or_else(|| IrValue::Binary { op, left: Box::new(left), right: Box::new(right) }),
+                (crate::BinaryOp::Sub, IrValue::Int(a), IrValue::Int(b)) => a.checked_sub(*b).map(IrValue::Int).unwrap_or_else(|| IrValue::Binary { op, left: Box::new(left), right: Box::new(right) }),
+                (crate::BinaryOp::Mul, IrValue::Int(a), IrValue::Int(b)) => a.checked_mul(*b).map(IrValue::Int).unwrap_or_else(|| IrValue::Binary { op, left: Box::new(left), right: Box::new(right) }),
+                (crate::BinaryOp::Div, IrValue::Int(a), IrValue::Int(b)) if *b != 0 => a.checked_div(*b).map(IrValue::Int).unwrap_or_else(|| IrValue::Binary { op, left: Box::new(left), right: Box::new(right) }),
+                (crate::BinaryOp::Mod, IrValue::Int(a), IrValue::Int(b)) if *b != 0 => a.checked_rem(*b).map(IrValue::Int).unwrap_or_else(|| IrValue::Binary { op, left: Box::new(left), right: Box::new(right) }),
                 (crate::BinaryOp::Equal, _, _) => IrValue::Bool(left == right),
                 (crate::BinaryOp::NotEqual, _, _) => IrValue::Bool(left != right),
                 (crate::BinaryOp::Less, IrValue::Int(a), IrValue::Int(b)) => IrValue::Bool(a < b),
@@ -129,6 +129,13 @@ fn main(a: Int) -> Int
 ").unwrap();
         let optimized = optimize(crate::ir::lower(&module));
         assert_eq!(optimized.functions[0].ops.len(), 1);
+    }
+
+    #[test]
+    fn preserves_overflowing_constant_arithmetic_for_runtime_diagnostics() {
+        let module = crate::parse("module x\nfn main() -> Int\n  9223372036854775807 + 1\n").unwrap();
+        let optimized = optimize(crate::ir::lower(&module));
+        assert!(matches!(optimized.functions[0].ops[0], IrOp::Expr(IrValue::Binary { .. })));
     }
 
     #[test]
