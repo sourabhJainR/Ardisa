@@ -1,0 +1,4 @@
+module console_example
+
+fn main() -> String
+  "Hello from Ardisa"
