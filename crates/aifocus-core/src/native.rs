@@ -4668,22 +4668,23 @@ mod activation_cache_adversarial_hardening_tests {
     fn source_numeric_boundary_contract_survives_artifact_round_trip() {
         let cases = [
             (
-                "module numeric_add_overflow\\nfn main() -> Int\\n  9223372036854775807 + 1\\n",
+                "module numeric_add_overflow\nfn main() -> Int\n  9223372036854775807 + 1\n",
                 "overflow",
             ),
             (
-                "module numeric_div_zero\\nfn main() -> Int\\n  5 / 0\\n",
+                "module numeric_div_zero\nfn main() -> Int\n  5 / 0\n",
                 "division by zero",
             ),
             (
-                "module numeric_mod_zero\\nfn main() -> Int\\n  5 % 0\\n",
+                "module numeric_mod_zero\nfn main() -> Int\n  5 % 0\n",
                 "modulo by zero",
             ),
         ];
 
         for (source, expected_error) in cases {
-            let program = compile_source(source);
-            let artifact = encode_program(&program);
+            let compiled = crate::pipeline::compile_source(source)
+                .expect("numeric source fixture compiles through the public pipeline");
+            let artifact = compiled.artifact;
             let decoded = decode_program(&artifact).expect("numeric fixture artifact decodes");
             assert_eq!(encode_program(&decoded), artifact, "artifact must round-trip deterministically");
             let result = run_program(&decoded, "main", &[]);
@@ -4693,5 +4694,4 @@ mod activation_cache_adversarial_hardening_tests {
             );
         }
     }
-
 }
