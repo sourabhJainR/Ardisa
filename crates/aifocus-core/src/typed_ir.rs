@@ -791,7 +791,7 @@ fn search() -> Int
     fn tokenizer_state_nominal_identity_and_vocabulary_metadata_survive_typed_ir() {
         let module = crate::parse(r#"module tokenizer_typed_ir
 fn main() -> TokenizerState
-  tokenizer_state(["a", "é"], 4, 16, -1)
+  tokenizer_state(["a", "é"], 4, 16, 0)
 "#).unwrap();
         let typed = lower(&module).expect("TokenizerState lowers to typed IR");
         assert_eq!(typed.functions[0].return_type, TypeKind::Named("TokenizerState".into()));
