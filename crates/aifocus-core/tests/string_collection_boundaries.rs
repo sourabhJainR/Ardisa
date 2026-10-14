@@ -34,7 +34,8 @@ fn main() -> Int
 fn negative_string_index_fails_at_runtime() {
     let source = r#"module negative_string_index
 fn main() -> Int
-  "abc"[-1]
+  let index = 0 - 1
+  "abc"[index]
 "#;
     assert!(
         matches!(execute(source), Err(NativeError::Type(_))),
@@ -43,16 +44,15 @@ fn main() -> Int
 }
 
 #[test]
-fn empty_list_index_fails_at_runtime() {
-    // The type annotation gives the empty list a concrete element type.
-    let source = r#"module empty_list_index
+fn list_index_at_length_fails_at_runtime() {
+    let source = r#"module list_index_at_length
 fn main() -> Int
-  let values: List<Int> = []
-  values[0]
+  let values = [7]
+  values[1]
 "#;
     assert!(
         matches!(execute(source), Err(NativeError::Type(message)) if message.contains("out of bounds")),
-        "indexing an empty list must fail explicitly"
+        "index equal to list length must fail explicitly"
     );
 }
 
