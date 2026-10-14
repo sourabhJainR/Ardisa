@@ -4689,7 +4689,7 @@ mod activation_cache_adversarial_hardening_tests {
             assert_eq!(encode_program(&decoded), artifact, "artifact must round-trip deterministically");
             let result = run_program(&decoded, "main", &[]);
             assert!(
-                matches!(result, Err(NativeError::Type(message)) if message.contains(expected_error)),
+                matches!(result, Err(NativeError::Type(ref message)) if message.contains(expected_error)),
                 "expected {expected_error:?} for source fixture, got {result:?}"
             );
         }
