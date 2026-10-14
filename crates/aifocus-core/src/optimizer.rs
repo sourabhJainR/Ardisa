@@ -133,7 +133,7 @@ fn main(a: Int) -> Int
 
     #[test]
     fn preserves_overflowing_constant_arithmetic_for_runtime_diagnostics() {
-        let module = crate::parse("module x\\nfn main() -> Int\\n  9223372036854775807 + 1\\n").unwrap();
+        let module = crate::parse("module x\nfn main() -> Int\n  9223372036854775807 + 1\n").unwrap();
         let optimized = optimize(crate::ir::lower(&module));
         assert!(matches!(optimized.functions[0].ops[0], IrOp::Expr(IrValue::Binary { .. })));
     }
