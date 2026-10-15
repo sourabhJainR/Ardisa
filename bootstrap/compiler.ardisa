@@ -74,12 +74,12 @@ fn keyword(word: String) -> String
                               "In"
                             else
                               if word == "true"
-                            "True"
-                          else
-                            if word == "false"
-                              "False"
-                            else
-                              "Ident"
+                                "True"
+                              else
+                                if word == "false"
+                                  "False"
+                                else
+                                  "Ident"
 
 fn lex_source(source: String) -> String
   let output = ""
