@@ -213,7 +213,9 @@ impl Checker {
                     let mut scoped = locals.clone();
                     self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
-                    merge_states(locals, &scoped, false);
+                    // A lexical scope executes unconditionally, so assignments and
+                    // reinitializations of outer locals must propagate out of it.
+                    merge_scope_states(locals, &scoped);
                 }
                 StmtKind::Spawn { call, .. } => {
                     self.check_expr(call, locals, AccessMode::Move);
@@ -440,8 +442,17 @@ impl Checker {
                     for (name, (_, state)) in locals.iter_mut() {
                         let then_state = then_locals.get(name).map(|entry| entry.1);
                         let else_state = else_locals.get(name).map(|entry| entry.1);
-                        if then_state == Some(State::Moved) || else_state == Some(State::Moved) {
-                            *state = State::Moved;
+                        // A value is available after the join only if both paths
+                        // leave it available. This also permits a moved value to be
+                        // reinitialized on every path before it is used again.
+                        match (then_state, else_state) {
+                            (Some(State::Available), Some(State::Available)) => {
+                                *state = State::Available;
+                            }
+                            (Some(State::Moved), _) | (_, Some(State::Moved)) => {
+                                *state = State::Moved;
+                            }
+                            _ => {}
                         }
                     }
                 } else {
@@ -480,15 +491,22 @@ fn ownership_of(ty: &Type) -> OwnershipClass {
 fn merge_states(
     outer: &mut HashMap<String, (Type, State)>,
     inner: &HashMap<String, (Type, State)>,
-    loop_body: bool,
+    _loop_body: bool,
 ) {
     for (name, (_, state)) in outer.iter_mut() {
         if inner.get(name).map(|entry| entry.1) == Some(State::Moved) {
             *state = State::Moved;
         }
-        if loop_body && inner.get(name).map(|entry| entry.1) == Some(State::Available) {
-            // A loop body may execute zero or many times; availability is safe to
-            // retain only when the body itself did not consume the value.
+    }
+}
+
+fn merge_scope_states(
+    outer: &mut HashMap<String, (Type, State)>,
+    inner: &HashMap<String, (Type, State)>,
+) {
+    for (name, (_, state)) in outer.iter_mut() {
+        if let Some((_, inner_state)) = inner.get(name) {
+            *state = *inner_state;
         }
     }
 }
@@ -728,5 +746,26 @@ fn f(value: String) -> String
         assert!(errors.iter().any(|error| error.code == "AIF400"));
     }
 
+
+
+    #[test]
+    fn scope_reinitialization_restores_outer_local_availability() {
+        let module = parse(
+            "module scope_reinit\nfn f(value: String) -> String\n  let consumed = value\n  scope\n    set value = \"restored\"\n  value\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(infer(&module).is_ok());
+    }
+
+    #[test]
+    fn reinitialization_on_both_if_paths_restores_availability_after_join() {
+        let module = parse(
+            "module branch_reinit\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  if flag\n    set value = \"left\"\n  else\n    set value = \"right\"\n  value\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(infer(&module).is_ok());
+    }
 
 }
