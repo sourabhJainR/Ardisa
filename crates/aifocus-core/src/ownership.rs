@@ -226,6 +226,11 @@ impl Checker {
                     self.scope_depth -= 1;
                     merge_states(locals, &scoped, true);
                 }
+                StmtKind::For { iterable, .. } => {
+                    // Treat the source expression conservatively as a shared read; semantic
+                    // analysis rejects the loop before code generation.
+                    self.check_expr(iterable, locals, AccessMode::SharedBorrow);
+                }
                 StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
             }
         }
