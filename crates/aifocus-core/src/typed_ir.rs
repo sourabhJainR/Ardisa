@@ -546,17 +546,36 @@ pub fn to_legacy_ir(module: &TypedIrModule) -> crate::ir::IrModule {
 }
 
 fn flatten_cfg(function: &TypedIrFunction) -> Vec<crate::ir::IrOp> {
-    let mut ops = Vec::new();
-    for block in &function.blocks {
-        ops.extend(block.ops.iter().map(typed_op_to_legacy));
-        match &block.terminator {
-            TypedTerminator::Return(value) => ops.push(crate::ir::IrOp::Return(value.as_ref().map(typed_value_to_legacy))),
-            TypedTerminator::Branch { condition, .. } => ops.push(crate::ir::IrOp::Expr(typed_value_to_legacy(condition))),
-            TypedTerminator::Loop { condition, .. } => ops.push(crate::ir::IrOp::While { condition: typed_value_to_legacy(condition), ops: Vec::new() }),
-            TypedTerminator::Fallthrough => {}
+    fn flatten_sequence(function: &TypedIrFunction, start: u32, seen: &mut std::collections::HashSet<u32>) -> Vec<crate::ir::IrOp> {
+        let mut out = Vec::new();
+        let mut cursor = Some(start);
+        while let Some(id) = cursor {
+            if !seen.insert(id) { break; }
+            let Some(block) = function.blocks.iter().find(|block| block.id == id) else { break; };
+            out.extend(block.ops.iter().map(typed_op_to_legacy));
+            match &block.terminator {
+                TypedTerminator::Return(value) => {
+                    out.push(crate::ir::IrOp::Return(value.as_ref().map(typed_value_to_legacy)));
+                    break;
+                }
+                TypedTerminator::Loop { condition, body_block, exit_block } => {
+                    let body_ops = flatten_sequence(function, *body_block, &mut std::collections::HashSet::new());
+                    out.push(crate::ir::IrOp::While { condition: typed_value_to_legacy(condition), ops: body_ops });
+                    cursor = Some(*exit_block);
+                }
+                // General CFG branches are not yet representable in the legacy IR.
+                // Preserve fail-closed behavior rather than pretending the condition
+                // alone implements both control-flow paths.
+                TypedTerminator::Branch { condition, .. } => {
+                    out.push(crate::ir::IrOp::Expr(typed_value_to_legacy(condition)));
+                    break;
+                }
+                TypedTerminator::Fallthrough => break,
+            }
         }
+        out
     }
-    ops
+    flatten_sequence(function, 0, &mut std::collections::HashSet::new())
 }
 
 fn typed_op_to_legacy(op: &TypedIrOp) -> crate::ir::IrOp {
