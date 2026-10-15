@@ -902,7 +902,7 @@ fn f(value: String) -> String
     #[test]
     fn rejects_loop_binding_shadowing_until_bindings_have_stable_identity() {
         let module = parse(
-            "module loop_shadow\\nfn f(values: List<String>, item: String) -> String\\n  for item in values\\n    len(item)\\n  item\\n",
+            "module loop_shadow\nfn f(values: List<String>, item: String) -> String\n  for item in values\n    len(item)\n  item\n",
         )
         .unwrap();
         let errors = infer(&module).unwrap_err();
