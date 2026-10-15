@@ -49,6 +49,8 @@ pub enum IrOp {
         condition: IrValue,
         ops: Vec<IrOp>,
     },
+    /// Explicit fail-closed marker for constructs represented in the AST but not executable.
+    Unsupported { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +188,9 @@ fn block_to_ops(block: &crate::Block) -> Vec<IrOp> {
             StmtKind::While { condition, body } => IrOp::While {
                 condition: value_to_ir(condition),
                 ops: block_to_ops(body),
+            },
+            StmtKind::For { .. } => IrOp::Unsupported {
+                reason: "for/in iteration is not implemented".into(),
             },
         })
         .collect()
