@@ -1,9 +1,10 @@
-use ardisa_core::{compile_source, native, NativeError, NativeValue};
+use ardisa_core::{compile_source, native, ExecutionLimits, NativeError, NativeValue};
 
 fn execute(source: &str) -> Result<NativeValue, NativeError> {
     let compiled = compile_source(source).expect("fixture should compile to a checked native artifact");
     let program = native::decode_program(&compiled.artifact).expect("artifact should decode");
-    native::run_program(&program, "main", &[])
+    let limits = ExecutionLimits { max_instructions: 10_000, ..ExecutionLimits::default() };
+    native::run_program_with_limits(&program, "main", &[], limits)
 }
 
 #[test]
