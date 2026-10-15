@@ -2365,7 +2365,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::PushUnit => "PushUnit".into(),
         NativeInstr::PushString(v) => format!("PushString:{}", escape_artifact(v)),
         NativeInstr::PushList(v) => format!("PushList:{v}"),
-        NativeInstr::Index => "Index".into(), NativeInstr::Len => "Len".into(),
+        NativeInstr::Index => "Index".into(), NativeInstr::Slice => "Slice".into(), NativeInstr::Len => "Len".into(),
         NativeInstr::Append(v) => format!("Append:{}", escape_artifact(v)),
         NativeInstr::MakeOk => "MakeOk".into(), NativeInstr::Chr => "Chr".into(),
         NativeInstr::MakeErr => "MakeErr".into(), NativeInstr::Unwrap => "Unwrap".into(),
