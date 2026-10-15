@@ -151,6 +151,11 @@ pub enum StmtKind {
         condition: Expr,
         body: Block,
     },
+    For {
+        name: String,
+        iterable: Expr,
+        body: Block,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
