@@ -7,6 +7,8 @@ This document records the currently implemented native behavior, not Rust standa
 - String values are UTF-8 encoded.
 - `len(String)` currently reports the UTF-8 byte length.
 - `String[index]` treats the index as a zero-based **byte offset** and returns that byte as an `Int` in the range 0–255. This remains distinct from Unicode scalar indexing.
+- `scalar_len(text)` counts Unicode scalar values; `scalar_at(text, index)` returns the selected scalar as an owned one-scalar `String`. Both use zero-based scalar positions, reject negative/out-of-range indexes, and are separate from byte-based indexing.
+- `grapheme_len(text)` and `grapheme_at(text, index)` use extended grapheme clusters from the pinned `unicode-segmentation = 1.12.0` dependency. They preserve combining sequences, regional-indicator flags, and emoji ZWJ sequences; returned clusters are owned strings. The pinned dependency version defines the segmentation behavior.
 - `String[start:end]` is a half-open UTF-8 byte range and returns an owned `String` copy. Both bounds must be non-negative, ordered, at most the byte length, and on UTF-8 scalar boundaries. A range that splits a multi-byte encoding fails explicitly; it never creates invalid UTF-8. The result obeys the configured string-byte limit.
 - A negative index fails with a runtime type error. An index at or beyond the byte length fails with `string index out of bounds`.
 - Indexing inside a multi-byte UTF-8 sequence is permitted because indexing is byte-based. It does not return a Unicode scalar value or grapheme cluster.
