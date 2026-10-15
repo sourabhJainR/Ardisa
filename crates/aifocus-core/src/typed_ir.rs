@@ -159,6 +159,7 @@ pub enum TypedIrOp {
     Spawn { name: String, call: TypedValue },
     Join(String),
     Cancel(String),
+    For { id: u64, name: String, iterable: TypedValue, ops: Vec<TypedIrOp> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,6 +282,17 @@ fn lower_stmt(
                 let mut nested=Vec::new(); let mut scoped=locals.clone();
                 for s in &body.stmts { lower_stmt(s,types,&mut scoped,&mut nested,errors); }
                 ops.push(TypedIrOp::Scope(vec![TypedIrOp::Expr(c), TypedIrOp::Scope(nested)]));
+            }
+        }
+        StmtKind::For { name, iterable, body } => {
+            if let Some(value) = lower_expr(iterable, types, locals, errors) {
+                let mut nested = Vec::new();
+                let mut scoped = locals.clone();
+                if let TypeKind::List(element) = &value.ty {
+                    scoped.insert(name.clone(), (**element).clone());
+                }
+                for child in &body.stmts { lower_stmt(child, types, &mut scoped, &mut nested, errors); }
+                ops.push(TypedIrOp::For { id: stmt.id.0, name: name.clone(), iterable: value, ops: nested });
             }
         }
     }
@@ -588,6 +600,7 @@ fn typed_op_to_legacy(op: &TypedIrOp) -> crate::ir::IrOp {
         TypedIrOp::Spawn { name, call } => crate::ir::IrOp::Spawn { name: name.clone(), call: typed_value_to_legacy(call) },
         TypedIrOp::Join(name) => crate::ir::IrOp::Join { name: name.clone() },
         TypedIrOp::Cancel(name) => crate::ir::IrOp::Cancel { name: name.clone() },
+        TypedIrOp::For { id, name, iterable, ops } => crate::ir::IrOp::For { id: *id, name: name.clone(), iterable: typed_value_to_legacy(iterable), ops: ops.iter().map(typed_op_to_legacy).collect() },
     }
 }
 
