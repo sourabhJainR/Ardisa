@@ -501,6 +501,20 @@ impl Parser {
             });
         }
 
+        if self.eat(TokenKind::For) {
+            let name = self.expect(TokenKind::Ident, "iteration binding after 'for'")?;
+            self.expect(TokenKind::In, "'in' after iteration binding")?;
+            let iterable = self.parse_expr(0)?;
+            self.expect(TokenKind::Newline, "end of for/in iterable")?;
+            let body = self.parse_block("for/in body")?;
+            let end = body.span.end;
+            return Some(Stmt {
+                id: self.id("for", &start.to_string()),
+                span: source::Span::new(start, end),
+                kind: StmtKind::For { name: name.lexeme, iterable, body },
+            });
+        }
+
         let expr = self.parse_expr(0)?;
         let end = expr.span.end;
         if !matches!(expr.kind, ExprKind::If { .. }) {
