@@ -99,6 +99,10 @@ pub enum NativeInstr {
     Append(String),
     MakeOk,
     Chr,
+    ScalarLen,
+    ScalarAt,
+    GraphemeLen,
+    GraphemeAt,
     MakeErr,
     Unwrap,
     Load(String),
@@ -783,7 +787,15 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
             if callee != "kv_append" && callee != "context_append" && callee != "vector_index_insert" && callee != "push" && !matches!(callee.as_str(), "mcts_root" | "mcts_expand" | "mcts_update" | "mcts_backpropagate" | "activation_store" | "gradient_input" | "gradient_add" | "gradient_mul" | "gradient_backward") {
                 for arg in args { emit_value(arg, code)?; }
             }
-            if callee == "chr" && args.len() == 1 {
+            if callee == "scalar_len" && args.len() == 1 {
+                code.push(NativeInstr::ScalarLen);
+            } else if callee == "scalar_at" && args.len() == 2 {
+                code.push(NativeInstr::ScalarAt);
+            } else if callee == "grapheme_len" && args.len() == 1 {
+                code.push(NativeInstr::GraphemeLen);
+            } else if callee == "grapheme_at" && args.len() == 2 {
+                code.push(NativeInstr::GraphemeAt);
+            } else if callee == "chr" && args.len() == 1 {
                 code.push(NativeInstr::Chr);
             } else if callee == "ok" && args.len() == 1 {
                 code.push(NativeInstr::MakeOk);
@@ -1166,6 +1178,10 @@ fn run_function(
                 | NativeInstr::MakeOk
                 | NativeInstr::MakeErr
                 | NativeInstr::Chr
+                | NativeInstr::ScalarLen
+                | NativeInstr::ScalarAt
+                | NativeInstr::GraphemeLen
+                | NativeInstr::GraphemeAt
                 | NativeInstr::Unwrap
                 | NativeInstr::Load(_)
                 | NativeInstr::AddAssign(_)
@@ -1281,17 +1297,11 @@ fn run_function(
                 }
                 let start = stack.len() - *argc;
                 let call_args = stack.split_off(start);
-                if matches!(callee.as_str(), "scalar_len" | "scalar_at" | "grapheme_len" | "grapheme_at") {
-                    let value = run_unicode_builtin(callee, &call_args, state.limits)?
-                        .ok_or_else(|| NativeError::InvalidProgram(format!("unknown Unicode builtin '{callee}'")))?;
-                    stack.push(value);
-                } else {
-                    let callee_fn = program.functions.get(callee).ok_or_else(|| {
-                        NativeError::InvalidProgram(format!("unknown function '{callee}'"))
-                    })?;
-                    let value = run_function(program, callee_fn, &call_args, cancellation.clone(), Arc::clone(&state), depth + 1)?;
-                    stack.push(value);
-                }
+                let callee_fn = program.functions.get(callee).ok_or_else(|| {
+                    NativeError::InvalidProgram(format!("unknown function '{callee}'"))
+                })?;
+                let value = run_function(program, callee_fn, &call_args, cancellation.clone(), Arc::clone(&state), depth + 1)?;
+                stack.push(value);
             }
             NativeInstr::PushInt(value) => stack.push(NativeValue::Int(*value)),
             NativeInstr::PushFloat(bits) => {
@@ -1993,6 +2003,31 @@ fn run_function(
                     ))?;
                 stack.push(NativeValue::String(scalar.to_string()));
             }
+            NativeInstr::ScalarLen | NativeInstr::GraphemeLen => {
+                let text = match stack.pop() {
+                    Some(NativeValue::String(text)) => text,
+                    Some(_) => return Err(NativeError::Type("Unicode length builtin requires String".into())),
+                    None => return Err(NativeError::InvalidProgram("Unicode length from empty stack".into())),
+                };
+                let callee = if matches!(instr, NativeInstr::ScalarLen) { "scalar_len" } else { "grapheme_len" };
+                let args = [NativeValue::String(text)];
+                let value = run_unicode_builtin(callee, &args, state.limits)?
+                    .ok_or_else(|| NativeError::InvalidProgram(format!("missing builtin '{callee}'")))?;
+                stack.push(value);
+            }
+            NativeInstr::ScalarAt | NativeInstr::GraphemeAt => {
+                let index = pop_int(&mut stack)?;
+                let text = match stack.pop() {
+                    Some(NativeValue::String(text)) => text,
+                    Some(_) => return Err(NativeError::Type("Unicode index builtin requires String".into())),
+                    None => return Err(NativeError::InvalidProgram("Unicode index from empty stack".into())),
+                };
+                let callee = if matches!(instr, NativeInstr::ScalarAt) { "scalar_at" } else { "grapheme_at" };
+                let args = [NativeValue::String(text), NativeValue::Int(index)];
+                let value = run_unicode_builtin(callee, &args, state.limits)?
+                    .ok_or_else(|| NativeError::InvalidProgram(format!("missing builtin '{callee}'")))?;
+                stack.push(value);
+            }
             NativeInstr::MakeOk => {
                 let value = stack
                     .pop()
@@ -2427,6 +2462,8 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::Index => "Index".into(), NativeInstr::Slice => "Slice".into(), NativeInstr::Len => "Len".into(),
         NativeInstr::Append(v) => format!("Append:{}", escape_artifact(v)),
         NativeInstr::MakeOk => "MakeOk".into(), NativeInstr::Chr => "Chr".into(),
+        NativeInstr::ScalarLen => "ScalarLen".into(), NativeInstr::ScalarAt => "ScalarAt".into(),
+        NativeInstr::GraphemeLen => "GraphemeLen".into(), NativeInstr::GraphemeAt => "GraphemeAt".into(),
         NativeInstr::MakeErr => "MakeErr".into(), NativeInstr::Unwrap => "Unwrap".into(),
         NativeInstr::Load(v) => format!("Load:{}", escape_artifact(v)),
         NativeInstr::Store(v) => format!("Store:{}", escape_artifact(v)),
@@ -2502,7 +2539,10 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Slice"=>NativeInstr::Slice,"Len"=>NativeInstr::Len,
         "PushString"=>NativeInstr::PushString(unescape_artifact(arg)?),
         "PushList"=>NativeInstr::PushList(int(arg)?),"Append"=>NativeInstr::Append(unescape_artifact(arg)?),
-        "MakeOk"=>NativeInstr::MakeOk,"Chr"=>NativeInstr::Chr,"MakeErr"=>NativeInstr::MakeErr,"Unwrap"=>NativeInstr::Unwrap,
+        "MakeOk"=>NativeInstr::MakeOk,"Chr"=>NativeInstr::Chr,
+        "ScalarLen"=>NativeInstr::ScalarLen,"ScalarAt"=>NativeInstr::ScalarAt,
+        "GraphemeLen"=>NativeInstr::GraphemeLen,"GraphemeAt"=>NativeInstr::GraphemeAt,
+        "MakeErr"=>NativeInstr::MakeErr,"Unwrap"=>NativeInstr::Unwrap,
         "Load"=>NativeInstr::Load(unescape_artifact(arg)?),"Store"=>NativeInstr::Store(unescape_artifact(arg)?),
         "AddAssign"=>NativeInstr::AddAssign(unescape_artifact(arg)?),
         "StoreIndex"=>NativeInstr::StoreIndex(unescape_artifact(arg)?),"Add"=>NativeInstr::Add,"Sub"=>NativeInstr::Sub,
