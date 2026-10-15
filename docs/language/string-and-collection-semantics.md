@@ -21,8 +21,10 @@ This document records the currently implemented native behavior, not Rust standa
 - `List[start:end]` supports a half-open range (`start` inclusive, `end` exclusive) and returns a new owned list copy. It is not a view and does not alias the source list; mutating the slice result does not mutate the source.
 - Both slice bounds must be non-negative integers with `start <= end <= len(list)`. Negative bounds, reversed ranges, and an end beyond the list length fail explicitly. Empty ranges and ranges ending exactly at the list length are valid.
 - Slice output is subject to the same collection item, nested-value, and frame resource limits as other lists. Slicing a string is rejected because byte slicing can split UTF-8 sequences; string indexing remains byte-based.
-- The native runtime supports mutation for named list bindings through indexed assignment and append. Iteration syntax, aliasing views, borrowing, and drop semantics are not implemented or claimed.
-- List/string length and indexing use byte count for strings and element count for lists. These are distinct units.
+- The native runtime supports mutation for named list bindings through indexed assignment and the `push(List, value)` builtin. `len(String)` and `len(List)` are builtins; list literals, indexing, indexed assignment, and slicing are language syntax. These are a deliberately small primitive surface, not a general collection library.
+- List bindings are move-only in the current ownership subset: `let other = values` consumes `values`, so using `values` afterward is a compile-time ownership error. This prevents ordinary source-level mutable aliases; it does not establish complete Rust borrow checking.
+- `for`/`in`, iterator methods, borrowed slice views, and string slicing are unsupported and must fail compilation rather than silently lowering to different behavior. No iteration syntax is currently supported; explicit indexing with a checked integer is the supported traversal building block.
+- List/string length and indexing use element count for lists and UTF-8 byte count for strings. These are distinct units.
 
 ## Deliberate limitations
 
