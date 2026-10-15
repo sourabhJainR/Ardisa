@@ -49,6 +49,12 @@ pub enum IrOp {
         condition: IrValue,
         ops: Vec<IrOp>,
     },
+    /// Bounded source-level iteration over a single-evaluated owned List<T>.
+    ForEach {
+        name: String,
+        iterable: IrValue,
+        ops: Vec<IrOp>,
+    },
     /// Explicit fail-closed marker for constructs represented in the AST but not executable.
     Unsupported { reason: String },
 }
@@ -131,10 +137,11 @@ pub fn lower(module: &Module) -> IrModule {
                             condition: value_to_ir(condition),
                             ops: block_to_ops(body),
                         }),
-                        StmtKind::For { .. } => {
-                            // Semantic analysis rejects for/in before this compatibility IR is used.
-                            // Do not silently desugar unsupported iteration into a different behavior.
-                        }
+                        StmtKind::For { name, iterable, body } => ops.push(IrOp::ForEach {
+                            name: name.clone(),
+                            iterable: value_to_ir(iterable),
+                            ops: block_to_ops(body),
+                        }),
                     }
                 }
                 IrFunction {
@@ -189,8 +196,10 @@ fn block_to_ops(block: &crate::Block) -> Vec<IrOp> {
                 condition: value_to_ir(condition),
                 ops: block_to_ops(body),
             },
-            StmtKind::For { .. } => IrOp::Unsupported {
-                reason: "for/in iteration is not implemented".into(),
+            StmtKind::For { name, iterable, body } => IrOp::ForEach {
+                name: name.clone(),
+                iterable: value_to_ir(iterable),
+                ops: block_to_ops(body),
             },
         })
         .collect()

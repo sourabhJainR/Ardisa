@@ -155,7 +155,10 @@ pub enum TypedIrOp {
     Assign { name: String, value: TypedValue },
     AssignIndex { collection: TypedValue, index: TypedValue, value: TypedValue },
     Expr(TypedValue),
+    Return(Option<TypedValue>),
     Scope(Vec<TypedIrOp>),
+    /// Typed, structured iteration over an owned List<T>; body-local binding is T.
+    ForEach { name: String, iterable: TypedValue, body: Vec<TypedIrOp> },
     Spawn { name: String, call: TypedValue },
     Join(String),
     Cancel(String),
@@ -264,7 +267,7 @@ fn lower_stmt(
         }
         StmtKind::Return(value) => {
             let v = value.as_ref().and_then(|e| lower_expr(e, types, locals, errors));
-            ops.push(TypedIrOp::Expr(v.unwrap_or(TypedValue { ty:TypeKind::Unit, span:stmt.span, kind:TypedValueKind::Bool(false) })));
+            ops.push(TypedIrOp::Return(v));
         }
         StmtKind::Expr(e) => if let Some(v)=lower_expr(e,types,locals,errors){ ops.push(TypedIrOp::Expr(v)); },
         StmtKind::Scope { body } => {
@@ -283,9 +286,20 @@ fn lower_stmt(
                 ops.push(TypedIrOp::Scope(vec![TypedIrOp::Expr(c), TypedIrOp::Scope(nested)]));
             }
         }
-        StmtKind::For { iterable, .. } => {
-            let _ = lower_expr(iterable, types, locals, errors);
-            errors.push("for/in iteration cannot be lowered: typed iterator protocol and native execution are not implemented".into());
+        StmtKind::For { name, iterable, body } => {
+            if let Some(value) = lower_expr(iterable, types, locals, errors) {
+                let Some(TypeKind::List(element)) = Some(value.ty.clone()) else {
+                    errors.push("for/in requires a typed List<T> iterable".into());
+                    return;
+                };
+                let mut scoped = locals.clone();
+                scoped.insert(name.clone(), element.kind.clone());
+                let mut nested = Vec::new();
+                for child in &body.stmts {
+                    lower_stmt(child, types, &mut scoped, &mut nested, errors);
+                }
+                ops.push(TypedIrOp::ForEach { name: name.clone(), iterable: value, body: nested });
+            }
         }
     }
 }
@@ -424,9 +438,24 @@ fn build_cfg_block(
             }
             StmtKind::Join { name } => blocks[cursor as usize].ops.push(TypedIrOp::Join(name.clone())),
             StmtKind::Cancel { name } => blocks[cursor as usize].ops.push(TypedIrOp::Cancel(name.clone())),
-            StmtKind::For { iterable, .. } => {
-                let _ = lower_expr(iterable, types, locals, errors);
-                errors.push("for/in iteration cannot enter typed CFG: iterator semantics are not implemented".into());
+            StmtKind::For { name, iterable, body } => {
+                if let Some(value) = lower_expr(iterable, types, locals, errors) {
+                    let Some(TypeKind::List(element)) = Some(value.ty.clone()) else {
+                        errors.push("for/in requires a typed List<T> iterable".into());
+                        continue;
+                    };
+                    let mut scoped = locals.clone();
+                    scoped.insert(name.clone(), element.kind.clone());
+                    let mut nested = Vec::new();
+                    for child in &body.stmts {
+                        lower_stmt(child, types, &mut scoped, &mut nested, errors);
+                    }
+                    blocks[cursor as usize].ops.push(TypedIrOp::ForEach {
+                        name: name.clone(),
+                        iterable: value,
+                        body: nested,
+                    });
+                }
             }
         }
     }
@@ -461,7 +490,12 @@ fn optimize_op(op: &mut TypedIrOp) {
             optimize_value(index);
             optimize_value(value);
         }
+        TypedIrOp::Return(value) => if let Some(value) = value { optimize_value(value); },
         TypedIrOp::Scope(ops) => ops.iter_mut().for_each(optimize_op),
+        TypedIrOp::ForEach { iterable, body, .. } => {
+            optimize_value(iterable);
+            body.iter_mut().for_each(optimize_op);
+        }
         TypedIrOp::Spawn { call, .. } => optimize_value(call),
         TypedIrOp::Join(_) | TypedIrOp::Cancel(_) => {}
     }
@@ -592,7 +626,13 @@ fn typed_op_to_legacy(op: &TypedIrOp) -> crate::ir::IrOp {
         TypedIrOp::Assign { name, value } => crate::ir::IrOp::Set { name: name.clone(), value: typed_value_to_legacy(value) },
         TypedIrOp::AssignIndex { collection, index, value } => crate::ir::IrOp::SetIndex { collection: typed_value_to_legacy(collection), index: typed_value_to_legacy(index), value: typed_value_to_legacy(value) },
         TypedIrOp::Expr(value) => crate::ir::IrOp::Expr(typed_value_to_legacy(value)),
+        TypedIrOp::Return(value) => crate::ir::IrOp::Return(value.as_ref().map(typed_value_to_legacy)),
         TypedIrOp::Scope(ops) => crate::ir::IrOp::Scope { ops: ops.iter().map(typed_op_to_legacy).collect() },
+        TypedIrOp::ForEach { name, iterable, body } => crate::ir::IrOp::ForEach {
+            name: name.clone(),
+            iterable: typed_value_to_legacy(iterable),
+            ops: body.iter().map(typed_op_to_legacy).collect(),
+        },
         TypedIrOp::Spawn { name, call } => crate::ir::IrOp::Spawn { name: name.clone(), call: typed_value_to_legacy(call) },
         TypedIrOp::Join(name) => crate::ir::IrOp::Join { name: name.clone() },
         TypedIrOp::Cancel(name) => crate::ir::IrOp::Cancel { name: name.clone() },

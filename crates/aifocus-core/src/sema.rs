@@ -506,11 +506,24 @@ impl Checker {
                     self.check_block(body, &mut scoped);
                     last = None;
                 }
-                StmtKind::For { iterable, .. } => {
-                    // Parse the construct for useful diagnostics, but never let it reach lowering
-                    // until element typing, ownership, and runtime iteration are implemented.
-                    let _ = self.check_expr(iterable, locals);
-                    self.error("AIF320", "for/in iteration is not implemented: typed iterator protocol, mutation/ownership rules, and deterministic native execution are required", stmt.span);
+                StmtKind::For { name, iterable, body } => {
+                    match self.check_expr(iterable, locals) {
+                        Some(Type { kind: TypeKind::List(element), .. }) => {
+                            if locals.contains_key(name) {
+                                self.error("AIF303", format!("binding '{}' shadows an existing local", name), stmt.span);
+                            } else {
+                                let mut scoped = locals.clone();
+                                scoped.insert(name.clone(), (*element).clone());
+                                self.check_block(body, &mut scoped);
+                            }
+                        }
+                        Some(other) => self.error(
+                            "AIF321",
+                            format!("for/in requires List<T>, got {}", other.display_name()),
+                            stmt.span,
+                        ),
+                        None => {}
+                    }
                     last = None;
                 }
             }

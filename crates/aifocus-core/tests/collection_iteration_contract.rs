@@ -1,9 +1,10 @@
-use ardisa_core::{compile_source, native, parse, sema, NativeError, NativeValue};
+use ardisa_core::{compile_source, native, ExecutionLimits, NativeError, NativeValue};
 
 fn execute(source: &str) -> Result<NativeValue, NativeError> {
     let compiled = compile_source(source).expect("fixture should compile to a checked native artifact");
     let program = native::decode_program(&compiled.artifact).expect("artifact should decode");
-    native::run_program(&program, "main", &[])
+    let limits = ExecutionLimits { max_instructions: 10_000, ..ExecutionLimits::default() };
+    native::run_program_with_limits(&program, "main", &[], limits)
 }
 
 #[test]
@@ -22,19 +23,14 @@ fn main() -> Int
 }
 
 #[test]
-fn for_in_iterator_syntax_is_rejected_until_implemented() {
-    let source = r#"module unsupported_for_in
+fn for_in_iterator_executes_through_the_native_backend() {
+    let source = r#"module supported_for_in
 fn main() -> Int
   let values = [1, 2, 3]
+  let total = 0
   for value in values
-    value
-  0
+    set total = total + value
+  total
 "#;
-    let module = parse(source).expect("for-in syntax should parse to a targeted diagnostic");
-    let errors = sema::analyze(&module).expect_err("for-in must remain unsupported until iterator semantics exist");
-    assert!(
-        format!("{errors:?}").contains("AIF320"),
-        "for-in should be rejected by semantic analysis with AIF320, got {errors:?}"
-    );
-    assert!(compile_source(source).is_err(), "unsupported for-in must never reach native execution");
+    assert_eq!(execute(source).unwrap(), NativeValue::Int(6));
 }

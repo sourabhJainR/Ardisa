@@ -150,25 +150,16 @@ fn main() -> Int
 }
 
 #[test]
-fn for_in_parses_but_is_rejected_by_semantic_analysis() {
-    use ardisa_core::{parse, sema};
-    let source = r#"module unsupported_for_iteration
+fn for_in_executes_after_list_slice_support() {
+    let source = r#"module for_in_after_slices
 fn main() -> Int
   let values = [1, 2, 3]
+  let total = 0
   for item in values
-    item
-  0
+    set total = total + item
+  total
 "#;
-    let module = parse(source).expect("for/in syntax should parse to a targeted diagnostic");
-    let errors = sema::analyze(&module).expect_err("for/in must be rejected until typed iteration and runtime paths exist");
-    assert!(
-        format!("{errors:?}").contains("AIF320"),
-        "unsupported iteration should fail at semantic analysis with AIF320, got: {errors:?}"
-    );
-    assert!(
-        compile_source(source).is_err(),
-        "unsupported for/in syntax must never reach native code generation"
-    );
+    assert_eq!(execute(source).unwrap(), NativeValue::Int(6));
 }
 
 #[test]

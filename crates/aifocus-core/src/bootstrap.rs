@@ -632,16 +632,17 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_compiler_rejects_for_in_until_iterator_runtime_exists() {
-        let source = "module iteration_gate\nfn main() -> Int\n  let values = [1, 2]\n  for item in values\n    item\n  0\n";
-        let module = crate::parse(source)
-            .expect("for/in source syntax should parse into an explicit AST node");
-        let errors = crate::sema::analyze(&module)
-            .expect_err("unsupported for/in iteration must be rejected by semantic analysis");
-        assert!(
-            errors.iter().any(|diagnostic| diagnostic.code == "AIF320"),
-            "unsupported iteration should report the dedicated AIF320 diagnostic, got: {errors:?}"
-        );
+    fn source_for_in_executes_through_the_native_pipeline_without_promoting_self_hosting() {
+        let source = "module iteration_gate\nfn main() -> Int\n  let values = [1, 2]\n  let total = 0\n  for item in values\n    set total = total + item\n  total\n";
+        let compiled = crate::compile_source(source)
+            .expect("supported List<T> for/in should pass the native compiler pipeline");
+        let program = crate::native::decode_program(&compiled.artifact)
+            .expect("for/in artifact should decode deterministically");
+        let result = crate::native::run_program(&program, "main", &[])
+            .expect("for/in artifact should execute");
+        assert_eq!(result, crate::native::NativeValue::Int(3));
+        // Native source iteration is not evidence that the Ardisa bootstrap compiler
+        // is self-hosting; Stage 2/3 promotion remains an independent gate.
     }
 
     #[test]

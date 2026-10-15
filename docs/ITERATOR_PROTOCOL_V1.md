@@ -1,6 +1,6 @@
 # Ardisa Core Semantics: Iterator Protocol v1
 
-Status: proposal and implementation contract. This document does not mark iteration as implemented.
+Status: source-level native iteration implemented on the Phase 2 branch; promotion remains gated on exact-head CI and remaining safety/evidence checks.
 
 ## Purpose
 
@@ -21,7 +21,7 @@ fn sum(values: List<Int>) -> Int
   total
 ```
 
-This is a target fixture, not a claim that the current compiler accepts or executes it.
+This fixture is covered by source-to-native regression tests. The current backend uses deterministic index-based lowering over a single-evaluated iterable expression; it does not add a new ARDISA-EXEC-V1 instruction.
 
 ## Semantics contract
 
@@ -41,8 +41,8 @@ This is a target fixture, not a claim that the current compiler accepts or execu
 - **AST/parser:** retain source spans and structured `For { name, iterable, body }` nodes; reject malformed headers and indentation with stable diagnostics.
 - **Semantic/type checking:** require `List<T>` for the first subset; infer the loop binding as `T`; check body operations against `T`; reject unsupported iterator protocols.
 - **Ownership:** model the iterable move and loop binding in the control-flow graph, including empty collections, nested loops, early return, and scope exit.
-- **Typed IR:** represent iterator initialization, next-element test, element binding, loop body, and exit as explicit typed operations/terminators. Do not encode control flow in strings.
-- **Native lowering and verifier:** add a bounded instruction path or a formally verified desugaring. Validate register/slot references, element type, branch targets, and iterator state before execution.
+- **Typed IR:** represent iteration as a typed structured `ForEach` operation with a typed element binding and nested body. Native lowering uses the existing length/index/branch instructions; no iterator-specific artifact opcode was added.
+- **Native lowering and verifier:** deterministic index-based desugaring uses the existing bounded VM instruction budget and verifier. The runtime currently materializes an internal value copy through existing `Load`/`Index` semantics; this is not a zero-copy iterator implementation and remains a known limitation to assess against nested-value frame budgets.
 - **Runtime:** ensure empty lists, singleton lists, nested lists, repeated loops, nested loops, and budget exhaustion behave consistently.
 - **Bootstrap:** do not add a host-Rust compiler fallback. Bootstrap parity remains a separate gate; the native compiler must not claim self-hosting solely because the host implementation supports the construct.
 
@@ -66,7 +66,7 @@ This is a target fixture, not a claim that the current compiler accepts or execu
 
 ## Promotion gate
 
-Do not remove the existing fail-closed diagnostic for `for/in` until all applicable rows above are covered by tests, the full workspace and all-target suites pass, native-phase and differential/holdout gates pass on the exact PR head, and Stage 2/3 reproducibility remains byte-identical. Keep the compatibility matrix at partial/not implemented until this evidence exists.
+The semantic fail-closed diagnostic for supported `List<T>` loops has been removed on the Phase 2 branch. Non-list iterables still fail with a stable semantic diagnostic. Do not promote Phase 2 as fully complete until alias/mutation and side-effect evaluation tests, resource-budget tests, artifact differential/holdout fixtures, full workspace/all-target tests, native-phase checks, and Stage 2/3 byte-identical reproducibility all pass on the exact PR head. The bootstrap compiler remains a separate capability gate.
 
 ## Non-goals for v1
 

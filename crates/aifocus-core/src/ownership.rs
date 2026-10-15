@@ -226,10 +226,22 @@ impl Checker {
                     self.scope_depth -= 1;
                     merge_states(locals, &scoped, true);
                 }
-                StmtKind::For { iterable, .. } => {
-                    // Treat the source expression conservatively as a shared read; semantic
-                    // analysis rejects the loop before code generation.
-                    self.check_expr(iterable, locals, AccessMode::SharedBorrow);
+                StmtKind::For { name, iterable, body } => {
+                    // Iteration consumes an owned List<T>. This aligns static move state
+                    // with the native loop's single evaluation of the iterable.
+                    let iterable_type = self.check_expr(iterable, locals, AccessMode::Move);
+                    let element_type = iterable_type.and_then(|ty| match ty.kind {
+                        TypeKind::List(element) => Some(*element),
+                        _ => None,
+                    });
+                    let mut scoped = locals.clone();
+                    if let Some(element) = element_type {
+                        scoped.insert(name.clone(), (element, State::Available));
+                    }
+                    self.scope_depth += 1;
+                    self.check_block(body, &mut scoped);
+                    self.scope_depth -= 1;
+                    merge_states(locals, &scoped, true);
                 }
                 StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
             }
