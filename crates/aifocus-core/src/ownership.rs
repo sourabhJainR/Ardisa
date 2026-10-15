@@ -241,6 +241,11 @@ impl Checker {
                     self.scope_depth += 1;
                     self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
+                    // The loop binding shadows any outer local with the same name.
+                    // Do not merge the shadow binding's state back into the outer
+                    // binding; the iterable's own move state was already recorded
+                    // before the loop scope was created.
+                    scoped.remove(name);
                     merge_states(locals, &scoped, true);
                 }
                 StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
@@ -660,6 +665,17 @@ fn f(value: String) -> String
                 (id, OwnershipTransition::BorrowStart(BorrowKind::Shared)),
             ]),
             Err("borrow remains active at scope exit")
+        );
+    }
+
+    #[test]
+    fn moving_a_shadowing_for_binding_does_not_move_the_outer_binding() {
+        let module = parse(
+            "module shadow_loop\\nfn f(values: List<String>, value: String) -> String\\n  for value in values\\n    let consumed = value\\n  value\\n",
+        ).unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "consuming a loop-local shadow must not mark the outer value moved"
         );
     }
 
