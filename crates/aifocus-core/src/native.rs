@@ -1060,23 +1060,6 @@ fn run_unicode_builtin(
     Ok(Some(value))
 }
 
-fn execute_call(
-    program: &Arc<NativeProgram>,
-    callee: &str,
-    args: &[NativeValue],
-    cancellation: Option<Arc<AtomicBool>>,
-    state: Arc<ExecutionState>,
-    depth: usize,
-) -> Result<NativeValue, NativeError> {
-    if let Some(value) = run_unicode_builtin(callee, args, state.limits)? {
-        return Ok(value);
-    }
-    let function = program.functions.get(callee).ok_or_else(|| {
-        NativeError::InvalidProgram(format!("unknown function '{callee}'"))
-    })?;
-    run_function(program, function, args, cancellation, state, depth)
-}
-
 fn run_function(
     program: &Arc<NativeProgram>,
     function: &NativeFunction,
@@ -1298,15 +1281,17 @@ fn run_function(
                 }
                 let start = stack.len() - *argc;
                 let call_args = stack.split_off(start);
-                let value = execute_call(
-                    program,
-                    callee,
-                    &call_args,
-                    cancellation.clone(),
-                    Arc::clone(&state),
-                    depth + 1,
-                )?;
-                stack.push(value);
+                if matches!(callee.as_str(), "scalar_len" | "scalar_at" | "grapheme_len" | "grapheme_at") {
+                    let value = run_unicode_builtin(callee, &call_args, state.limits)?
+                        .ok_or_else(|| NativeError::InvalidProgram(format!("unknown Unicode builtin '{callee}'")))?;
+                    stack.push(value);
+                } else {
+                    let callee_fn = program.functions.get(callee).ok_or_else(|| {
+                        NativeError::InvalidProgram(format!("unknown function '{callee}'"))
+                    })?;
+                    let value = run_function(program, callee_fn, &call_args, cancellation.clone(), Arc::clone(&state), depth + 1)?;
+                    stack.push(value);
+                }
             }
             NativeInstr::PushInt(value) => stack.push(NativeValue::Int(*value)),
             NativeInstr::PushFloat(bits) => {
