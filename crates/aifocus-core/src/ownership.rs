@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     ast::{BinaryOp, Block, Expr, ExprKind, Function, Item, Module, StmtKind, Type, TypeKind},
@@ -138,6 +138,7 @@ pub fn analyze(module: &Module) -> Result<OwnershipModel, Vec<Diagnostic>> {
         transitions: Vec::new(),
         borrow_regions: Vec::new(),
         scope_depth: 0,
+        terminated_exprs: HashSet::new(),
     };
 
     for item in &module.items {
@@ -167,6 +168,7 @@ struct Checker {
     transitions: Vec<(crate::NodeId, OwnershipTransition)>,
     borrow_regions: Vec<BorrowRegion>,
     scope_depth: usize,
+    terminated_exprs: HashSet<crate::NodeId>,
 }
 
 impl Checker {
@@ -178,8 +180,10 @@ impl Checker {
         self.check_block(&function.body, &mut locals);
     }
 
-    fn check_block(&mut self, block: &Block, locals: &mut HashMap<String, (Type, State)>) {
+    fn check_block(&mut self, block: &Block, locals: &mut HashMap<String, (Type, State)>) -> bool {
+        let mut reachable = true;
         for stmt in &block.stmts {
+            if !reachable { break; }
             match &stmt.kind {
                 StmtKind::Set { name, value } => {
                     self.check_expr(value, locals, AccessMode::Move);
@@ -205,18 +209,26 @@ impl Checker {
                     if let Some(value) = value {
                         self.check_expr(value, locals, AccessMode::Move);
                     }
+                    reachable = false;
                 }
                 StmtKind::Expr(expr) => {
                     self.check_expr(expr, locals, AccessMode::Move);
+                    if self.terminated_exprs.contains(&expr.id) {
+                        reachable = false;
+                    }
                 }
                 StmtKind::Scope { body } => {
                     self.scope_depth += 1;
                     let mut scoped = locals.clone();
-                    self.check_block(body, &mut scoped);
+                    let scope_reachable = self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
-                    // A lexical scope executes unconditionally, so assignments and
-                    // reinitializations of outer locals must propagate out of it.
-                    merge_scope_states(locals, &scoped);
+                    // Only a scope that can fall through contributes state to the
+                    // following statement. A returning scope terminates this path.
+                    if scope_reachable {
+                        merge_scope_states(locals, &scoped);
+                    } else {
+                        reachable = false;
+                    }
                 }
                 StmtKind::Spawn { call, .. } => {
                     self.check_expr(call, locals, AccessMode::Move);
@@ -254,6 +266,7 @@ impl Checker {
                 StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
             }
         }
+        reachable
     }
 
     fn check_expr(
@@ -437,25 +450,29 @@ impl Checker {
             } => {
                 self.check_expr(condition, locals, AccessMode::Move);
                 let mut then_locals = locals.clone();
-                self.check_block(then_branch, &mut then_locals);
+                let then_reachable = self.check_block(then_branch, &mut then_locals);
                 if let Some(else_branch) = else_branch {
                     let mut else_locals = locals.clone();
-                    self.check_block(else_branch, &mut else_locals);
-                    for (name, (_, state)) in locals.iter_mut() {
-                        let then_state = then_locals.get(name).map(|entry| entry.1);
-                        let else_state = else_locals.get(name).map(|entry| entry.1);
-                        // A value is available after the join only if both paths
-                        // leave it available. This also permits a moved value to be
-                        // reinitialized on every path before it is used again.
-                        if let (Some(then_state), Some(else_state)) =
-                            (then_state, else_state)
-                        {
-                            *state = join_state(then_state, else_state);
+                    let else_reachable = self.check_block(else_branch, &mut else_locals);
+                    match (then_reachable, else_reachable) {
+                        (true, true) => {
+                            for (name, (_, state)) in locals.iter_mut() {
+                                if let (Some(then_state), Some(else_state)) = (
+                                    then_locals.get(name).map(|entry| entry.1),
+                                    else_locals.get(name).map(|entry| entry.1),
+                                ) {
+                                    *state = join_state(then_state, else_state);
+                                }
+                            }
                         }
+                        (true, false) => merge_scope_states(locals, &then_locals),
+                        (false, true) => merge_scope_states(locals, &else_locals),
+                        (false, false) => { self.terminated_exprs.insert(expr.id); }
                     }
-                } else {
-                    // The branch may execute, so a move in it is conservatively
-                    // considered visible after the conditional.
+                } else if then_reachable {
+                    // The implicit false path is always reachable, so join it with
+                    // the then path. If the then path returns, only the false path
+                    // reaches the next statement and its original state is retained.
                     merge_states(locals, &then_locals);
                 }
                 Some(type_node(TypeKind::Unit, expr))
@@ -803,6 +820,16 @@ fn f(value: String) -> String
         let errors = infer(&module).unwrap_err();
         assert!(errors.iter().any(|error| error.code == "AIF400"));
         assert!(errors.iter().any(|error| error.message.contains("use of moved value")));
+    }
+
+    #[test]
+    fn ownership_join_ignores_a_branch_that_returns_early() {
+        let module = parse(
+            "module early_return_join\\nfn f(flag: Bool, value: String) -> String\\n  if flag\\n    return value\\n  else\\n    set value = \\\"restored\\\"\\n  value\\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(infer(&module).is_ok(), "the returning branch must not poison the state of the only path that reaches the final use");
     }
 
 }
