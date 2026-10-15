@@ -620,6 +620,15 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_compiler_rejects_for_in_until_iterator_runtime_exists() {
+        let source = "module iteration_gate\nfn main() -> Int\n  let values = [1, 2]\n  for item in values\n    item\n  0\n";
+        let tokens = lex_source(source);
+        let parsed = parse_tokens(&tokens);
+        let ast = build_ast(&parsed);
+        assert_eq!(check_ast(&ast), "Err:unsupported-iteration");
+    }
+
+    #[test]
     fn manifest_explicitly_models_three_bootstrap_stages() {
         let manifest = stage_manifest();
         assert_eq!(manifest.len(), 3);
