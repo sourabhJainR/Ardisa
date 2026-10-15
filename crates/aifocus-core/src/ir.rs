@@ -198,6 +198,11 @@ fn value_to_ir(expr: &Expr) -> IrValue {
             collection: Box::new(value_to_ir(collection)),
             index: Box::new(value_to_ir(index)),
         },
+        ExprKind::Slice { collection, start, end } => IrValue::Slice {
+            collection: Box::new(value_to_ir(collection)),
+            start: Box::new(value_to_ir(start)),
+            end: Box::new(value_to_ir(end)),
+        },
         ExprKind::Name(name) => IrValue::Name(name.clone()),
         ExprKind::Group(inner) => value_to_ir(inner),
         ExprKind::Binary { op, left, right } => IrValue::Binary {
