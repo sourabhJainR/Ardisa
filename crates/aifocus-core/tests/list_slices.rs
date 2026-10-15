@@ -233,3 +233,100 @@ fn main() -> Int
         "string slice end is a UTF-8 byte offset and must be within byte length"
     );
 }
+
+#[test]
+fn unicode_scalar_apis_are_distinct_from_byte_indexing() {
+    let count = r#"module scalar_count
+fn main() -> Int
+  scalar_len("Aé😀")
+"#;
+    assert_eq!(execute(count).unwrap(), NativeValue::Int(3));
+
+    let at = r#"module scalar_index
+fn main() -> Int
+  len(scalar_at("Aé😀", 2))
+"#;
+    assert_eq!(execute(at).unwrap(), NativeValue::Int(4));
+
+    let negative = r#"module scalar_index_negative
+fn main() -> Int
+  let index = 0 - 1
+  len(scalar_at("Aé", index))
+"#;
+    assert!(matches!(execute(negative), Err(NativeError::Type(message)) if message.contains("negative Unicode scalar index")));
+}
+
+#[test]
+fn grapheme_apis_keep_combining_marks_flags_and_zwj_emoji_together() {
+    let count = r#"module grapheme_count
+fn main() -> Int
+  grapheme_len("é🇮🇳👨‍👩‍👧‍👦")
+"#;
+    assert_eq!(execute(count).unwrap(), NativeValue::Int(3));
+
+    let combining = r#"module grapheme_combining
+fn main() -> Int
+  len(grapheme_at("éX", 0))
+"#;
+    assert_eq!(execute(combining).unwrap(), NativeValue::Int(3), "e plus combining acute is one grapheme but three UTF-8 bytes");
+
+    let flag = r#"module grapheme_flag
+fn main() -> Int
+  len(grapheme_at("A🇮🇳B", 1))
+"#;
+    assert_eq!(execute(flag).unwrap(), NativeValue::Int(8), "regional-indicator flag is one grapheme");
+
+    let family = r#"module grapheme_family
+fn main() -> Int
+  len(grapheme_at("👨‍👩‍👧‍👦", 0))
+"#;
+    assert_eq!(execute(family).unwrap(), NativeValue::Int(25), "ZWJ family emoji is one grapheme");
+
+    let oob = r#"module grapheme_oob
+fn main() -> Int
+  grapheme_len(grapheme_at("x", 1))
+"#;
+    assert!(matches!(execute(oob), Err(NativeError::Type(message)) if message.contains("grapheme index out of bounds")));
+}
+
+
+#[test]
+fn scalar_and_grapheme_apis_reject_negative_and_out_of_range_indices() {
+    let scalar_negative = r#"module scalar_negative_bound
+fn main() -> Int
+  let index = 0 - 1
+  scalar_len(scalar_at("é", index))
+"#;
+    assert!(
+        matches!(execute(scalar_negative), Err(NativeError::Type(message)) if message.contains("negative Unicode scalar index")),
+        "negative scalar indexes must fail explicitly"
+    );
+
+    let scalar_oob = r#"module scalar_oob_bound
+fn main() -> Int
+  scalar_len(scalar_at("é", 1))
+"#;
+    assert!(
+        matches!(execute(scalar_oob), Err(NativeError::Type(message)) if message.contains("scalar index out of bounds")),
+        "scalar indexes at the scalar count must fail explicitly"
+    );
+
+    let grapheme_negative = r#"module grapheme_negative_bound
+fn main() -> Int
+  let index = 0 - 1
+  grapheme_len(grapheme_at("🇮🇳", index))
+"#;
+    assert!(
+        matches!(execute(grapheme_negative), Err(NativeError::Type(message)) if message.contains("negative Unicode grapheme index")),
+        "negative grapheme indexes must fail explicitly"
+    );
+
+    let grapheme_oob = r#"module grapheme_oob_bound
+fn main() -> Int
+  grapheme_len(grapheme_at("🇮🇳", 1))
+"#;
+    assert!(
+        matches!(execute(grapheme_oob), Err(NativeError::Type(message)) if message.contains("grapheme index out of bounds")),
+        "grapheme indexes at the grapheme count must fail explicitly"
+    );
+}
