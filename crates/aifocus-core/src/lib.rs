@@ -22,6 +22,7 @@ pub mod evidence;
 pub mod format;
 pub mod fuzz;
 pub mod interop;
+pub mod iterator;
 pub mod ir;
 pub mod learning;
 pub mod kv_cache;
@@ -59,6 +60,7 @@ pub use effects::{EffectKind, EffectModel, FunctionEffects};
 pub use engineering_feedback::{CapabilityFeedback, EpisodeOutcome, VerificationDepth};
 pub use evidence::{CapabilityDecision, CapabilityEvaluation, EvidenceEnvelope, EvidenceGraph, EvidenceSourceVerifier};
 pub use fuzz::{GeneratedCase, generate as generate_fuzz_case};
+pub use iterator::{IteratorError, OwnedListIterator};
 pub use interop::{
     AbiParameterContract, InteropType, OwnershipContract, RustFunction, SafeRustBoundary,
 };
