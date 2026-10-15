@@ -129,6 +129,10 @@ pub fn lower(module: &Module) -> IrModule {
                             condition: value_to_ir(condition),
                             ops: block_to_ops(body),
                         }),
+                        StmtKind::For { .. } => {
+                            // Semantic analysis rejects for/in before this compatibility IR is used.
+                            // Do not silently desugar unsupported iteration into a different behavior.
+                        }
                     }
                 }
                 IrFunction {
