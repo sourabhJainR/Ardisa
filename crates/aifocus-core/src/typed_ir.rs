@@ -581,6 +581,7 @@ fn typed_value_to_legacy(value: &TypedValue) -> crate::ir::IrValue {
         TypedValueKind::Name(v) => crate::ir::IrValue::Name(v.clone()),
         TypedValueKind::List(values) => crate::ir::IrValue::List(values.iter().map(typed_value_to_legacy).collect()),
         TypedValueKind::Index(c, i) => crate::ir::IrValue::Index { collection: Box::new(typed_value_to_legacy(c)), index: Box::new(typed_value_to_legacy(i)) },
+        TypedValueKind::Slice { collection, start, end } => crate::ir::IrValue::Slice { collection: Box::new(typed_value_to_legacy(collection)), start: Box::new(typed_value_to_legacy(start)), end: Box::new(typed_value_to_legacy(end)) },
         TypedValueKind::Binary { op, left, right } => crate::ir::IrValue::Binary { op: *op, left: Box::new(typed_value_to_legacy(left)), right: Box::new(typed_value_to_legacy(right)) },
         TypedValueKind::Call { callee, args } => crate::ir::IrValue::Call { callee: callee.clone(), args: args.iter().map(typed_value_to_legacy).collect() },
         TypedValueKind::If { condition, then_ops, else_ops } => crate::ir::IrValue::If {
