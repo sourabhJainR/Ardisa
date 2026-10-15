@@ -551,4 +551,41 @@ fn main() -> Int
         );
     }
 
+
+    #[test]
+    fn result_ok_unwrap_survives_source_to_native_round_trip() {
+        let source = r#"module result_ok_unwrap
+fn main() -> Result<Int, String>
+  return ok(unwrap(ok(42)))
+"#;
+        let compiled = compile_source(source).expect("well-typed Result::Ok unwrap compiles");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("Ok unwrap executes"),
+            native::NativeValue::ResultOk(Box::new(native::NativeValue::Int(42)))
+        );
+        assert_eq!(
+            native::encode_program(&program).expect("artifact re-encodes"),
+            compiled.artifact,
+            "Result artifact round-tripping must remain deterministic"
+        );
+    }
+
+    #[test]
+    fn result_err_unwrap_is_a_runtime_error_not_silent_value_conversion() {
+        let source = r#"module result_err_unwrap
+fn main() -> Result<Int, String>
+  return ok(unwrap(err("failure")))
+"#;
+        let compiled = compile_source(source).expect("unwrap failure remains a runtime semantic");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert!(
+            matches!(
+                native::run_program(&program, "main", &[]),
+                Err(native::NativeError::Type(message)) if message == "unwrap on Err"
+            ),
+            "Err must not be silently converted to a value or lost"
+        );
+    }
+
 }
