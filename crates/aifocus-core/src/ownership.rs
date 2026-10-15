@@ -1244,4 +1244,108 @@ fn f(value: String) -> String
     }
 
 
+
+    #[test]
+    fn indexed_assignment_rejects_reading_the_mutably_borrowed_collection() {
+        let module = parse(
+            "module indexed_assignment_alias
+fn f(values: List<List<Int>>) -> Int
+  set values[0] = values[0]
+  0
+",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.code == "AIF404"),
+            "the mutable borrow must span the entire indexed assignment, including its value"
+        );
+    }
+
+    #[test]
+    fn indexed_assignment_allows_an_independent_value() {
+        let module = parse(
+            "module indexed_assignment_safe
+fn f(values: List<Int>) -> Int
+  set values[0] = 7
+  len(values)
+",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(infer(&module).is_ok());
+    }
+
+    fn run_owned_collection_case(source: &str) -> crate::NativeValue {
+        let compiled = crate::compile_source(source)
+            .expect("source should compile through the complete native pipeline");
+        let program = crate::native::decode_program(&compiled.artifact)
+            .expect("compiled artifact should decode");
+        crate::native::run_program_with_limits(
+            &program,
+            "f",
+            &[crate::NativeValue::List(vec![
+                crate::NativeValue::String("item".into()),
+            ])],
+            crate::ExecutionLimits::default(),
+        )
+        .expect("native execution should succeed")
+    }
+
+    #[test]
+    fn moving_an_indexed_element_does_not_move_the_source_collection() {
+        let module = parse(
+            "module indexed_value_is_owned\nfn f(values: List<String>) -> Int\n  let selected = values[0]\n  let consumed = selected\n  len(values)\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(
+            infer(&module).is_ok(),
+            "indexing yields an owned element in the current runtime contract; moving it must not invalidate the source collection"
+        );
+    }
+
+    #[test]
+    fn moving_an_owned_slice_does_not_move_the_source_collection() {
+        let module = parse(
+            "module slice_value_is_owned\nfn f(values: List<String>) -> Int\n  let selected = values[0:1]\n  let consumed = selected\n  len(values)\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(
+            infer(&module).is_ok(),
+            "slicing currently creates an owned copy rather than a borrowed view"
+        );
+    }
+
+    #[test]
+    fn indexed_element_move_preserves_source_collection_at_runtime() {
+        let source = "module indexed_runtime
+fn f(values: List<String>) -> Int
+  let selected = values[0]
+  let consumed = selected
+  len(values)
+";
+        assert_eq!(
+            run_owned_collection_case(source),
+            crate::NativeValue::Int(1),
+            "moving the copied indexed element must not consume the source list"
+        );
+    }
+
+    #[test]
+    fn slice_result_move_preserves_source_collection_at_runtime() {
+        let source = "module slice_runtime
+fn f(values: List<String>) -> Int
+  let selected = values[0:1]
+  let consumed = selected
+  len(values)
+";
+        assert_eq!(
+            run_owned_collection_case(source),
+            crate::NativeValue::Int(1),
+            "moving the owned slice must not consume the source list"
+        );
+    }
+
 }
