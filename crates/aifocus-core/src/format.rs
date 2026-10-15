@@ -149,6 +149,14 @@ fn format_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
             out.push('\n');
             format_block(body, indent + 2, out);
         }
+        StmtKind::For { name, iterable, body } => {
+            out.push_str("for ");
+            out.push_str(name);
+            out.push_str(" in ");
+            format_expr(iterable, indent, out);
+            out.push('\n');
+            format_block(body, indent + 2, out);
+        }
     }
 }
 
