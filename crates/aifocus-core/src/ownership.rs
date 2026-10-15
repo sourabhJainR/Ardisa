@@ -249,7 +249,7 @@ impl Checker {
                     // binding; the iterable's own move state was already recorded
                     // before the loop scope was created.
                     scoped.remove(name);
-                    merge_states(locals, &scoped, true);
+                    merge_states(locals, &scoped);
                 }
                 StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
             }
@@ -767,6 +767,18 @@ fn f(value: String) -> String
         .unwrap();
         assert!(crate::sema::check(&module).is_ok());
         assert!(infer(&module).is_ok());
+    }
+
+    #[test]
+    fn reinitialization_on_only_one_if_path_remains_path_dependent() {
+        let module = parse(
+            "module branch_partial_reinit\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  if flag\n    set value = \"restored\"\n  value\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+        assert!(errors.iter().any(|error| error.message.contains("possibly moved")));
     }
 
 }
