@@ -15,7 +15,7 @@
 |---|---|---|
 | Functions, parameters, return types | Partial | Function syntax and basic type checking exist; complete Rust type inference and function-item semantics are not established. |
 | Primitive scalar types and arithmetic | Partial | Int, Bool, Unit, Float/native arithmetic exist in parts of the compiler/runtime; numeric conversions, overflow policy, and full Rust numeric semantics are not equivalent. |
-| Strings and lists | Partial | String/list values and basic operations exist; ownership, borrowing, slices, Unicode semantics, and full standard-library behavior differ or are incomplete. |
+| Strings and lists | Partial | UTF-8 strings use byte length/indexing; list indexing/mutation and half-open copy-on-slice `List[start:end]` exist with explicit bounds/resource checks. String slices, iterator syntax, borrowed views, Rust ownership/drop parity, Unicode scalar/grapheme indexing, and full standard-library behavior remain unsupported. |
 | Generic types | Partial | Generic type syntax exists for selected types; generic function/type declaration, trait bounds, monomorphization and associated types are not established as a complete system. |
 | Structs, tuple structs, enums, union types | Not implemented / not evidenced | AST does not show general user-defined record/enum declarations or Rust pattern semantics. |
 | Pattern matching (match, if let, let else) | Not implemented / not evidenced | Current AST has if expressions but no general pattern AST or exhaustiveness checker. |
