@@ -123,3 +123,51 @@ fn main() -> Int
         "append must fail closed when the configured item budget is reached"
     );
 }
+
+
+#[test]
+fn slice_instruction_encoding_is_deterministic_across_decode_encode() {
+    let source = r#"module deterministic_slice_artifact
+fn main() -> Int
+  let values = [5, 8, 13, 21]
+  len(values[1:3])
+"#;
+    let compiled = compile_source(source).expect("slice fixture should compile");
+    let first = native::decode_program(&compiled.artifact).expect("artifact should decode");
+    let encoded_again = native::encode_program(&first);
+    assert_eq!(encoded_again, compiled.artifact, "slice instruction encoding must round-trip byte-for-byte");
+    let second = native::decode_program(&encoded_again).expect("re-encoded artifact should decode");
+    assert_eq!(native::run_program(&first, "main", &[]).unwrap(), NativeValue::Int(2));
+    assert_eq!(native::run_program(&second, "main", &[]).unwrap(), NativeValue::Int(2));
+}
+
+#[test]
+fn iteration_syntax_is_rejected_until_iterator_semantics_exist() {
+    let source = r#"module unsupported_for_iteration
+fn main() -> Int
+  let values = [1, 2, 3]
+  for item in values
+    item
+  0
+"#;
+    assert!(
+        compile_source(source).is_err(),
+        "for/in iteration must not be accepted until iterator typing, ownership, and runtime semantics exist"
+    );
+}
+
+#[test]
+fn list_construction_fails_closed_at_configured_collection_limit() {
+    let source = r#"module list_item_limit
+fn main() -> Int
+  let values = [1, 2, 3]
+  len(values)
+"#;
+    let compiled = compile_source(source).expect("fixture should compile before runtime limits are applied");
+    let program = native::decode_program(&compiled.artifact).expect("artifact should decode");
+    let limits = native::ExecutionLimits { max_collection_items: 2, ..native::ExecutionLimits::default() };
+    assert!(
+        matches!(native::run_program_with_limits(&program, "main", &[], limits), Err(NativeError::ResourceLimit(message)) if message.contains("collection")),
+        "constructing a list above the item budget must fail with ResourceLimit"
+    );
+}
