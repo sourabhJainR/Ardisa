@@ -668,6 +668,35 @@ fn emit_op(op: &IrOp, code: &mut Vec<NativeInstr>) -> Result<(), NativeError> {
             let end = code.len();
             code[jump_if] = NativeInstr::JumpIfFalse(end);
         }
+        IrOp::For { id, name, iterable, ops } => {
+            let collection_name = format!("__ardisa_for_{id}_collection");
+            let index_name = format!("__ardisa_for_{id}_index");
+            emit_value(iterable, code)?;
+            code.push(NativeInstr::Store(collection_name.clone()));
+            code.push(NativeInstr::PushInt(0));
+            code.push(NativeInstr::Store(index_name.clone()));
+            let loop_start = code.len();
+            code.push(NativeInstr::Load(index_name.clone()));
+            code.push(NativeInstr::Load(collection_name.clone()));
+            code.push(NativeInstr::Len);
+            code.push(NativeInstr::Less);
+            let jump_if = code.len();
+            code.push(NativeInstr::JumpIfFalse(usize::MAX));
+            code.push(NativeInstr::Load(collection_name.clone()));
+            code.push(NativeInstr::Load(index_name.clone()));
+            code.push(NativeInstr::Index);
+            code.push(NativeInstr::Store(name.clone()));
+            for op in ops {
+                emit_op(op, code)?;
+            }
+            code.push(NativeInstr::Load(index_name.clone()));
+            code.push(NativeInstr::PushInt(1));
+            code.push(NativeInstr::Add);
+            code.push(NativeInstr::Store(index_name));
+            code.push(NativeInstr::Jump(loop_start));
+            let end = code.len();
+            code[jump_if] = NativeInstr::JumpIfFalse(end);
+        }
         IrOp::Scope { ops } => {
             code.push(NativeInstr::ScopeStart);
             for op in ops {
