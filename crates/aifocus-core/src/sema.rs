@@ -377,16 +377,35 @@ impl Checker {
         if let Some(expected) = &function.return_type {
             if let Some(actual) = block_type {
                 if !same_type(&actual, expected) {
-                    self.error(
-                        "AIF302",
-                        format!(
-                            "function '{}' returns {}, expected {}",
-                            function.name,
-                            actual.display_name(),
-                            expected.display_name()
-                        ),
-                        function.body.span,
-                    );
+                    let result_error_mismatch = match (&actual.kind, &expected.kind) {
+                        (TypeKind::Result(actual_ok, actual_err), TypeKind::Result(expected_ok, expected_err))
+                            if same_type(actual_ok, expected_ok) && !same_type(actual_err, expected_err) =>
+                        {
+                            Some((actual_err.display_name(), expected_err.display_name()))
+                        }
+                        _ => None,
+                    };
+                    if let Some((actual_error, expected_error)) = result_error_mismatch {
+                        self.error(
+                            "AIF333",
+                            format!(
+                                "function '{}' returns Result with error type {}, expected {}; implicit error conversion is unsupported",
+                                function.name, actual_error, expected_error
+                            ),
+                            function.body.span,
+                        );
+                    } else {
+                        self.error(
+                            "AIF302",
+                            format!(
+                                "function '{}' returns {}, expected {}",
+                                function.name,
+                                actual.display_name(),
+                                expected.display_name()
+                            ),
+                            function.body.span,
+                        );
+                    }
                 }
             }
         }
