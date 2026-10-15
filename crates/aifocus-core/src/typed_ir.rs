@@ -513,6 +513,11 @@ fn optimize_value(value: &mut TypedValue) {
             optimize_value(collection);
             optimize_value(index);
         }
+        TypedValueKind::Slice { collection, start, end } => {
+            optimize_value(collection);
+            optimize_value(start);
+            optimize_value(end);
+        }
         TypedValueKind::Call { args, .. } => args.iter_mut().for_each(optimize_value),
         TypedValueKind::If { condition, then_ops, else_ops } => {
             optimize_value(condition);
