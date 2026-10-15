@@ -4866,4 +4866,67 @@ mod activation_cache_adversarial_hardening_tests {
             );
         }
     }
+
+    #[test]
+    fn early_return_cancels_and_joins_scoped_worker() {
+        let program = NativeProgram {
+            functions: BTreeMap::from([
+                ("worker".into(), NativeFunction {
+                    params: vec![],
+                    code: vec![NativeInstr::Jump(0)],
+                }),
+                ("main".into(), NativeFunction {
+                    params: vec![],
+                    code: vec![
+                        NativeInstr::ScopeStart,
+                        NativeInstr::Spawn { name: "worker".into(), callee: "worker".into(), argc: 0 },
+                        NativeInstr::PushInt(7),
+                        NativeInstr::Return,
+                        NativeInstr::ScopeEnd,
+                    ],
+                }),
+            ]),
+        };
+        let result = run_program_with_limits(
+            &program,
+            "main",
+            &[],
+            ExecutionLimits { max_instructions: usize::MAX, ..ExecutionLimits::default() },
+        )
+        .expect("returning from a scope must cancel and join its outstanding worker");
+        assert_eq!(result, NativeValue::Int(7));
+    }
+
+    #[test]
+    fn runtime_error_cancels_and_joins_scoped_worker() {
+        let program = NativeProgram {
+            functions: BTreeMap::from([
+                ("worker".into(), NativeFunction {
+                    params: vec![],
+                    code: vec![NativeInstr::Jump(0)],
+                }),
+                ("main".into(), NativeFunction {
+                    params: vec![],
+                    code: vec![
+                        NativeInstr::ScopeStart,
+                        NativeInstr::Spawn { name: "worker".into(), callee: "worker".into(), argc: 0 },
+                        NativeInstr::PushBool(true),
+                        NativeInstr::PushInt(1),
+                        NativeInstr::Add,
+                        NativeInstr::Return,
+                        NativeInstr::ScopeEnd,
+                    ],
+                }),
+            ]),
+        };
+        let error = run_program_with_limits(
+            &program,
+            "main",
+            &[],
+            ExecutionLimits { max_instructions: usize::MAX, ..ExecutionLimits::default() },
+        )
+        .expect_err("a type failure must unwind the active task scope");
+        assert!(matches!(error, NativeError::Type(_)), "unexpected result: {error:?}");
+    }
+
 }
