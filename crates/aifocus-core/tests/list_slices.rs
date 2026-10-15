@@ -330,3 +330,36 @@ fn main() -> Int
         "grapheme indexes at the grapheme count must fail explicitly"
     );
 }
+
+
+#[test]
+fn nested_list_slice_is_an_independent_deep_copy() {
+    let source = r#"module nested_slice_copy
+fn main() -> Int
+  let values = [[1, 2], [3, 4]]
+  let part = values[0:1]
+  set part[0] = [9, 9]
+  values[0][0] + part[0][0] + len(values[0]) + len(part[0])
+"#;
+    assert_eq!(
+        execute(source).unwrap(),
+        NativeValue::Int(1 + 9 + 2 + 2),
+        "mutating a nested slot in the slice must not mutate the source list"
+    );
+}
+
+#[test]
+fn nested_values_are_checked_against_runtime_collection_limits() {
+    let source = r#"module nested_collection_limit
+fn main() -> Int
+  let values = [[1, 2, 3], [4, 5, 6]]
+  len(values[0:1])
+"#;
+    let compiled = compile_source(source).expect("fixture should compile");
+    let program = native::decode_program(&compiled.artifact).expect("artifact should decode");
+    let limits = native::ExecutionLimits { max_collection_items: 2, ..native::ExecutionLimits::default() };
+    assert!(
+        matches!(native::run_program_with_limits(&program, "main", &[], limits), Err(NativeError::ResourceLimit(message)) if message.contains("collection")),
+        "nested lists must not bypass configured per-collection item limits"
+    );
+}
