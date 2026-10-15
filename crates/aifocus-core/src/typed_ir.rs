@@ -168,6 +168,7 @@ pub enum TypedTerminator {
     Return(Option<TypedValue>),
     Branch { condition: TypedValue, then_block: u32, else_block: u32 },
     Loop { condition: TypedValue, body_block: u32, exit_block: u32 },
+    For { id: u64, name: String, iterable: TypedValue, body_block: u32, exit_block: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -397,6 +398,29 @@ fn build_cfg_block(
                 blocks[exit_block as usize].terminator = TypedTerminator::Fallthrough;
                 cursor = exit_block;
             }
+            StmtKind::For { name, iterable, body } => {
+                let header = cursor;
+                let body_block = new_cfg_block(blocks);
+                let exit_block = new_cfg_block(blocks);
+                if let Some(value) = lower_expr(iterable, types, locals, errors) {
+                    if let TypeKind::List(element) = &value.ty {
+                        blocks[header as usize].terminator = TypedTerminator::For {
+                            id: stmt.id.0, name: name.clone(), iterable: value, body_block, exit_block,
+                        };
+                        let mut scoped = locals.clone();
+                        scoped.insert(name.clone(), (**element).clone());
+                        let nested_entry = build_cfg_block(body, types, &mut scoped, blocks, errors, false);
+                        if nested_entry != body_block {
+                            blocks[body_block as usize] = blocks[nested_entry as usize].clone();
+                            blocks[body_block as usize].id = body_block;
+                        }
+                        blocks[exit_block as usize].terminator = TypedTerminator::Fallthrough;
+                        cursor = exit_block;
+                    } else {
+                        errors.push("for-in typed IR requires List<T>".into());
+                    }
+                }
+            }
             StmtKind::Return(value) => {
                 let value = value.as_ref().and_then(|e| lower_expr(e, types, locals, errors));
                 blocks[cursor as usize].terminator = TypedTerminator::Return(value);
@@ -573,6 +597,11 @@ fn flatten_cfg(function: &TypedIrFunction) -> Vec<crate::ir::IrOp> {
                 TypedTerminator::Loop { condition, body_block, exit_block } => {
                     let body_ops = flatten_sequence(function, *body_block, &mut std::collections::HashSet::new());
                     out.push(crate::ir::IrOp::While { condition: typed_value_to_legacy(condition), ops: body_ops });
+                    cursor = Some(*exit_block);
+                }
+                TypedTerminator::For { id, name, iterable, body_block, exit_block } => {
+                    let body_ops = flatten_sequence(function, *body_block, &mut std::collections::HashSet::new());
+                    out.push(crate::ir::IrOp::For { id: *id, name: name.clone(), iterable: typed_value_to_legacy(iterable), ops: body_ops });
                     cursor = Some(*exit_block);
                 }
                 // General CFG branches are not yet representable in the legacy IR.
