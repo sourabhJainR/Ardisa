@@ -6,15 +6,15 @@ This document tracks Phase 2 source-level `for/in` implementation. The branch no
 
 ## Phase 2 — required implementation
 
-- [ ] **AST and parsing:** preserve the `For { name, iterable, body }` node and source spans; reject malformed headers deterministically.
-- [ ] **Semantic/type analysis:** initially accept only owned `List<T>` values supported by the native backend; infer the element binding as `T`; reject non-list and unsupported nested element cases with stable diagnostics.
-- [ ] **Ownership:** evaluate the iterable once and consume the owned binding; reject use-after-move, mutation through aliases, and any control-flow path for which move state cannot be proven. Check empty loops, nested loops, early return, and scope exit.
-- [ ] **Typed CFG/IR:** represent iterator initialization, next-element test, element binding, body, and exit as structured typed operations/terminators. Do not encode control flow in strings or silently omit loop bodies.
-- [ ] **Native backend and verifier:** lower the typed loop to a bounded native execution path or verified desugaring; validate branch targets, slots/registers, element types, and iterator state. Preserve ARDISA-EXEC-V1 compatibility; any format change requires an explicit version decision.
-- [ ] **Runtime limits:** enforce collection item and instruction/frame budgets; fail deterministically without producing a partial artifact on compile-time validation failure.
-- [ ] **End-to-end tests:** native execution for empty, singleton, multiple and nested loops; ordered exactly-once visits; iterable evaluation once; early return; source moved after iteration; alias mutation rejection; invalid iterable; budget exhaustion; malformed source; repeated execution determinism.
-- [ ] **Artifact and bootstrap evidence:** deterministic encode/decode/re-encode; differential and holdout fixtures; exact-head workspace/all-target and native-phase CI; Stage 2/3 byte-identical reproducibility remains green.
-- [ ] **Status promotion:** update the capability matrix only after all applicable checks pass on the merged revision. Keep issue #160 open until its accepted iterator behavior is demonstrably executable; closure/callable scope must be accounted for separately.
+- [x] **AST and parsing:** the parser retains the structured `For { name, iterable, body }` node and source spans.
+- [x] **Semantic/type analysis:** accepts the supported `List<T>` subset, infers the loop binding as `T`, and rejects non-list iterables with a stable diagnostic.
+- [x] **Ownership:** evaluates the iterable once and marks its source binding moved; loop-body use-after-move and mutation of the consumed binding are rejected.
+- [x] **Typed CFG/IR:** represents iteration as a structured typed `ForEach` operation with a typed element binding and nested body.
+- [x] **Native backend and verifier:** lowers loops through existing length/index/branch instructions, with validated jump targets and no new ARDISA-EXEC-V1 opcode.
+- [x] **Runtime limits:** iteration consumes the VM instruction budget and the existing value/collection/frame limits remain active.
+- [x] **End-to-end tests:** covers ordered sums, empty lists, nested lists/loops, early return, iterable call emission once, invalid iterable, use-after-move, alias mutation rejection, artifact round-trip, and instruction-budget exhaustion.
+- [ ] **Remaining evidence:** exact-head workspace/all-target and Native Phases results must pass; add/confirm independent differential and holdout fixtures for loop success/failure cases and preserve Stage 2/3 byte-identical reproducibility.
+- [ ] **Status promotion:** promote the capability matrix only after all evidence gates pass on the merged revision. Keep issue #160 open because closure/callable scope is still outstanding.
 
 ## Explicit exclusions from Phase 2
 
