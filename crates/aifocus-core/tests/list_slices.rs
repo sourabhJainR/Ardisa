@@ -179,3 +179,59 @@ fn main() -> Int
         "constructing a list above the item budget must fail with ResourceLimit"
     );
 }
+
+
+#[test]
+fn unicode_scalar_apis_are_distinct_from_byte_indexing() {
+    let count = r#"module scalar_count
+fn main() -> Int
+  scalar_len("Aé😀")
+"#;
+    assert_eq!(execute(count).unwrap(), NativeValue::Int(3));
+
+    let at = r#"module scalar_index
+fn main() -> Int
+  len(scalar_at("Aé😀", 2))
+"#;
+    assert_eq!(execute(at).unwrap(), NativeValue::Int(4));
+
+    let negative = r#"module scalar_index_negative
+fn main() -> Int
+  let index = 0 - 1
+  len(scalar_at("Aé", index))
+"#;
+    assert!(matches!(execute(negative), Err(NativeError::Type(message)) if message.contains("negative Unicode scalar index")));
+}
+
+#[test]
+fn grapheme_apis_keep_combining_marks_flags_and_zwj_emoji_together() {
+    let count = r#"module grapheme_count
+fn main() -> Int
+  grapheme_len("é🇮🇳👨‍👩‍👧‍👦")
+"#;
+    assert_eq!(execute(count).unwrap(), NativeValue::Int(3));
+
+    let combining = r#"module grapheme_combining
+fn main() -> Int
+  len(grapheme_at("éX", 0))
+"#;
+    assert_eq!(execute(combining).unwrap(), NativeValue::Int(3), "e plus combining acute is one grapheme but three UTF-8 bytes");
+
+    let flag = r#"module grapheme_flag
+fn main() -> Int
+  len(grapheme_at("A🇮🇳B", 1))
+"#;
+    assert_eq!(execute(flag).unwrap(), NativeValue::Int(8), "regional-indicator flag is one grapheme");
+
+    let family = r#"module grapheme_family
+fn main() -> Int
+  len(grapheme_at("👨‍👩‍👧‍👦", 0))
+"#;
+    assert_eq!(execute(family).unwrap(), NativeValue::Int(25), "ZWJ family emoji is one grapheme");
+
+    let oob = r#"module grapheme_oob
+fn main() -> Int
+  grapheme_len(grapheme_at("x", 1))
+"#;
+    assert!(matches!(execute(oob), Err(NativeError::Type(message)) if message.contains("grapheme index out of bounds")));
+}
