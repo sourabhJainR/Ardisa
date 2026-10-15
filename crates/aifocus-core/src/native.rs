@@ -94,10 +94,6 @@ pub enum NativeInstr {
     Index,
     /// Copy the half-open range [start, end) from a List into a new owned List.
     Slice,
-    /// Count Unicode scalar values (not bytes or grapheme clusters).
-    ScalarLen,
-    /// Return one Unicode scalar as a one-scalar String by scalar index.
-    ScalarAt,
     Len,
     Append(String),
     MakeOk,
@@ -900,10 +896,6 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 emit_value(&args[2], code)?;
                 emit_value(&args[3], code)?;
                 code.push(NativeInstr::ContextAppend { name: name.clone() });
-            } else if callee == "scalar_len" && args.len() == 1 {
-                code.push(NativeInstr::ScalarLen);
-            } else if callee == "scalar_at" && args.len() == 2 {
-                code.push(NativeInstr::ScalarAt);
             } else if callee == "len" && args.len() == 1 {
                 code.push(NativeInstr::Len);
             } else if callee == "push" && args.len() == 2 {
@@ -1122,8 +1114,6 @@ fn run_function(
                 | NativeInstr::PushList(_)
                 | NativeInstr::Index
                 | NativeInstr::Slice
-                | NativeInstr::ScalarLen
-                | NativeInstr::ScalarAt
                 | NativeInstr::Len
                 | NativeInstr::Append(_)
                 | NativeInstr::MakeOk
@@ -1913,21 +1903,6 @@ fn run_function(
                     _ => return Err(NativeError::Type("slicing requires List<T> or String".into())),
                 }
             }
-            NativeInstr::ScalarLen => {
-                let value = stack.pop().ok_or_else(|| NativeError::InvalidProgram("scalar_len from empty stack".into()))?;
-                let NativeValue::String(value) = value else { return Err(NativeError::Type("scalar_len requires String".into())); };
-                let count = value.chars().count();
-                if count > state.limits.max_collection_items { return Err(NativeError::ResourceLimit("Unicode scalar count exceeds collection item limit".into())); }
-                stack.push(NativeValue::Int(count as i64));
-            }
-            NativeInstr::ScalarAt => {
-                let index = pop_int(&mut stack)?;
-                let value = stack.pop().ok_or_else(|| NativeError::InvalidProgram("scalar_at from empty stack".into()))?;
-                let NativeValue::String(value) = value else { return Err(NativeError::Type("scalar_at requires String".into())); };
-                let index = usize::try_from(index).map_err(|_| NativeError::Type("negative Unicode scalar index".into()))?;
-                let scalar = value.chars().nth(index).ok_or_else(|| NativeError::Type("Unicode scalar index out of bounds".into()))?;
-                stack.push(NativeValue::String(scalar.to_string()));
-            }
             NativeInstr::Len => {
                 let value = stack
                     .pop()
@@ -2396,7 +2371,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::PushUnit => "PushUnit".into(),
         NativeInstr::PushString(v) => format!("PushString:{}", escape_artifact(v)),
         NativeInstr::PushList(v) => format!("PushList:{v}"),
-        NativeInstr::Index => "Index".into(), NativeInstr::Slice => "Slice".into(), NativeInstr::ScalarLen => "ScalarLen".into(), NativeInstr::ScalarAt => "ScalarAt".into(), NativeInstr::Len => "Len".into(),
+        NativeInstr::Index => "Index".into(), NativeInstr::Slice => "Slice".into(), NativeInstr::Len => "Len".into(),
         NativeInstr::Append(v) => format!("Append:{}", escape_artifact(v)),
         NativeInstr::MakeOk => "MakeOk".into(), NativeInstr::Chr => "Chr".into(),
         NativeInstr::MakeErr => "MakeErr".into(), NativeInstr::Unwrap => "Unwrap".into(),
@@ -2471,7 +2446,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "KvAppend"=>{let (name,policy)=arg.rsplit_once(',').ok_or_else(bad)?; let policy=policy.parse::<bool>().map_err(|_|bad())?; NativeInstr::KvAppend{name:unescape_artifact(name)?,evict_oldest:policy}},
         "MakeContextWindow"=>NativeInstr::MakeContextWindow,"ContextLen"=>NativeInstr::ContextLen,"ContextBytes"=>NativeInstr::ContextBytes,"ContextTokens"=>NativeInstr::ContextTokens,
         "ContextAppend"=>NativeInstr::ContextAppend{name:unescape_artifact(arg)?},
-        "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Slice"=>NativeInstr::Slice,"ScalarLen"=>NativeInstr::ScalarLen,"ScalarAt"=>NativeInstr::ScalarAt,"Len"=>NativeInstr::Len,
+        "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Slice"=>NativeInstr::Slice,"Len"=>NativeInstr::Len,
         "PushString"=>NativeInstr::PushString(unescape_artifact(arg)?),
         "PushList"=>NativeInstr::PushList(int(arg)?),"Append"=>NativeInstr::Append(unescape_artifact(arg)?),
         "MakeOk"=>NativeInstr::MakeOk,"Chr"=>NativeInstr::Chr,"MakeErr"=>NativeInstr::MakeErr,"Unwrap"=>NativeInstr::Unwrap,
