@@ -1253,7 +1253,7 @@ fn run_function(
                         "grapheme_at" => NativeValue::String(UnicodeSegmentation::graphemes(text.as_str(), true).nth(index.unwrap()).ok_or_else(|| NativeError::Type("grapheme index out of bounds".into()))?.to_owned()),
                         _ => unreachable!(),
                     };
-                    if matches!(value, NativeValue::Int(count) if count < 0 || count as usize > state.limits.max_collection_items) {
+                    if matches!(&value, NativeValue::Int(count) if *count < 0 || *count as usize > state.limits.max_collection_items) {
                         return Err(NativeError::ResourceLimit(format!("{callee} result exceeds item limit")));
                     }
                     validate_value(&value, state.limits)?;
