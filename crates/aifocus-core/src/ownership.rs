@@ -671,7 +671,7 @@ fn f(value: String) -> String
     #[test]
     fn moving_a_shadowing_for_binding_does_not_move_the_outer_binding() {
         let module = parse(
-            "module shadow_loop\\nfn f(values: List<String>, value: String) -> String\\n  for value in values\\n    let consumed = value\\n  value\\n",
+            "module shadow_loop\nfn f(values: List<String>, value: String) -> String\n  for value in values\n    let consumed = value\n  value\n",
         ).unwrap();
         assert!(
             infer(&module).is_ok(),
