@@ -1014,6 +1014,51 @@ pub fn run_validated_program_with_limits(
     run_function(&program.program, function, args, None, state, 0)
 }
 
+fn run_unicode_builtin(
+    callee: &str,
+    args: &[NativeValue],
+    limits: ExecutionLimits,
+) -> Result<Option<NativeValue>, NativeError> {
+    let expected_args = match callee {
+        "scalar_len" | "grapheme_len" => 1,
+        "scalar_at" | "grapheme_at" => 2,
+        _ => return Ok(None),
+    };
+    if args.len() != expected_args {
+        return Err(NativeError::Type(format!("{callee} expects {expected_args} argument(s)")));
+    }
+    let text = match args.first() {
+        Some(NativeValue::String(value)) => value,
+        _ => return Err(NativeError::Type(format!("{callee} requires String as its first argument"))),
+    };
+    let index = if expected_args == 2 {
+        let NativeValue::Int(index) = args.get(1).expect("arity checked above") else {
+            return Err(NativeError::Type(format!("{callee} index must be Int")));
+        };
+        Some(usize::try_from(*index).map_err(|_| {
+            let unit = if callee.starts_with("scalar") { "Unicode scalar" } else { "grapheme" };
+            NativeError::Type(format!("negative {unit} index"))
+        })?)
+    } else {
+        None
+    };
+    let value = match callee {
+        "scalar_len" => NativeValue::Int(text.chars().count() as i64),
+        "scalar_at" => NativeValue::String(text.chars().nth(index.expect("index arity checked"))
+            .ok_or_else(|| NativeError::Type("Unicode scalar index out of bounds".into()))?.to_string()),
+        "grapheme_len" => NativeValue::Int(UnicodeSegmentation::graphemes(text.as_str(), true).count() as i64),
+        "grapheme_at" => NativeValue::String(UnicodeSegmentation::graphemes(text.as_str(), true)
+            .nth(index.expect("index arity checked"))
+            .ok_or_else(|| NativeError::Type("grapheme index out of bounds".into()))?.to_owned()),
+        _ => return Ok(None),
+    };
+    if matches!(&value, NativeValue::Int(count) if *count < 0 || *count as usize > limits.max_collection_items) {
+        return Err(NativeError::ResourceLimit(format!("{callee} result exceeds item limit")));
+    }
+    validate_value(&value, limits)?;
+    Ok(Some(value))
+}
+
 fn run_function(
     program: &Arc<NativeProgram>,
     function: &NativeFunction,
@@ -1235,28 +1280,7 @@ fn run_function(
                 }
                 let start = stack.len() - *argc;
                 let call_args = stack.split_off(start);
-                if matches!(callee.as_str(), "scalar_len" | "scalar_at" | "grapheme_len" | "grapheme_at") {
-                    let text = match call_args.first() {
-                        Some(NativeValue::String(value)) => value,
-                        _ => return Err(NativeError::Type(format!("{callee} requires String as its first argument"))),
-                    };
-                    let index = if *argc == 2 {
-                        let NativeValue::Int(index) = call_args.get(1).ok_or_else(|| NativeError::InvalidProgram("Unicode index missing".into()))? else {
-                            return Err(NativeError::Type(format!("{callee} index must be Int")));
-                        };
-                        Some(usize::try_from(*index).map_err(|_| NativeError::Type(format!("{callee} index must be non-negative")))?)
-                    } else { None };
-                    let value = match callee.as_str() {
-                        "scalar_len" => NativeValue::Int(text.chars().count() as i64),
-                        "scalar_at" => NativeValue::String(text.chars().nth(index.unwrap()).ok_or_else(|| NativeError::Type("Unicode scalar index out of bounds".into()))?.to_string()),
-                        "grapheme_len" => NativeValue::Int(UnicodeSegmentation::graphemes(text.as_str(), true).count() as i64),
-                        "grapheme_at" => NativeValue::String(UnicodeSegmentation::graphemes(text.as_str(), true).nth(index.unwrap()).ok_or_else(|| NativeError::Type("grapheme index out of bounds".into()))?.to_owned()),
-                        _ => unreachable!(),
-                    };
-                    if matches!(&value, NativeValue::Int(count) if *count < 0 || *count as usize > state.limits.max_collection_items) {
-                        return Err(NativeError::ResourceLimit(format!("{callee} result exceeds item limit")));
-                    }
-                    validate_value(&value, state.limits)?;
+                if let Some(value) = run_unicode_builtin(callee, &call_args, state.limits)? {
                     stack.push(value);
                 } else {
                     let callee_fn = program.functions.get(callee).ok_or_else(|| {
