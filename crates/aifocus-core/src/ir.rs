@@ -62,6 +62,11 @@ pub enum IrValue {
         collection: Box<IrValue>,
         index: Box<IrValue>,
     },
+    Slice {
+        collection: Box<IrValue>,
+        start: Box<IrValue>,
+        end: Box<IrValue>,
+    },
     Name(String),
     Binary {
         op: BinaryOp,
