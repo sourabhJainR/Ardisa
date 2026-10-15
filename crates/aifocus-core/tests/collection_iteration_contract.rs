@@ -1,4 +1,4 @@
-use ardisa_core::{compile_source, native, parse, NativeError, NativeValue};
+use ardisa_core::{compile_source, native, parse, sema, NativeError, NativeValue};
 
 fn execute(source: &str) -> Result<NativeValue, NativeError> {
     let compiled = compile_source(source).expect("fixture should compile to a checked native artifact");
@@ -30,5 +30,11 @@ fn main() -> Int
     value
   0
 "#;
-    assert!(parse(source).is_err(), "unsupported for-in syntax must fail closed instead of being silently lowered");
+    let module = parse(source).expect("for-in syntax should parse to a targeted diagnostic");
+    let errors = sema::analyze(&module).expect_err("for-in must remain unsupported until iterator semantics exist");
+    assert!(
+        format!("{errors:?}").contains("AIF320"),
+        "for-in should be rejected by semantic analysis with AIF320, got {errors:?}"
+    );
+    assert!(compile_source(source).is_err(), "unsupported for-in must never reach native execution");
 }
