@@ -134,8 +134,33 @@
     {
       "id": "closures-iterators",
       "label": "Closures, capture modes, iterators, and for loops",
-      "status": "unsupported",
-      "evidence": {},
+      "status": "partial",
+      "evidence": {
+        "source_syntax": [
+          "crates/aifocus-core/src/ast.rs"
+        ],
+        "semantic_checks": [
+          "crates/aifocus-core/src/sema.rs",
+          "crates/aifocus-core/src/ownership.rs"
+        ],
+        "typed_ir": [
+          "crates/aifocus-core/src/typed_ir.rs"
+        ],
+        "native_encoding": [
+          "crates/aifocus-core/src/native.rs"
+        ],
+        "runtime_behavior": [
+          "crates/aifocus-core/src/native.rs"
+        ],
+        "positive_tests": [
+          "crates/aifocus-core/tests/iterator_contract.rs",
+          "crates/aifocus-core/tests/collection_iteration_contract.rs"
+        ],
+        "adversarial_tests": [
+          "crates/aifocus-core/tests/iterator_contract.rs"
+        ]
+      },
+      "limitations": "The native compiler supports a bounded source-level for/in subset over List<T> through deterministic index-based lowering. This does not implement iterator traits, closures/capture modes, break/continue, full Rust ownership/lifetime/drop parity, or self-hosting. Differential/holdout and Stage 2/3 reproducibility remain independent promotion gates.",
       "tracking": "https://github.com/sourabhJainR/Ardisa/issues/160"
     },
     {
