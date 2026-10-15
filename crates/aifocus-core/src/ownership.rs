@@ -189,7 +189,9 @@ impl Checker {
             match &stmt.kind {
                 StmtKind::Set { name, value } => {
                     self.check_expr(value, locals, AccessMode::Move);
-                    if let Some((_, state)) = locals.get_mut(name) {
+                    if self.terminated_exprs.contains(&value.id) {
+                        reachable = false;
+                    } else if let Some((_, state)) = locals.get_mut(name) {
                         *state = State::Available;
                     }
                 }
@@ -204,7 +206,11 @@ impl Checker {
                 }
                 StmtKind::Let { name, value } => {
                     if let Some(ty) = self.check_expr(value, locals, AccessMode::Move) {
-                        locals.insert(name.clone(), (ty, State::Available));
+                        if self.terminated_exprs.contains(&value.id) {
+                            reachable = false;
+                        } else {
+                            locals.insert(name.clone(), (ty, State::Available));
+                        }
                     }
                 }
                 StmtKind::Return(value) => {
@@ -834,6 +840,40 @@ fn f(value: String) -> String
         assert!(
             infer(&module).is_ok(),
             "the returning branch must not poison the state of the only path that reaches the final use"
+        );
+    }
+
+    #[test]
+    fn propagates_termination_through_let_initializer() {
+        let module = parse(
+            "module terminated_binding\\nfn f(flag: Bool, value: String) -> String\\n  let unreachable = if flag\\n    return value\\n  else\\n    return value\\n  value\\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &module.items[0];
+        let StmtKind::Expr(final_expr) = &function.body.stmts.last().unwrap().kind else {
+            panic!("expected final expression");
+        };
+        let model = analyze(&module).unwrap();
+        assert!(
+            !model.accesses.contains_key(&final_expr.id),
+            "an expression after an initializer that always returns must be unreachable to ownership analysis"
+        );
+    }
+
+    #[test]
+    fn propagates_termination_through_assignment_value() {
+        let module = parse(
+            "module terminated_assignment\\nfn f(flag: Bool, value: String) -> String\\n  let result = \\\"start\\\"\\n  set result = if flag\\n    return value\\n  else\\n    return value\\n  value\\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &module.items[0];
+        let StmtKind::Expr(final_expr) = &function.body.stmts.last().unwrap().kind else {
+            panic!("expected final expression");
+        };
+        let model = analyze(&module).unwrap();
+        assert!(
+            !model.accesses.contains_key(&final_expr.id),
+            "an expression after an assignment that always returns must be unreachable to ownership analysis"
         );
     }
 
