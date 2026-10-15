@@ -1481,6 +1481,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_scalar_f32_arithmetic_until_runtime_semantics_are_defined() {
+        let module = parse(
+            "module scalar_f32_arithmetic\nfn add(a: F32, b: F32) -> F32\n  a + b\n",
+        )
+        .unwrap();
+        let errors = check(&module).expect_err(
+            "scalar F32 arithmetic must not compile into integer-only native instructions",
+        );
+        assert!(
+            errors.iter().any(|error| error.code == "AIF305"),
+            "expected explicit unsupported-arithmetic diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
     fn catches_unknown_name() {
         let module = parse("module x\nfn add(a: Int) -> Int\n  a + missing\n").unwrap();
         let errors = check(&module).unwrap_err();
