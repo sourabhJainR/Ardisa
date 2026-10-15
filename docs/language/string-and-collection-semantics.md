@@ -21,8 +21,12 @@ This document records the currently implemented native behavior, not Rust standa
 - `List[start:end]` supports a half-open range (`start` inclusive, `end` exclusive) and returns a new owned list copy. It is not a view and does not alias the source list; mutating the slice result does not mutate the source.
 - Both slice bounds must be non-negative integers with `start <= end <= len(list)`. Negative bounds, reversed ranges, and an end beyond the list length fail explicitly. Empty ranges and ranges ending exactly at the list length are valid.
 - Slice output is subject to the same collection item, nested-value, and frame resource limits as other lists. Slicing a string is rejected because byte slicing can split UTF-8 sequences; string indexing remains byte-based.
-- The native runtime supports mutation for named list bindings through indexed assignment and append. Iteration syntax, aliasing views, borrowing, and drop semantics are not implemented or claimed.
+- The native runtime supports mutation for named list bindings through indexed assignment and append. Explicit index-based iteration with `while` is supported; `for-in` syntax and iterator protocols are unsupported and must fail closed. Aliasing views, borrowing, and Rust-compatible drop semantics are not implemented or claimed.
 - List/string length and indexing use byte count for strings and element count for lists. These are distinct units.
+
+## Primitive operations and library boundary
+
+The currently implemented native primitives are `len`, `chr`, list/string indexing, list slicing, and `push` for named mutable list bindings. They are compiler/runtime operations, not evidence of a complete standard collection library. Unsupported collection methods, `for-in` loops, iterator protocols, string slices, and borrowed views are not silently substituted with host-language behavior.
 
 ## Deliberate limitations
 
