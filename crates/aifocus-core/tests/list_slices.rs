@@ -92,15 +92,19 @@ fn main() -> Int
 }
 
 #[test]
-fn list_binding_assignment_uses_value_copy_not_shared_aliasing() {
-    let source = r#"module list_binding_value_copy
+fn moving_a_list_binding_rejects_later_use_of_the_source_name() {
+    let source = r#"module list_binding_move
 fn main() -> Int
   let values = [10, 20]
   let other = values
   set other[0] = 99
   values[0]
 "#;
-    assert_eq!(execute(source).unwrap(), NativeValue::Int(10));
+    let error = compile_source(source).expect_err("moving a List binding must not permit later use of the source name");
+    assert!(
+        format!("{error:?}").contains("use of moved value 'values'"),
+        "the ownership gate should diagnose the moved source binding, got: {error:?}"
+    );
 }
 
 #[test]
