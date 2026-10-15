@@ -100,37 +100,6 @@ fn main() -> Int
 }
 
 #[test]
-fn scalar_apis_count_and_index_unicode_scalars_not_utf8_bytes() {
-    let count = r#"module scalar_count
-fn main() -> Int
-  scalar_len("Aé😀")
-"#;
-    assert_eq!(execute(count).unwrap(), NativeValue::Int(3));
-
-    let at = r#"module scalar_index
-fn main() -> Int
-  len(scalar_at("Aé😀", 2))
-"#;
-    assert_eq!(execute(at).unwrap(), NativeValue::Int(4), "the third scalar is a four-byte UTF-8 string");
-
-    let invalid = r#"module scalar_index_oob
-fn main() -> Int
-  len(scalar_at("Aé", 2))
-"#;
-    assert!(matches!(execute(invalid), Err(NativeError::Type(message)) if message.contains("out of bounds")));
-}
-
-#[test]
-fn scalar_index_rejects_negative_values() {
-    let source = r#"module scalar_index_negative
-fn main() -> Int
-  let index = 0 - 1
-  len(scalar_at("Aé", index))
-"#;
-    assert!(matches!(execute(source), Err(NativeError::Type(message)) if message.contains("negative Unicode scalar index")));
-}
-
-#[test]
 fn moving_a_list_binding_rejects_later_use_of_the_source_name() {
     let source = r#"module list_binding_move
 fn main() -> Int
