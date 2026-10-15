@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     ast::{BinaryOp, Expr, ExprKind, Function, Item, Module, StmtKind},
@@ -47,6 +48,22 @@ fn main() -> String
         name: "list-index",
         source: "module x\nfn main() -> Int\n  let items = [2, 3]\n  items[1] + 4\n",
     },
+    DifferentialCase {
+        name: "list-slice-copy",
+        source: "module x\nfn main() -> Int\n  let items = [1, 2, 3, 4]\n  len(items[1:3])\n",
+    },
+    DifferentialCase {
+        name: "string-slice",
+        source: "module x\nfn main() -> String\n  \"Aé😀\"[1:3]\n",
+    },
+    DifferentialCase {
+        name: "unicode-scalars",
+        source: "module x\nfn main() -> Int\n  scalar_len(\"Aé😀\")\n",
+    },
+    DifferentialCase {
+        name: "unicode-graphemes",
+        source: "module x\nfn main() -> Int\n  grapheme_len(\"é🇮🇳👨‍👩‍👧‍👦\")\n",
+    },
 ];
 
 pub fn verify_case(case: &DifferentialCase) -> Result<(), String> {
@@ -67,7 +84,7 @@ pub fn verify_case(case: &DifferentialCase) -> Result<(), String> {
     let args = match case.name {
         "arithmetic" => vec![native::NativeValue::Int(3), native::NativeValue::Int(4)],
         "conditional" => vec![native::NativeValue::Int(0)],
-        "list" | "string" | "result" | "while" | "call" | "list-index" => Vec::new(),
+        "list" | "string" | "result" | "while" | "call" | "list-index" | "list-slice-copy" | "string-slice" | "unicode-scalars" | "unicode-graphemes" => Vec::new(),
         _ => return Err(format!("{}: unknown differential case", case.name)),
     };
     let native_result = native::run_program(&program, "main", &args)
@@ -235,12 +252,21 @@ fn reference_expr(
                 .map_err(|_| "negative slice start".to_string())?;
             let end = usize::try_from(expect_int(reference_expr(module, end, locals)?)?)
                 .map_err(|_| "negative slice end".to_string())?;
-            let native::NativeValue::List(items) = collection else {
-                return Err("slicing currently requires List<T>".into());
-            };
             if start > end { return Err("slice start must not exceed slice end".into()); }
-            if end > items.len() { return Err("slice end out of bounds".into()); }
-            Ok(native::NativeValue::List(items[start..end].to_vec()))
+            match collection {
+                native::NativeValue::List(items) => {
+                    if end > items.len() { return Err("slice end out of bounds".into()); }
+                    Ok(native::NativeValue::List(items[start..end].to_vec()))
+                }
+                native::NativeValue::String(value) => {
+                    if end > value.len() { return Err("string slice end out of bounds".into()); }
+                    if !value.is_char_boundary(start) || !value.is_char_boundary(end) {
+                        return Err("string slice bounds must be UTF-8 scalar boundaries".into());
+                    }
+                    Ok(native::NativeValue::String(value[start..end].to_owned()))
+                }
+                _ => Err("slicing requires List<T> or String".into()),
+            }
         }
         ExprKind::Binary { op, left, right } => {
             let left = reference_expr(module, left, locals)?;
@@ -252,6 +278,28 @@ fn reference_expr(
                 return Err("dynamic calls are unsupported by reference oracle".into());
             };
             match name.as_str() {
+                "scalar_len" => {
+                    let native::NativeValue::String(value) = one_arg(args, module, locals)? else { return Err("scalar_len requires String".into()); };
+                    Ok(native::NativeValue::Int(value.chars().count() as i64))
+                }
+                "scalar_at" => {
+                    if args.len() != 2 { return Err("scalar_at expects two arguments".into()); }
+                    let native::NativeValue::String(value) = reference_expr(module, &args[0], locals)? else { return Err("scalar_at requires String".into()); };
+                    let index = usize::try_from(expect_int(reference_expr(module, &args[1], locals)?)?).map_err(|_| "negative Unicode scalar index".to_string())?;
+                    let scalar = value.chars().nth(index).ok_or_else(|| "Unicode scalar index out of bounds".to_string())?;
+                    Ok(native::NativeValue::String(scalar.to_string()))
+                }
+                "grapheme_len" => {
+                    let native::NativeValue::String(value) = one_arg(args, module, locals)? else { return Err("grapheme_len requires String".into()); };
+                    Ok(native::NativeValue::Int(UnicodeSegmentation::graphemes(value.as_str(), true).count() as i64))
+                }
+                "grapheme_at" => {
+                    if args.len() != 2 { return Err("grapheme_at expects two arguments".into()); }
+                    let native::NativeValue::String(value) = reference_expr(module, &args[0], locals)? else { return Err("grapheme_at requires String".into()); };
+                    let index = usize::try_from(expect_int(reference_expr(module, &args[1], locals)?)?).map_err(|_| "negative Unicode grapheme index".to_string())?;
+                    let cluster = UnicodeSegmentation::graphemes(value.as_str(), true).nth(index).ok_or_else(|| "grapheme index out of bounds".to_string())?;
+                    Ok(native::NativeValue::String(cluster.to_owned()))
+                }
                 "len" => {
                     let value = one_arg(args, module, locals)?;
                     match value {

@@ -47,7 +47,9 @@ pub struct BootstrapReport {
 // Bootstrap verification follows the native function representation.
 const BOOTSTRAP_EXECUTION_LIMITS: native::ExecutionLimits = native::ExecutionLimits {
     max_instructions: 100_000_000,
-    max_call_depth: 512,
+    // Bootstrap executes the native interpreter recursively; keep this below the
+    // host stack ceiling so adversarial self-hosted recursion fails closed.
+    max_call_depth: 48,
     max_tasks: 128,
     max_collection_items: 1_000_000,
     max_string_bytes: 64 * 1024 * 1024,
@@ -594,7 +596,17 @@ mod tests {
 
     #[test]
     fn bootstrap_pipeline_is_multi_function_and_reproducible() {
-        let report = verify();
+        // libtest workers use a small stack by default; the bootstrap verifier walks
+        // recursive parser/AST/compiler structures and should run with the same 8 MiB
+        // stack budget as a normal process entry thread rather than aborting the test
+        // process before Rust can report a bounded failure.
+        let report = std::thread::Builder::new()
+            .name("ardisa-bootstrap-verification".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(verify)
+            .expect("bootstrap verification thread should start")
+            .join()
+            .expect("bootstrap verification must not overflow its process-sized stack");
         assert!(report.parsed && report.semantically_valid && report.ownership_valid);
         assert!(report.native_compiled);
         assert_eq!(
