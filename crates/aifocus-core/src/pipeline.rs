@@ -565,7 +565,7 @@ fn main() -> Result<Int, String>
             native::NativeValue::ResultOk(Box::new(native::NativeValue::Int(42)))
         );
         assert_eq!(
-            native::encode_program(&program).expect("artifact re-encodes"),
+            native::encode_program(&program),
             compiled.artifact,
             "Result artifact round-tripping must remain deterministic"
         );
