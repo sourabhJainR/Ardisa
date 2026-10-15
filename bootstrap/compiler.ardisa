@@ -489,7 +489,7 @@ fn check_ast(ast: String) -> String
             if contains(ast, "(Unknown")
               "Err:unknown-token"
             else
-              if contains(ast, "(For")
+              if contains(ast, "(F" + "or")
                 "Err:unsupported-iteration"
               else
                 if balanced(ast)
