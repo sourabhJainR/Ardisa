@@ -15,6 +15,7 @@ This document records the currently implemented native behavior, not Rust standa
 ## Lists
 
 - List values contain a sequence of native values. The supported subset relies on semantic analysis to enforce a consistent element type in source expressions.
+- List bindings are move-only under the current ownership checker: assigning a list binding into another binding consumes the source name, and later use of that name is rejected. This is an explicit subset contract, not full Rust move/drop parity.
 - `List[index]` uses a zero-based integer index and returns the value at that position.
 - Negative indexes and indexes at or beyond the list length fail explicitly; the runtime does not silently clamp or wrap indexes.
 - `List[start:end]` supports a half-open range (`start` inclusive, `end` exclusive) and returns a new owned list copy. It is not a view and does not alias the source list; mutating the slice result does not mutate the source.
