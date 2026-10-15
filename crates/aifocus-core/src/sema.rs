@@ -685,6 +685,31 @@ impl Checker {
                     );
                     return None;
                 };
+                if matches!(name.as_str(), "scalar_len" | "scalar_at" | "grapheme_len" | "grapheme_at") {
+                    let expected_args = if matches!(name.as_str(), "scalar_len" | "grapheme_len") { 1 } else { 2 };
+                    if args.len() != expected_args {
+                        self.error("AIF552", format!("{name} expects {expected_args} argument(s)"), expr.span);
+                        return None;
+                    }
+                    let text_type = self.check_expr(&args[0], locals)?;
+                    if !is_kind(&text_type, &TypeKind::String) {
+                        self.error("AIF553", format!("{name} requires String as its first argument"), args[0].span);
+                        return None;
+                    }
+                    if expected_args == 2 {
+                        let index_type = self.check_expr(&args[1], locals)?;
+                        if !is_kind(&index_type, &TypeKind::Int) {
+                            self.error("AIF554", format!("{name} index must be Int"), args[1].span);
+                            return None;
+                        }
+                    }
+                    let ty = type_node(
+                        if expected_args == 1 { TypeKind::Int } else { TypeKind::String },
+                        expr.span,
+                    );
+                    self.inferred_types.insert(expr.id, ty.clone());
+                    return Some(ty);
+                }
                 if name == "moe_router" {
                     if args.len() != 2 { self.error("AIF475", "moe_router expects expert_count and top_k Int", expr.span); return None; }
                     let experts = self.check_expr(&args[0], locals)?;
