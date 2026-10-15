@@ -356,8 +356,8 @@ impl Checker {
                 if access == AccessKind::Move
                     && self.borrow_regions.iter().any(|region| {
                         region.local == *name
-                            && region.span.start < operation_span.end
-                            && operation_span.start < region.span.end
+                            && region.span.start < expr.span.end
+                            && expr.span.start < region.span.end
                     })
                 {
                     self.errors.push(Diagnostic::error(
@@ -755,6 +755,18 @@ fn reuse(source: String) -> String
         assert!(
             errors.iter().any(|error| error.code == "AIF404"),
             "the mutable collection borrow and nested shared read overlap for the whole call"
+        );
+    }
+
+    #[test]
+    fn ends_nested_read_borrows_before_a_later_move_in_the_same_call() {
+        let module = parse(
+            "module nested_read_then_move\nfn consume(flag: Bool, values: List<Int>) -> Int\n  len(values)\nfn f(values: List<Int>) -> Int\n  consume(values == values, values)\n",
+        )
+        .unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "a read-only comparison completes before the later argument moves the collection"
         );
     }
 
