@@ -96,7 +96,7 @@
     },
     {
       "id": "strings-lists-and-owned-slices",
-      "label": "UTF-8 byte strings, safe string slices, typed lists, and owned list slices",
+      "label": "UTF-8 byte strings, Unicode scalar/grapheme access, safe string slices, typed lists, and owned list slices",
       "status": "partial",
       "evidence": {
         "source_syntax": [
@@ -128,7 +128,7 @@
           ".github/workflows/ci.yml"
         ]
       },
-      "limitations": "UTF-8 byte indexing remains the String[index] contract. String[start:end] is an owned copy and requires UTF-8 scalar boundaries. Unicode scalar/grapheme indexing, iterator protocol/syntax, borrowed views, full flow-sensitive Rust ownership/lifetime/drop parity, and Rust standard-library parity remain unsupported or unproven."
+      "limitations": "String[index] remains UTF-8 byte indexing; String[start:end] returns an owned copy and requires scalar boundaries. scalar_len/scalar_at operate on Unicode scalar values; grapheme_len/grapheme_at use pinned unicode-segmentation 1.12.0 extended grapheme clusters. Iterator protocol/syntax, borrowed views, full flow-sensitive Rust ownership/lifetime/drop parity, and Rust standard-library parity remain unsupported or unproven."
     },
     {
       "id": "closures-iterators",
