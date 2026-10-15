@@ -82,13 +82,52 @@ fn main() -> Int
 }
 
 #[test]
-fn string_slice_is_rejected_semantically_to_preserve_utf8_contract() {
-    let source = r#"module string_slice_unsupported
+fn string_slice_uses_utf8_byte_offsets_and_requires_scalar_boundaries() {
+    let valid = r#"module string_slice_utf8_boundaries
+fn main() -> Int
+  len("aé😀"[1:3])
+"#;
+    assert_eq!(execute(valid).unwrap(), NativeValue::Int(2), "slice byte offsets 1..3 select the complete two-byte scalar");
+
+    let invalid = r#"module string_slice_splits_scalar
 fn main() -> Int
   len("é"[0:1])
 "#;
-    let compiled = compile_source(source);
-    assert!(compiled.is_err(), "String slicing must remain rejected until UTF-8 boundary semantics are defined");
+    assert!(
+        matches!(execute(invalid), Err(NativeError::Type(message)) if message.contains("UTF-8 scalar boundaries")),
+        "byte slices must not create invalid UTF-8 strings"
+    );
+}
+
+#[test]
+fn scalar_apis_count_and_index_unicode_scalars_not_utf8_bytes() {
+    let count = r#"module scalar_count
+fn main() -> Int
+  scalar_len("Aé😀")
+"#;
+    assert_eq!(execute(count).unwrap(), NativeValue::Int(3));
+
+    let at = r#"module scalar_index
+fn main() -> Int
+  len(scalar_at("Aé😀", 2))
+"#;
+    assert_eq!(execute(at).unwrap(), NativeValue::Int(4), "the third scalar is a four-byte UTF-8 string");
+
+    let invalid = r#"module scalar_index_oob
+fn main() -> Int
+  len(scalar_at("Aé", 2))
+"#;
+    assert!(matches!(execute(invalid), Err(NativeError::Type(message)) if message.contains("out of bounds")));
+}
+
+#[test]
+fn scalar_index_rejects_negative_values() {
+    let source = r#"module scalar_index_negative
+fn main() -> Int
+  let index = 0 - 1
+  len(scalar_at("Aé", index))
+"#;
+    assert!(matches!(execute(source), Err(NativeError::Type(message)) if message.contains("negative Unicode scalar index")));
 }
 
 #[test]
