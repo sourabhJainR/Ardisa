@@ -283,6 +283,10 @@ fn lower_stmt(
                 ops.push(TypedIrOp::Scope(vec![TypedIrOp::Expr(c), TypedIrOp::Scope(nested)]));
             }
         }
+        StmtKind::For { iterable, .. } => {
+            let _ = lower_expr(iterable, types, locals, errors);
+            errors.push("for/in iteration cannot be lowered: typed iterator protocol and native execution are not implemented".into());
+        }
     }
 }
 
@@ -420,6 +424,10 @@ fn build_cfg_block(
             }
             StmtKind::Join { name } => blocks[cursor as usize].ops.push(TypedIrOp::Join(name.clone())),
             StmtKind::Cancel { name } => blocks[cursor as usize].ops.push(TypedIrOp::Cancel(name.clone())),
+            StmtKind::For { iterable, .. } => {
+                let _ = lower_expr(iterable, types, locals, errors);
+                errors.push("for/in iteration cannot enter typed CFG: iterator semantics are not implemented".into());
+            }
         }
     }
     if finalize_return && matches!(blocks[cursor as usize].terminator, TypedTerminator::Fallthrough) {
