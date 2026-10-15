@@ -1049,7 +1049,7 @@ fn run_unicode_builtin(
             return Err(NativeError::Type(format!("{callee} index must be Int")));
         };
         Some(usize::try_from(*index).map_err(|_| {
-            let unit = if callee.starts_with("scalar") { "Unicode scalar" } else { "grapheme" };
+            let unit = if callee.starts_with("scalar") { "Unicode scalar" } else { "Unicode grapheme" };
             NativeError::Type(format!("negative {unit} index"))
         })?)
     } else {
