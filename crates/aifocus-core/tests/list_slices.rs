@@ -179,3 +179,50 @@ fn main() -> Int
         "constructing a list above the item budget must fail with ResourceLimit"
     );
 }
+
+
+#[test]
+fn nested_list_slice_is_deeply_independent_after_mutation() {
+    let source = r#"module nested_list_slice_copy
+fn main() -> Int
+  let values = [[1, 2], [3, 4]]
+  let part = values[0:1]
+  set part[0] = [99, 100]
+  values[0][0] + part[0][0] + len(part)
+"#;
+    assert_eq!(execute(source).unwrap(), NativeValue::Int(1 + 99 + 1));
+}
+
+#[test]
+fn string_slice_rejects_negative_and_reversed_bounds() {
+    let negative = r#"module string_slice_negative
+fn main() -> Int
+  let start = 0 - 1
+  len("abc"[start:2])
+"#;
+    assert!(
+        matches!(execute(negative), Err(NativeError::Type(_))),
+        "negative string slice bounds must fail explicitly"
+    );
+
+    let reversed = r#"module string_slice_reversed
+fn main() -> Int
+  len("abc"[2:1])
+"#;
+    assert!(
+        matches!(execute(reversed), Err(NativeError::Type(message)) if message.contains("must not exceed")),
+        "reversed string slice bounds must fail explicitly"
+    );
+}
+
+#[test]
+fn string_slice_rejects_end_past_utf8_byte_length() {
+    let source = r#"module string_slice_oob
+fn main() -> Int
+  len("é"[0:3])
+"#;
+    assert!(
+        matches!(execute(source), Err(NativeError::Type(message)) if message.contains("out of bounds")),
+        "string slice end is a UTF-8 byte offset and must be within byte length"
+    );
+}
