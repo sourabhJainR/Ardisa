@@ -84,7 +84,8 @@ fn iterable_expression_is_emitted_once_before_the_loop() {
         matches!(instr, ardisa_core::NativeInstr::Call { callee, .. } if callee == "source")
     }).count();
     assert_eq!(calls, 1, "the iterable expression must be evaluated once");
-    assert_eq!(run_program_with_limits(&program, "main", &[], ExecutionLimits::default()).unwrap(), NativeValue::Int(12));
+    let limits = ExecutionLimits { max_instructions: 10_000, ..ExecutionLimits::default() };
+    assert_eq!(run_program_with_limits(&program, "main", &[], limits).unwrap(), NativeValue::Int(12));
 }
 
 #[test]
