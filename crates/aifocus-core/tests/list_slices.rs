@@ -90,3 +90,32 @@ fn main() -> Int
     let compiled = compile_source(source);
     assert!(compiled.is_err(), "String slicing must remain rejected until UTF-8 boundary semantics are defined");
 }
+
+#[test]
+fn list_binding_assignment_uses_value_copy_not_shared_aliasing() {
+    let source = r#"module list_binding_value_copy
+fn main() -> Int
+  let values = [10, 20]
+  let other = values
+  set other[0] = 99
+  values[0]
+"#;
+    assert_eq!(execute(source).unwrap(), NativeValue::Int(10));
+}
+
+#[test]
+fn list_mutation_obeys_runtime_collection_item_limit() {
+    let source = r#"module list_collection_limit
+fn main() -> Int
+  let values = [1]
+  push(values, 2)
+  len(values)
+"#;
+    let compiled = compile_source(source).expect("fixture should compile");
+    let program = native::decode_program(&compiled.artifact).expect("artifact should decode");
+    let limits = native::ExecutionLimits { max_collection_items: 1, ..native::ExecutionLimits::default() };
+    assert!(
+        matches!(native::run_program_with_limits(&program, "main", &[], limits), Err(NativeError::ResourceLimit(message)) if message.contains("collection")),
+        "append must fail closed when the configured item budget is reached"
+    );
+}
