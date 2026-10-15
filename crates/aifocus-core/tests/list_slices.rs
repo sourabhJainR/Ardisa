@@ -282,3 +282,45 @@ fn main() -> Int
 "#;
     assert!(matches!(execute(oob), Err(NativeError::Type(message)) if message.contains("grapheme index out of bounds")));
 }
+
+
+#[test]
+fn scalar_and_grapheme_apis_reject_negative_and_out_of_range_indices() {
+    let scalar_negative = r#"module scalar_negative_bound
+fn main() -> Int
+  let index = 0 - 1
+  scalar_len(scalar_at("é", index))
+"#;
+    assert!(
+        matches!(execute(scalar_negative), Err(NativeError::Type(message)) if message.contains("negative Unicode scalar index")),
+        "negative scalar indexes must fail explicitly"
+    );
+
+    let scalar_oob = r#"module scalar_oob_bound
+fn main() -> Int
+  scalar_len(scalar_at("é", 1))
+"#;
+    assert!(
+        matches!(execute(scalar_oob), Err(NativeError::Type(message)) if message.contains("scalar index out of bounds")),
+        "scalar indexes at the scalar count must fail explicitly"
+    );
+
+    let grapheme_negative = r#"module grapheme_negative_bound
+fn main() -> Int
+  let index = 0 - 1
+  grapheme_len(grapheme_at("🇮🇳", index))
+"#;
+    assert!(
+        matches!(execute(grapheme_negative), Err(NativeError::Type(message)) if message.contains("negative Unicode grapheme index")),
+        "negative grapheme indexes must fail explicitly"
+    );
+
+    let grapheme_oob = r#"module grapheme_oob_bound
+fn main() -> Int
+  grapheme_len(grapheme_at("🇮🇳", 1))
+"#;
+    assert!(
+        matches!(execute(grapheme_oob), Err(NativeError::Type(message)) if message.contains("grapheme index out of bounds")),
+        "grapheme indexes at the grapheme count must fail explicitly"
+    );
+}
