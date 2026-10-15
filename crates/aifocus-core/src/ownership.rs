@@ -201,8 +201,19 @@ impl Checker {
                     value,
                 } => {
                     self.check_expr(collection, locals, AccessMode::MutableBorrow);
+                    if self.terminated_exprs.contains(&collection.id) {
+                        reachable = false;
+                        continue;
+                    }
                     self.check_expr(index, locals, AccessMode::Move);
+                    if self.terminated_exprs.contains(&index.id) {
+                        reachable = false;
+                        continue;
+                    }
                     self.check_expr(value, locals, AccessMode::Move);
+                    if self.terminated_exprs.contains(&value.id) {
+                        reachable = false;
+                    }
                 }
                 StmtKind::Let { name, value } => {
                     if let Some(ty) = self.check_expr(value, locals, AccessMode::Move) {
@@ -240,9 +251,16 @@ impl Checker {
                 }
                 StmtKind::Spawn { call, .. } => {
                     self.check_expr(call, locals, AccessMode::Move);
+                    if self.terminated_exprs.contains(&call.id) {
+                        reachable = false;
+                    }
                 }
                 StmtKind::While { condition, body } => {
                     self.check_expr(condition, locals, AccessMode::Move);
+                    if self.terminated_exprs.contains(&condition.id) {
+                        reachable = false;
+                        continue;
+                    }
                     self.scope_depth += 1;
                     let mut scoped = locals.clone();
                     self.check_block(body, &mut scoped);
@@ -253,6 +271,10 @@ impl Checker {
                     // Iteration consumes an owned List<T>. This aligns static move state
                     // with the native loop's single evaluation of the iterable.
                     let iterable_type = self.check_expr(iterable, locals, AccessMode::Move);
+                    if self.terminated_exprs.contains(&iterable.id) {
+                        reachable = false;
+                        continue;
+                    }
                     let element_type = iterable_type.and_then(|ty| match ty.kind {
                         TypeKind::List(element) => Some(*element),
                         _ => None,
@@ -1010,6 +1032,42 @@ fn f(value: String) -> String
         assert!(
             !model.accesses.contains_key(&final_expr_id),
             "statements after a nested non-fallthrough operand must be unreachable"
+        );
+    }
+
+    #[test]
+    fn termination_in_index_assignment_value_makes_following_statements_unreachable() {
+        let mut module = parse(
+            "module terminated_index_assignment\nfn f(flag: Bool, value: String) -> String\n  let values = [1]\n  if flag\n    return value\n  else\n    return value\n  value\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &mut module.items[0];
+        let StmtKind::Expr(terminating_if) = &function.body.stmts[1].kind else {
+            panic!("expected if expression");
+        };
+        let terminating_if = terminating_if.clone();
+        let span = terminating_if.span;
+        function.body.stmts[1].kind = StmtKind::SetIndex {
+            collection: Expr {
+                id: crate::NodeId(9_100_001),
+                span,
+                kind: ExprKind::Name("values".into()),
+            },
+            index: Expr {
+                id: crate::NodeId(9_100_002),
+                span,
+                kind: ExprKind::Int(0),
+            },
+            value: terminating_if,
+        };
+        let StmtKind::Expr(final_expr) = &function.body.stmts.last().unwrap().kind else {
+            panic!("expected final expression");
+        };
+        let final_expr_id = final_expr.id;
+        let model = analyze(&module).unwrap();
+        assert!(
+            !model.accesses.contains_key(&final_expr_id),
+            "statements after a non-fallthrough indexed assignment value must be unreachable"
         );
     }
 
