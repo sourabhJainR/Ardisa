@@ -495,6 +495,8 @@ fn token_kind_name(kind: &crate::token::TokenKind) -> String {
         crate::token::TokenKind::Join => "Join".into(),
         crate::token::TokenKind::Cancel => "Cancel".into(),
         crate::token::TokenKind::While => "While".into(),
+        crate::token::TokenKind::For => "For".into(),
+        crate::token::TokenKind::In => "In".into(),
         crate::token::TokenKind::True => "True".into(),
         crate::token::TokenKind::False => "False".into(),
         crate::token::TokenKind::Ident => "Ident".into(),
