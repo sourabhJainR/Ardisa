@@ -356,6 +356,10 @@ impl Checker {
                             element_type = Some(ty);
                         }
                     }
+                    if self.terminated_exprs.contains(&item.id) {
+                        self.terminated_exprs.insert(expr.id);
+                        break;
+                    }
                 }
                 Some(type_node(
                     TypeKind::List(Box::new(
@@ -367,7 +371,15 @@ impl Checker {
             ExprKind::Index { collection, index } => {
                 let collection_type =
                     self.check_expr(collection, locals, AccessMode::SharedBorrow);
+                if self.terminated_exprs.contains(&collection.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return collection_type;
+                }
                 self.check_expr(index, locals, AccessMode::Move);
+                if self.terminated_exprs.contains(&index.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return collection_type;
+                }
                 collection_type.and_then(|ty| match ty.kind {
                     TypeKind::List(element) => Some(*element),
                     // String indexing is byte-based in the current language contract.
@@ -378,8 +390,19 @@ impl Checker {
             ExprKind::Slice { collection, start, end } => {
                 let collection_type =
                     self.check_expr(collection, locals, AccessMode::SharedBorrow);
+                if self.terminated_exprs.contains(&collection.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return collection_type;
+                }
                 self.check_expr(start, locals, AccessMode::Move);
+                if self.terminated_exprs.contains(&start.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return collection_type;
+                }
                 self.check_expr(end, locals, AccessMode::Move);
+                if self.terminated_exprs.contains(&end.id) {
+                    self.terminated_exprs.insert(expr.id);
+                }
                 // Slices are owned copies with the same collection type, not views.
                 collection_type
             }
@@ -405,7 +428,15 @@ impl Checker {
                     AccessMode::Move
                 };
                 let left_type = self.check_expr(left, locals, operand_mode);
+                if self.terminated_exprs.contains(&left.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return left_type;
+                }
                 let right_type = self.check_expr(right, locals, operand_mode);
+                if self.terminated_exprs.contains(&right.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return left_type.or(right_type);
+                }
                 match op {
                     BinaryOp::Add
                     | BinaryOp::Sub
@@ -463,6 +494,10 @@ impl Checker {
                 else_branch,
             } => {
                 self.check_expr(condition, locals, AccessMode::Move);
+                if self.terminated_exprs.contains(&condition.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return Some(type_node(TypeKind::Unit, expr));
+                }
                 let mut then_locals = locals.clone();
                 let then_reachable = self.check_block(then_branch, &mut then_locals);
                 if let Some(else_branch) = else_branch {
