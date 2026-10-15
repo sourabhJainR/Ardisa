@@ -185,6 +185,7 @@ pub enum TypedValueKind {
     Name(String),
     List(Vec<TypedValue>),
     Index(Box<TypedValue>, Box<TypedValue>),
+    Slice { collection: Box<TypedValue>, start: Box<TypedValue>, end: Box<TypedValue> },
     Binary { op: BinaryOp, left: Box<TypedValue>, right: Box<TypedValue> },
     Call { callee: String, args: Vec<TypedValue> },
     If { condition: Box<TypedValue>, then_ops: Vec<TypedIrOp>, else_ops: Vec<TypedIrOp> },
