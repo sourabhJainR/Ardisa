@@ -449,3 +449,36 @@ fn main() -> Int
         "byte slicing that splits a scalar must fail explicitly"
     );
 }
+
+
+#[test]
+fn collection_binding_cannot_create_a_second_mutable_alias() {
+    let source = r#"module no_list_alias
+fn main() -> Int
+  let values = [1, 2]
+  let alias = values
+  set alias[0] = 99
+  values[0]
+"#;
+    assert!(
+        compile_source(source).is_err(),
+        "binding an owned list consumes the source name; source code must not gain two mutable aliases"
+    );
+}
+
+#[test]
+fn append_fails_closed_at_the_collection_item_limit() {
+    let source = r#"module push_item_limit
+fn main() -> Int
+  let values = [1, 2]
+  push(values, 3)
+  len(values)
+"#;
+    let compiled = compile_source(source).expect("fixture should compile before applying runtime limits");
+    let program = native::decode_program(&compiled.artifact).expect("artifact should decode");
+    let limits = native::ExecutionLimits { max_collection_items: 2, ..native::ExecutionLimits::default() };
+    assert!(
+        matches!(native::run_program_with_limits(&program, "main", &[], limits), Err(NativeError::ResourceLimit(message)) if message.contains("collection")),
+        "push must not grow a list beyond its configured item budget"
+    );
+}
