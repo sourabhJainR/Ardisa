@@ -469,6 +469,10 @@ impl Checker {
                             AccessMode::Move
                         };
                         self.check_expr(arg, locals, mode);
+                        if self.terminated_exprs.contains(&arg.id) {
+                            self.terminated_exprs.insert(expr.id);
+                            return None;
+                        }
                     }
                     return None;
                 };
@@ -485,6 +489,10 @@ impl Checker {
                         })
                         .unwrap_or(AccessMode::Move);
                     self.check_expr(arg, locals, mode);
+                    if self.terminated_exprs.contains(&arg.id) {
+                        self.terminated_exprs.insert(expr.id);
+                        return function.return_type;
+                    }
                 }
                 function.return_type
             }
@@ -964,6 +972,44 @@ fn f(value: String) -> String
         assert!(
             !model.accesses.contains_key(&final_expr_id),
             "grouping must preserve a non-fallthrough expression's termination state"
+        );
+    }
+
+    #[test]
+    fn termination_in_binary_operand_skips_later_operands_and_statements() {
+        let mut module = parse(
+            "module nested_termination\nfn f(flag: Bool, value: String) -> String\n  if flag\n    return value\n  else\n    return value\n  value\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &mut module.items[0];
+        let StmtKind::Expr(terminating_if) = &function.body.stmts[0].kind else {
+            panic!("expected if expression");
+        };
+        let terminating_if = terminating_if.clone();
+        function.body.stmts[0].kind = StmtKind::Let {
+            name: "unreachable".into(),
+            value: Expr {
+                id: crate::NodeId(9_000_001),
+                span: terminating_if.span,
+                kind: ExprKind::Binary {
+                    op: BinaryOp::Add,
+                    left: Box::new(terminating_if),
+                    right: Box::new(Expr {
+                        id: crate::NodeId(9_000_002),
+                        span: function.body.stmts[1].span,
+                        kind: ExprKind::Name("value".into()),
+                    }),
+                },
+            },
+        };
+        let StmtKind::Expr(final_expr) = &function.body.stmts.last().unwrap().kind else {
+            panic!("expected final expression");
+        };
+        let final_expr_id = final_expr.id;
+        let model = analyze(&module).unwrap();
+        assert!(
+            !model.accesses.contains_key(&final_expr_id),
+            "statements after a nested non-fallthrough operand must be unreachable"
         );
     }
 
