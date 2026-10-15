@@ -363,3 +363,20 @@ fn main() -> Int
         "nested lists must not bypass configured per-collection item limits"
     );
 }
+
+#[test]
+fn unicode_instruction_artifact_round_trip_is_byte_deterministic() {
+    let source = r#"module unicode_round_trip
+fn main() -> Int
+  len(scalar_at("Aé😀", 2)) + len(grapheme_at("A🇮🇳B", 1)) + scalar_len("Aé😀") + grapheme_len("é🇮🇳👨‍👩‍👧‍👦")
+"#;
+    let compiled = compile_source(source).expect("Unicode fixture should compile");
+    let first = native::decode_program(&compiled.artifact).expect("artifact should decode");
+    let encoded_again = native::encode_program(&first);
+    assert_eq!(encoded_again, compiled.artifact, "Unicode instruction encoding must round-trip byte-for-byte");
+    let second = native::decode_program(&encoded_again).expect("re-encoded artifact should decode");
+    let first_result = native::run_program(&first, "main", &[]).unwrap();
+    let second_result = native::run_program(&second, "main", &[]).unwrap();
+    assert_eq!(first_result, NativeValue::Int(4 + 8 + 3 + 3));
+    assert_eq!(second_result, first_result);
+}
