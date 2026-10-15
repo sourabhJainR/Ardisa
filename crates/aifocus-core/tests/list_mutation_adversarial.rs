@@ -15,8 +15,8 @@ fn main() -> Int
   values[index]
 "#;
     assert!(
-        matches!(execute(source), Err(NativeError::Type(message)) if message.contains("out of bounds")),
-        "negative list indexes must not wrap, clamp, or read from the end"
+        matches!(execute(source), Err(NativeError::Type(message)) if message.contains("negative index")),
+        "negative list indexes must fail explicitly rather than wrap or read from the end"
     );
 }
 
@@ -30,7 +30,7 @@ fn main() -> Int
   values[0]
 "#;
     assert!(
-        matches!(execute(source), Err(NativeError::Type(message)) if message.contains("out of bounds")),
+        matches!(execute(source), Err(NativeError::Type(message)) if message.contains("negative list index")),
         "negative indexed assignment must fail explicitly before mutation"
     );
 }
