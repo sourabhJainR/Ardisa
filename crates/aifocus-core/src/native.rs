@@ -1113,6 +1113,7 @@ fn run_function(
                 | NativeInstr::PushString(_)
                 | NativeInstr::PushList(_)
                 | NativeInstr::Index
+                | NativeInstr::Slice
                 | NativeInstr::Len
                 | NativeInstr::Append(_)
                 | NativeInstr::MakeOk
