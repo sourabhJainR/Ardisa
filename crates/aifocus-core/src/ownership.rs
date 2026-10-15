@@ -846,7 +846,7 @@ fn f(value: String) -> String
     #[test]
     fn propagates_termination_through_let_initializer() {
         let module = parse(
-            "module terminated_binding\\nfn f(flag: Bool, value: String) -> String\\n  let unreachable = if flag\\n    return value\\n  else\\n    return value\\n  value\\n",
+            "module terminated_binding\nfn f(flag: Bool, value: String) -> String\n  let unreachable = if flag\n    return value\n  else\n    return value\n  value\n",
         )
         .unwrap();
         let Item::Function(function) = &module.items[0];
@@ -863,7 +863,7 @@ fn f(value: String) -> String
     #[test]
     fn propagates_termination_through_assignment_value() {
         let module = parse(
-            "module terminated_assignment\\nfn f(flag: Bool, value: String) -> String\\n  let result = \\\"start\\\"\\n  set result = if flag\\n    return value\\n  else\\n    return value\\n  value\\n",
+            "module terminated_assignment\nfn f(flag: Bool, value: String) -> String\n  let result = \"start\"\n  set result = if flag\n    return value\n  else\n    return value\n  value\n",
         )
         .unwrap();
         let Item::Function(function) = &module.items[0];
