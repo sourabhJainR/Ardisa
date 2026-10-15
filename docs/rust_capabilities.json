@@ -19,14 +19,30 @@
       "label": "Functions, parameters, return types, and scalar arithmetic",
       "status": "partial",
       "evidence": {
-        "source_syntax": ["crates/aifocus-core/src/ast.rs"],
-        "semantic_checks": ["crates/aifocus-core/src/sema.rs"],
-        "typed_ir": ["crates/aifocus-core/src/typed_ir.rs"],
-        "native_encoding": ["crates/aifocus-core/src/native.rs"],
-        "runtime_behavior": ["crates/aifocus-core/src/pipeline.rs"],
-        "positive_tests": ["crates/aifocus-core/src/pipeline.rs"],
-        "adversarial_tests": ["crates/aifocus-core/src/pipeline.rs"],
-        "differential_holdout": [".github/workflows/ci.yml"]
+        "source_syntax": [
+          "crates/aifocus-core/src/ast.rs"
+        ],
+        "semantic_checks": [
+          "crates/aifocus-core/src/sema.rs"
+        ],
+        "typed_ir": [
+          "crates/aifocus-core/src/typed_ir.rs"
+        ],
+        "native_encoding": [
+          "crates/aifocus-core/src/native.rs"
+        ],
+        "runtime_behavior": [
+          "crates/aifocus-core/src/pipeline.rs"
+        ],
+        "positive_tests": [
+          "crates/aifocus-core/src/pipeline.rs"
+        ],
+        "adversarial_tests": [
+          "crates/aifocus-core/src/pipeline.rs"
+        ],
+        "differential_holdout": [
+          ".github/workflows/ci.yml"
+        ]
       },
       "limitations": "Subset only; not Rust numeric or type-system parity."
     },
@@ -49,9 +65,15 @@
       "label": "Flow-sensitive ownership, borrowing, lifetime regions, and drop",
       "status": "partial",
       "evidence": {
-        "semantic_checks": ["crates/aifocus-core/src/ownership.rs"],
-        "positive_tests": ["crates/aifocus-core/src/ownership.rs"],
-        "adversarial_tests": ["crates/aifocus-core/src/ownership.rs"]
+        "semantic_checks": [
+          "crates/aifocus-core/src/ownership.rs"
+        ],
+        "positive_tests": [
+          "crates/aifocus-core/src/ownership.rs"
+        ],
+        "adversarial_tests": [
+          "crates/aifocus-core/src/ownership.rs"
+        ]
       },
       "limitations": "Existing analysis does not establish full Rust-compatible soundness."
     },
@@ -60,27 +82,53 @@
       "label": "Option, Result, propagation, and error conversions",
       "status": "partial",
       "evidence": {
-        "source_syntax": ["crates/aifocus-core/src/ast.rs"],
-        "semantic_checks": ["crates/aifocus-core/src/sema.rs"],
-        "native_encoding": ["crates/aifocus-core/src/native.rs"]
+        "source_syntax": [
+          "crates/aifocus-core/src/ast.rs"
+        ],
+        "semantic_checks": [
+          "crates/aifocus-core/src/sema.rs"
+        ],
+        "native_encoding": [
+          "crates/aifocus-core/src/native.rs"
+        ]
       },
       "limitations": "Full Option and propagation/conversion semantics are not established."
     },
     {
       "id": "strings-lists-and-owned-slices",
-      "label": "UTF-8 byte strings, typed lists, bounded indexing/mutation, and owned list slices",
+      "label": "UTF-8 byte strings, Unicode scalar access, safe string slices, typed lists, and owned list slices",
       "status": "partial",
       "evidence": {
-        "source_syntax": ["crates/aifocus-core/src/ast.rs", "crates/aifocus-core/src/lib.rs"],
-        "semantic_checks": ["crates/aifocus-core/src/sema.rs"],
-        "typed_ir": ["crates/aifocus-core/src/typed_ir.rs"],
-        "native_encoding": ["crates/aifocus-core/src/native.rs"],
-        "runtime_behavior": ["crates/aifocus-core/src/native.rs"],
-        "positive_tests": ["crates/aifocus-core/tests/list_slices.rs", "crates/aifocus-core/tests/unicode_byte_indexing.rs"],
-        "adversarial_tests": ["crates/aifocus-core/tests/list_slices.rs", "crates/aifocus-core/tests/list_mutation_adversarial.rs", "crates/aifocus-core/tests/string_collection_boundaries.rs"],
-        "differential_holdout": [".github/workflows/ci.yml"]
+        "source_syntax": [
+          "crates/aifocus-core/src/ast.rs",
+          "crates/aifocus-core/src/lib.rs"
+        ],
+        "semantic_checks": [
+          "crates/aifocus-core/src/sema.rs"
+        ],
+        "typed_ir": [
+          "crates/aifocus-core/src/typed_ir.rs"
+        ],
+        "native_encoding": [
+          "crates/aifocus-core/src/native.rs"
+        ],
+        "runtime_behavior": [
+          "crates/aifocus-core/src/native.rs"
+        ],
+        "positive_tests": [
+          "crates/aifocus-core/tests/list_slices.rs",
+          "crates/aifocus-core/tests/unicode_byte_indexing.rs"
+        ],
+        "adversarial_tests": [
+          "crates/aifocus-core/tests/list_slices.rs",
+          "crates/aifocus-core/tests/list_mutation_adversarial.rs",
+          "crates/aifocus-core/tests/string_collection_boundaries.rs"
+        ],
+        "differential_holdout": [
+          ".github/workflows/ci.yml"
+        ]
       },
-      "limitations": "List slices are owned copies over half-open ranges. String slicing, iterator/for syntax, borrowed views, Unicode scalar/grapheme indexing, Rust ownership/drop parity, and Rust standard-library parity remain unsupported or unproven."
+      "limitations": "UTF-8 byte indexing remains the legacy String[index] contract. String[start:end] is an owned copy and requires UTF-8 scalar boundaries. scalar_len/scalar_at count/index Unicode scalar values, not grapheme clusters. Grapheme segmentation/indexing, iterator protocol/syntax, borrowed views, full flow-sensitive Rust ownership/lifetime/drop parity, and Rust standard-library parity remain unsupported or unproven."
     },
     {
       "id": "closures-iterators",
@@ -101,8 +149,12 @@
       "label": "Modules, visibility, package resolution, and reproducible dependencies",
       "status": "partial",
       "evidence": {
-        "source_syntax": ["crates/aifocus-core/src/ast.rs"],
-        "semantic_checks": ["crates/aifocus-core/src/sema.rs"]
+        "source_syntax": [
+          "crates/aifocus-core/src/ast.rs"
+        ],
+        "semantic_checks": [
+          "crates/aifocus-core/src/sema.rs"
+        ]
       },
       "limitations": "Rust crate and Cargo compatibility is not established."
     },
