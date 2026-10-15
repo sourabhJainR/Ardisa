@@ -1,4 +1,4 @@
-use aifocus_core::{parse, sema};
+use ardisa_core::{parse, sema};
 
 #[test]
 fn native_reference_and_raw_pointer_types_fail_closed() {
