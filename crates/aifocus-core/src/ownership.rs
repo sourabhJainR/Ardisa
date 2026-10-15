@@ -287,6 +287,17 @@ impl Checker {
                     merge_states(locals, &scoped);
                 }
                 StmtKind::For { name, iterable, body } => {
+                    // Binding identity is not represented in the current checker.
+                    // Reject shadowing here rather than letting the loop-local name
+                    // overwrite an outer binding in the string-keyed state map.
+                    let shadows_existing = locals.contains_key(name);
+                    if shadows_existing {
+                        self.errors.push(Diagnostic::error(
+                            "AIF303",
+                            format!("loop binding '{name}' shadows an existing local"),
+                            Some(stmt.span),
+                        ));
+                    }
                     // Iteration consumes an owned List<T>. This aligns static move state
                     // with the native loop's single evaluation of the iterable.
                     let iterable_type = self.check_expr(iterable, locals, AccessMode::Move);
@@ -299,17 +310,19 @@ impl Checker {
                         _ => None,
                     });
                     let mut scoped = locals.clone();
-                    if let Some(element) = element_type {
-                        scoped.insert(name.clone(), (element, State::Available));
+                    if !shadows_existing {
+                        if let Some(element) = element_type {
+                            scoped.insert(name.clone(), (element, State::Available));
+                        }
                     }
                     self.scope_depth += 1;
                     self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
-                    // The loop binding shadows any outer local with the same name.
-                    // Do not merge the shadow binding's state back into the outer
-                    // binding; the iterable's own move state was already recorded
-                    // before the loop scope was created.
-                    scoped.remove(name);
+                    // Merge only pre-existing bindings. A rejected shadow binding is
+                    // never allowed to overwrite an outer local's state.
+                    if !shadows_existing {
+                        scoped.remove(name);
+                    }
                     merge_states(locals, &scoped);
                 }
                 StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
@@ -883,6 +896,19 @@ fn f(value: String) -> String
                 (id, OwnershipTransition::BorrowStart(BorrowKind::Shared)),
             ]),
             Err("borrow remains active at scope exit")
+        );
+    }
+
+    #[test]
+    fn rejects_loop_binding_shadowing_until_bindings_have_stable_identity() {
+        let module = parse(
+            "module loop_shadow\nfn f(values: List<String>, item: String) -> String\n  for item in values\n    len(item)\n  item\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.code == "AIF303"),
+            "loop binding shadowing must fail closed, got {errors:?}"
         );
     }
 
