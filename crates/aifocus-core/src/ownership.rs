@@ -825,7 +825,7 @@ fn f(value: String) -> String
     #[test]
     fn ownership_join_ignores_a_branch_that_returns_early() {
         let module = parse(
-            "module early_return_join\\nfn f(flag: Bool, value: String) -> String\\n  if flag\\n    return value\\n  else\\n    set value = \\\"restored\\\"\\n  value\\n",
+            "module early_return_join\nfn f(flag: Bool, value: String) -> String\n  if flag\n    return value\n  else\n    set value = \"restored\"\n  value\n",
         )
         .unwrap();
         assert!(crate::sema::check(&module).is_ok());
