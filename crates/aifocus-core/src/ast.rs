@@ -151,6 +151,12 @@ pub enum StmtKind {
         condition: Expr,
         body: Block,
     },
+    /// Parsed for/in loop. Semantic analysis rejects it until typed iteration and runtime paths exist.
+    For {
+        name: String,
+        iterable: Expr,
+        body: Block,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
