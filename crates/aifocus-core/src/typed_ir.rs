@@ -303,6 +303,7 @@ fn lower_expr(
         ExprKind::Group(e)=>return lower_expr(e,types,locals,errors),
         ExprKind::List(xs)=>TypedValueKind::List(xs.iter().filter_map(|e|lower_expr(e,types,locals,errors)).collect()),
         ExprKind::Index{collection,index}=>TypedValueKind::Index(Box::new(lower_expr(collection,types,locals,errors)?),Box::new(lower_expr(index,types,locals,errors)?)),
+        ExprKind::Slice{collection,start,end}=>TypedValueKind::Slice{collection:Box::new(lower_expr(collection,types,locals,errors)?),start:Box::new(lower_expr(start,types,locals,errors)?),end:Box::new(lower_expr(end,types,locals,errors)?)},
         ExprKind::Binary{op,left,right}=>TypedValueKind::Binary{op:*op,left:Box::new(lower_expr(left,types,locals,errors)?),right:Box::new(lower_expr(right,types,locals,errors)?)},
         ExprKind::Call{callee,args}=>{
             let ExprKind::Name(name)=&callee.kind else { errors.push("dynamic call in typed IR".into()); return None; };
