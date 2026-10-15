@@ -219,10 +219,19 @@ impl Checker {
                     }
                 }
                 StmtKind::Let { name, value } => {
-                    if let Some(ty) = self.check_expr(value, locals, AccessMode::Move) {
-                        if self.terminated_exprs.contains(&value.id) {
-                            reachable = false;
-                        } else {
+                    let shadows_existing = locals.contains_key(name);
+                    let value_type = self.check_expr(value, locals, AccessMode::Move);
+                    if shadows_existing {
+                        self.errors.push(Diagnostic::error(
+                            "AIF406",
+                            format!("shadowing local '{name}' is unsupported until ownership bindings have stable identities"),
+                            Some(stmt.span),
+                        ));
+                    }
+                    if self.terminated_exprs.contains(&value.id) {
+                        reachable = false;
+                    } else if !shadows_existing {
+                        if let Some(ty) = value_type {
                             locals.insert(name.clone(), (ty, State::Available));
                         }
                     }
@@ -593,7 +602,7 @@ impl Checker {
                     }
                 } else if then_reachable {
                     // The implicit false path is always reachable, so join it with
-                    // the then path. If the then path returns, only the false path
+                    // the then path. If the then branch returns, only the false path
                     // reaches the next statement and its original state is retained.
                     merge_states(locals, &then_locals);
                 }
@@ -1146,6 +1155,48 @@ fn f(value: String) -> String
             !model.accesses.contains_key(&final_expr_id),
             "statements after a non-fallthrough indexed assignment value must be unreachable"
         );
+    }
+
+
+
+    #[test]
+    fn rejects_shadowing_until_binding_identity_is_tracked() {
+        let module = parse(
+            "module reject_shadow\nfn f(value: String) -> String\n  scope\n    let value = \"fresh\"\n  value\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF406"));
+    }
+
+    #[test]
+    fn nested_scope_shadow_cannot_resurrect_moved_outer_binding() {
+        let module = parse(
+            "module scope_shadow_move\nfn f(value: String) -> String\n  let consumed = value\n  scope\n    let value = \"fresh\"\n  value\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+    }
+
+    #[test]
+    fn conditional_shadow_cannot_resurrect_moved_outer_binding() {
+        let module = parse(
+            "module branch_shadow_move\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  if flag\n    let value = \"fresh\"\n  value\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+    }
+
+    #[test]
+    fn loop_body_shadow_cannot_resurrect_moved_outer_binding() {
+        let module = parse(
+            "module loop_shadow_move\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  while flag\n    let value = \"fresh\"\n  value\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
     }
 
 }
