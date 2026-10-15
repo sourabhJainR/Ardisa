@@ -170,6 +170,26 @@ fn main() -> Int
     }
 
     #[test]
+    fn source_minimum_division_and_remainder_overflow_fail_closed() {
+        for operator in ["/", "%"] {
+            let source = format!(
+                "module checked_min_arithmetic\nfn main() -> Int\n  let minimum = 0 - 9223372036854775807 - 1\n  let negative_one = 0 - 1\n  return minimum {operator} negative_one\n"
+            );
+            let artifact = compile_source(&source)
+                .expect("minimum integer arithmetic should compile to the checked native path");
+            let program = native::decode_program(&artifact.artifact)
+                .expect("numeric artifact should decode");
+            assert!(
+                matches!(
+                    native::run_program(&program, "main", &[]),
+                    Err(native::NativeError::Type(_))
+                ),
+                "i64::MIN {operator} -1 must be a checked runtime failure"
+            );
+        }
+    }
+
+    #[test]
     fn source_ai_tensor_constructors_and_ops_compile_and_execute() {
         let source = r#"module ai
 fn main() -> Tensor<F32>
