@@ -380,3 +380,72 @@ fn main() -> Int
     assert_eq!(first_result, NativeValue::Int(4 + 8 + 3 + 3));
     assert_eq!(second_result, first_result);
 }
+
+
+#[test]
+fn nested_slice_respects_value_depth_budget() {
+    let source = r#"module nested_slice_depth
+fn main() -> Int
+  let values = [[1]]
+  len(values[0:1])
+"#;
+    let compiled = compile_source(source).expect("fixture should compile");
+    let program = native::decode_program(&compiled.artifact).expect("artifact should decode");
+    let limits = native::ExecutionLimits { max_value_depth: 1, ..native::ExecutionLimits::default() };
+    assert!(
+        matches!(native::run_program_with_limits(&program, "main", &[], limits), Err(NativeError::ResourceLimit(message)) if message.contains("depth")),
+        "nested list/slice values must be checked against the depth budget"
+    );
+}
+
+#[test]
+fn slice_output_obeys_collection_item_limit() {
+    let source = r#"module slice_item_limit
+fn main() -> Int
+  let values = [1, 2, 3]
+  len(values[0:3])
+"#;
+    let compiled = compile_source(source).expect("fixture should compile");
+    let program = native::decode_program(&compiled.artifact).expect("artifact should decode");
+    let limits = native::ExecutionLimits { max_collection_items: 2, ..native::ExecutionLimits::default() };
+    assert!(
+        matches!(native::run_program_with_limits(&program, "main", &[], limits), Err(NativeError::ResourceLimit(message)) if message.contains("collection")),
+        "slice result must be rejected when it exceeds the configured item budget"
+    );
+}
+
+#[test]
+fn artifact_encoding_is_deterministic_after_decode_and_reencode() {
+    let source = r#"module deterministic_slice_artifact
+fn main() -> Int
+  let values = [[1, 2], [3, 4]]
+  len(values[0:2])
+"#;
+    let compiled = compile_source(source).expect("fixture should compile");
+    let decoded = native::decode_program(&compiled.artifact).expect("artifact should decode");
+    let reencoded = native::encode_program(&decoded);
+    assert_eq!(reencoded, compiled.artifact, "native artifacts must round-trip byte-for-byte");
+    let decoded_again = native::decode_program(&reencoded).expect("reencoded artifact should decode");
+    assert_eq!(
+        native::run_program(&decoded, "main", &[]).unwrap(),
+        native::run_program(&decoded_again, "main", &[]).unwrap()
+    );
+}
+
+#[test]
+fn utf8_string_slice_requires_scalar_boundaries_and_returns_copy() {
+    let valid = r#"module utf8_string_slice
+fn main() -> Int
+  len("Aé😀"[1:3])
+"#;
+    assert_eq!(execute(valid).unwrap(), NativeValue::Int(2));
+
+    let split_scalar = r#"module utf8_string_slice_split
+fn main() -> Int
+  len("Aé😀"[2:3])
+"#;
+    assert!(
+        matches!(execute(split_scalar), Err(NativeError::Type(message)) if message.contains("UTF-8 scalar boundaries")),
+        "byte slicing that splits a scalar must fail explicitly"
+    );
+}
