@@ -677,12 +677,6 @@ impl Checker {
                 }
             }
             ExprKind::Call { callee, args } => {
-                if let ExprKind::Name(name) = &callee.kind {
-                    if let Some(result) = self.check_unicode_builtin(name, args, expr, locals) {
-                        if let Some(ty) = &result { self.inferred_types.insert(expr.id, ty.clone()); }
-                        return result;
-                    }
-                }
                 let ExprKind::Name(name) = &callee.kind else {
                     self.error(
                         "AIF307",
@@ -1336,43 +1330,6 @@ impl Checker {
             self.inferred_types.insert(expr.id, ty.clone());
         }
         result
-    }
-
-
-    fn check_unicode_builtin(
-        &mut self,
-        name: &str,
-        args: &[Expr],
-        expr: &Expr,
-        locals: &HashMap<String, Type>,
-    ) -> Option<Option<Type>> {
-        let expected_args = match name {
-            "scalar_len" | "grapheme_len" => 1,
-            "scalar_at" | "grapheme_at" => 2,
-            _ => return None,
-        };
-        if args.len() != expected_args {
-            self.error("AIF552", format!("{name} expects {expected_args} argument(s)"), expr.span);
-            return Some(None);
-        }
-        let Some(text_type) = self.check_expr(&args[0], locals) else {
-            return Some(None);
-        };
-        if !is_kind(&text_type, &TypeKind::String) {
-            self.error("AIF553", format!("{name} requires String as its first argument"), args[0].span);
-            return Some(None);
-        }
-        if expected_args == 2 {
-            let Some(index_type) = self.check_expr(&args[1], locals) else {
-                return Some(None);
-            };
-            if !is_kind(&index_type, &TypeKind::Int) {
-                self.error("AIF554", format!("{name} index must be Int"), args[1].span);
-                return Some(None);
-            }
-        }
-        let result_kind = if expected_args == 1 { TypeKind::Int } else { TypeKind::String };
-        Some(Some(type_node(result_kind, expr.span)))
     }
 
 
