@@ -356,6 +356,10 @@ impl Checker {
                             element_type = Some(ty);
                         }
                     }
+                    if self.terminated_exprs.contains(&item.id) {
+                        self.terminated_exprs.insert(expr.id);
+                        break;
+                    }
                 }
                 Some(type_node(
                     TypeKind::List(Box::new(
@@ -367,7 +371,15 @@ impl Checker {
             ExprKind::Index { collection, index } => {
                 let collection_type =
                     self.check_expr(collection, locals, AccessMode::SharedBorrow);
+                if self.terminated_exprs.contains(&collection.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return collection_type;
+                }
                 self.check_expr(index, locals, AccessMode::Move);
+                if self.terminated_exprs.contains(&index.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return collection_type;
+                }
                 collection_type.and_then(|ty| match ty.kind {
                     TypeKind::List(element) => Some(*element),
                     // String indexing is byte-based in the current language contract.
@@ -378,8 +390,19 @@ impl Checker {
             ExprKind::Slice { collection, start, end } => {
                 let collection_type =
                     self.check_expr(collection, locals, AccessMode::SharedBorrow);
+                if self.terminated_exprs.contains(&collection.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return collection_type;
+                }
                 self.check_expr(start, locals, AccessMode::Move);
+                if self.terminated_exprs.contains(&start.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return collection_type;
+                }
                 self.check_expr(end, locals, AccessMode::Move);
+                if self.terminated_exprs.contains(&end.id) {
+                    self.terminated_exprs.insert(expr.id);
+                }
                 // Slices are owned copies with the same collection type, not views.
                 collection_type
             }
@@ -405,7 +428,15 @@ impl Checker {
                     AccessMode::Move
                 };
                 let left_type = self.check_expr(left, locals, operand_mode);
+                if self.terminated_exprs.contains(&left.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return left_type;
+                }
                 let right_type = self.check_expr(right, locals, operand_mode);
+                if self.terminated_exprs.contains(&right.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return left_type.or(right_type);
+                }
                 match op {
                     BinaryOp::Add
                     | BinaryOp::Sub
@@ -438,6 +469,10 @@ impl Checker {
                             AccessMode::Move
                         };
                         self.check_expr(arg, locals, mode);
+                        if self.terminated_exprs.contains(&arg.id) {
+                            self.terminated_exprs.insert(expr.id);
+                            return None;
+                        }
                     }
                     return None;
                 };
@@ -454,6 +489,10 @@ impl Checker {
                         })
                         .unwrap_or(AccessMode::Move);
                     self.check_expr(arg, locals, mode);
+                    if self.terminated_exprs.contains(&arg.id) {
+                        self.terminated_exprs.insert(expr.id);
+                        return function.return_type;
+                    }
                 }
                 function.return_type
             }
@@ -463,6 +502,10 @@ impl Checker {
                 else_branch,
             } => {
                 self.check_expr(condition, locals, AccessMode::Move);
+                if self.terminated_exprs.contains(&condition.id) {
+                    self.terminated_exprs.insert(expr.id);
+                    return Some(type_node(TypeKind::Unit, expr));
+                }
                 let mut then_locals = locals.clone();
                 let then_reachable = self.check_block(then_branch, &mut then_locals);
                 if let Some(else_branch) = else_branch {
@@ -929,6 +972,44 @@ fn f(value: String) -> String
         assert!(
             !model.accesses.contains_key(&final_expr_id),
             "grouping must preserve a non-fallthrough expression's termination state"
+        );
+    }
+
+    #[test]
+    fn termination_in_binary_operand_skips_later_operands_and_statements() {
+        let mut module = parse(
+            "module nested_termination\nfn f(flag: Bool, value: String) -> String\n  if flag\n    return value\n  else\n    return value\n  value\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &mut module.items[0];
+        let StmtKind::Expr(terminating_if) = &function.body.stmts[0].kind else {
+            panic!("expected if expression");
+        };
+        let terminating_if = terminating_if.clone();
+        function.body.stmts[0].kind = StmtKind::Let {
+            name: "unreachable".into(),
+            value: Expr {
+                id: crate::NodeId(9_000_001),
+                span: terminating_if.span,
+                kind: ExprKind::Binary {
+                    op: BinaryOp::Add,
+                    left: Box::new(terminating_if),
+                    right: Box::new(Expr {
+                        id: crate::NodeId(9_000_002),
+                        span: function.body.stmts[1].span,
+                        kind: ExprKind::Name("value".into()),
+                    }),
+                },
+            },
+        };
+        let StmtKind::Expr(final_expr) = &function.body.stmts.last().unwrap().kind else {
+            panic!("expected final expression");
+        };
+        let final_expr_id = final_expr.id;
+        let model = analyze(&module).unwrap();
+        assert!(
+            !model.accesses.contains_key(&final_expr_id),
+            "statements after a nested non-fallthrough operand must be unreachable"
         );
     }
 
