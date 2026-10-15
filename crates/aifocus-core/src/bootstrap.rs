@@ -47,7 +47,9 @@ pub struct BootstrapReport {
 // Bootstrap verification follows the native function representation.
 const BOOTSTRAP_EXECUTION_LIMITS: native::ExecutionLimits = native::ExecutionLimits {
     max_instructions: 100_000_000,
-    max_call_depth: 512,
+    // Bootstrap executes the native interpreter recursively; keep this below the
+    // host stack ceiling so adversarial self-hosted recursion fails closed.
+    max_call_depth: 48,
     max_tasks: 128,
     max_collection_items: 1_000_000,
     max_string_bytes: 64 * 1024 * 1024,
