@@ -226,6 +226,17 @@ impl Checker {
                     self.scope_depth -= 1;
                     merge_states(locals, &scoped, true);
                 }
+                StmtKind::For { name, iterable, body } => {
+                    let iterable_type = self.check_expr(iterable, locals, AccessMode::SharedBorrow);
+                    if let Some(Type { kind: TypeKind::List(element), .. }) = iterable_type {
+                        self.scope_depth += 1;
+                        let mut scoped = locals.clone();
+                        scoped.insert(name.clone(), ((*element).clone(), State::Available));
+                        self.check_block(body, &mut scoped);
+                        self.scope_depth -= 1;
+                        merge_states(locals, &scoped, true);
+                    }
+                }
                 StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
             }
         }
