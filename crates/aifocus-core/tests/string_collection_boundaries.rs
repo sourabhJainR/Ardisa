@@ -57,15 +57,17 @@ fn main() -> Int
 }
 
 #[test]
-fn slice_syntax_is_rejected_until_slice_semantics_are_implemented() {
-    let source = r#"module unsupported_slice
+fn list_slice_syntax_parses_as_a_distinct_expression() {
+    use ardisa_core::{ast::ExprKind, sema, Item, StmtKind};
+    let source = r#"module parsed_slice
 fn main() -> Int
   let values = [1, 2, 3]
-  values[0:2]
+  len(values[0:2])
 "#;
-    let errors = parse(source).expect_err("slice syntax must not be silently interpreted as indexing");
-    assert!(
-        errors.iter().any(|error| error.code.starts_with("AIF")),
-        "unsupported slice syntax should produce a language diagnostic"
-    );
+    let module = parse(source).expect("list slice syntax should parse");
+    let Item::Function(function) = &module.items[0];
+    let StmtKind::Expr(call) = &function.body.stmts[1].kind else { panic!("expected call expression"); };
+    let ExprKind::Call { args, .. } = &call.kind else { panic!("expected len call"); };
+    assert!(matches!(args[0].kind, ExprKind::Slice { .. }));
+    assert!(sema::analyze(&module).is_ok());
 }

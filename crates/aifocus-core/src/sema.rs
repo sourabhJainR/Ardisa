@@ -549,6 +549,28 @@ impl Checker {
                     expr.span,
                 ))
             }
+            ExprKind::Slice { collection, start, end } => {
+                let collection_type = self.check_expr(collection, locals)?;
+                let start_type = self.check_expr(start, locals)?;
+                let end_type = self.check_expr(end, locals)?;
+                if !is_kind(&start_type, &TypeKind::Int) {
+                    self.error("AIF318", "slice start must be Int", start.span);
+                }
+                if !is_kind(&end_type, &TypeKind::Int) {
+                    self.error("AIF318", "slice end must be Int", end.span);
+                }
+                match collection_type.kind {
+                    TypeKind::List(element) => Some(type_node(TypeKind::List(element), expr.span)),
+                    TypeKind::String => {
+                        self.error("AIF319", "String slicing is unsupported; strings are indexed by UTF-8 byte and slices could split a code point", collection.span);
+                        None
+                    }
+                    _ => {
+                        self.error("AIF319", "slicing currently requires List<T>", collection.span);
+                        None
+                    }
+                }
+            }
             ExprKind::Index { collection, index } => {
                 let collection_type = self.check_expr(collection, locals)?;
                 let index_type = self.check_expr(index, locals)?;

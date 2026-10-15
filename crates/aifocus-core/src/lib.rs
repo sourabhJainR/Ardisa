@@ -518,17 +518,31 @@ impl Parser {
 
         loop {
             if self.eat(TokenKind::LBracket) {
-                let index = self.parse_expr(0)?;
-                let close = self.expect(TokenKind::RBracket, "']' after index")?;
+                let first = self.parse_expr(0)?;
                 let start = left.span.start;
-                left = Expr {
-                    id: self.id("index", &format!("{}:{}", start, close.span.end)),
-                    span: source::Span::new(start, close.span.end),
-                    kind: ExprKind::Index {
-                        collection: Box::new(left),
-                        index: Box::new(index),
-                    },
-                };
+                if self.eat(TokenKind::Colon) {
+                    let end = self.parse_expr(0)?;
+                    let close = self.expect(TokenKind::RBracket, "']' after slice")?;
+                    left = Expr {
+                        id: self.id("slice", &format!("{}:{}", start, close.span.end)),
+                        span: source::Span::new(start, close.span.end),
+                        kind: ExprKind::Slice {
+                            collection: Box::new(left),
+                            start: Box::new(first),
+                            end: Box::new(end),
+                        },
+                    };
+                } else {
+                    let close = self.expect(TokenKind::RBracket, "']' after index")?;
+                    left = Expr {
+                        id: self.id("index", &format!("{}:{}", start, close.span.end)),
+                        span: source::Span::new(start, close.span.end),
+                        kind: ExprKind::Index {
+                            collection: Box::new(left),
+                            index: Box::new(first),
+                        },
+                    };
+                }
                 continue;
             }
 

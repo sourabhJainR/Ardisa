@@ -67,6 +67,22 @@
       "limitations": "Full Option and propagation/conversion semantics are not established."
     },
     {
+      "id": "strings-lists-and-owned-slices",
+      "label": "UTF-8 byte strings, typed lists, bounded indexing/mutation, and owned list slices",
+      "status": "partial",
+      "evidence": {
+        "source_syntax": ["crates/aifocus-core/src/ast.rs", "crates/aifocus-core/src/lib.rs"],
+        "semantic_checks": ["crates/aifocus-core/src/sema.rs"],
+        "typed_ir": ["crates/aifocus-core/src/typed_ir.rs"],
+        "native_encoding": ["crates/aifocus-core/src/native.rs"],
+        "runtime_behavior": ["crates/aifocus-core/src/native.rs"],
+        "positive_tests": ["crates/aifocus-core/tests/list_slices.rs", "crates/aifocus-core/tests/unicode_byte_indexing.rs"],
+        "adversarial_tests": ["crates/aifocus-core/tests/list_slices.rs", "crates/aifocus-core/tests/list_mutation_adversarial.rs", "crates/aifocus-core/tests/string_collection_boundaries.rs"],
+        "differential_holdout": [".github/workflows/ci.yml"]
+      },
+      "limitations": "List slices are owned copies over half-open ranges. String slicing, iterator/for syntax, borrowed views, Unicode scalar/grapheme indexing, Rust ownership/drop parity, and Rust standard-library parity remain unsupported or unproven."
+    },
+    {
       "id": "closures-iterators",
       "label": "Closures, capture modes, iterators, and for loops",
       "status": "unsupported",

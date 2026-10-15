@@ -185,6 +185,7 @@ pub enum TypedValueKind {
     Name(String),
     List(Vec<TypedValue>),
     Index(Box<TypedValue>, Box<TypedValue>),
+    Slice { collection: Box<TypedValue>, start: Box<TypedValue>, end: Box<TypedValue> },
     Binary { op: BinaryOp, left: Box<TypedValue>, right: Box<TypedValue> },
     Call { callee: String, args: Vec<TypedValue> },
     If { condition: Box<TypedValue>, then_ops: Vec<TypedIrOp>, else_ops: Vec<TypedIrOp> },
@@ -302,6 +303,7 @@ fn lower_expr(
         ExprKind::Group(e)=>return lower_expr(e,types,locals,errors),
         ExprKind::List(xs)=>TypedValueKind::List(xs.iter().filter_map(|e|lower_expr(e,types,locals,errors)).collect()),
         ExprKind::Index{collection,index}=>TypedValueKind::Index(Box::new(lower_expr(collection,types,locals,errors)?),Box::new(lower_expr(index,types,locals,errors)?)),
+        ExprKind::Slice{collection,start,end}=>TypedValueKind::Slice{collection:Box::new(lower_expr(collection,types,locals,errors)?),start:Box::new(lower_expr(start,types,locals,errors)?),end:Box::new(lower_expr(end,types,locals,errors)?)},
         ExprKind::Binary{op,left,right}=>TypedValueKind::Binary{op:*op,left:Box::new(lower_expr(left,types,locals,errors)?),right:Box::new(lower_expr(right,types,locals,errors)?)},
         ExprKind::Call{callee,args}=>{
             let ExprKind::Name(name)=&callee.kind else { errors.push("dynamic call in typed IR".into()); return None; };
@@ -511,6 +513,11 @@ fn optimize_value(value: &mut TypedValue) {
             optimize_value(collection);
             optimize_value(index);
         }
+        TypedValueKind::Slice { collection, start, end } => {
+            optimize_value(collection);
+            optimize_value(start);
+            optimize_value(end);
+        }
         TypedValueKind::Call { args, .. } => args.iter_mut().for_each(optimize_value),
         TypedValueKind::If { condition, then_ops, else_ops } => {
             optimize_value(condition);
@@ -539,17 +546,36 @@ pub fn to_legacy_ir(module: &TypedIrModule) -> crate::ir::IrModule {
 }
 
 fn flatten_cfg(function: &TypedIrFunction) -> Vec<crate::ir::IrOp> {
-    let mut ops = Vec::new();
-    for block in &function.blocks {
-        ops.extend(block.ops.iter().map(typed_op_to_legacy));
-        match &block.terminator {
-            TypedTerminator::Return(value) => ops.push(crate::ir::IrOp::Return(value.as_ref().map(typed_value_to_legacy))),
-            TypedTerminator::Branch { condition, .. } => ops.push(crate::ir::IrOp::Expr(typed_value_to_legacy(condition))),
-            TypedTerminator::Loop { condition, .. } => ops.push(crate::ir::IrOp::While { condition: typed_value_to_legacy(condition), ops: Vec::new() }),
-            TypedTerminator::Fallthrough => {}
+    fn flatten_sequence(function: &TypedIrFunction, start: u32, seen: &mut std::collections::HashSet<u32>) -> Vec<crate::ir::IrOp> {
+        let mut out = Vec::new();
+        let mut cursor = Some(start);
+        while let Some(id) = cursor {
+            if !seen.insert(id) { break; }
+            let Some(block) = function.blocks.iter().find(|block| block.id == id) else { break; };
+            out.extend(block.ops.iter().map(typed_op_to_legacy));
+            match &block.terminator {
+                TypedTerminator::Return(value) => {
+                    out.push(crate::ir::IrOp::Return(value.as_ref().map(typed_value_to_legacy)));
+                    break;
+                }
+                TypedTerminator::Loop { condition, body_block, exit_block } => {
+                    let body_ops = flatten_sequence(function, *body_block, &mut std::collections::HashSet::new());
+                    out.push(crate::ir::IrOp::While { condition: typed_value_to_legacy(condition), ops: body_ops });
+                    cursor = Some(*exit_block);
+                }
+                // General CFG branches are not yet representable in the legacy IR.
+                // Preserve fail-closed behavior rather than pretending the condition
+                // alone implements both control-flow paths.
+                TypedTerminator::Branch { condition, .. } => {
+                    out.push(crate::ir::IrOp::Expr(typed_value_to_legacy(condition)));
+                    break;
+                }
+                TypedTerminator::Fallthrough => break,
+            }
         }
+        out
     }
-    ops
+    flatten_sequence(function, 0, &mut std::collections::HashSet::new())
 }
 
 fn typed_op_to_legacy(op: &TypedIrOp) -> crate::ir::IrOp {
@@ -574,6 +600,7 @@ fn typed_value_to_legacy(value: &TypedValue) -> crate::ir::IrValue {
         TypedValueKind::Name(v) => crate::ir::IrValue::Name(v.clone()),
         TypedValueKind::List(values) => crate::ir::IrValue::List(values.iter().map(typed_value_to_legacy).collect()),
         TypedValueKind::Index(c, i) => crate::ir::IrValue::Index { collection: Box::new(typed_value_to_legacy(c)), index: Box::new(typed_value_to_legacy(i)) },
+        TypedValueKind::Slice { collection, start, end } => crate::ir::IrValue::Slice { collection: Box::new(typed_value_to_legacy(collection)), start: Box::new(typed_value_to_legacy(start)), end: Box::new(typed_value_to_legacy(end)) },
         TypedValueKind::Binary { op, left, right } => crate::ir::IrValue::Binary { op: *op, left: Box::new(typed_value_to_legacy(left)), right: Box::new(typed_value_to_legacy(right)) },
         TypedValueKind::Call { callee, args } => crate::ir::IrValue::Call { callee: callee.clone(), args: args.iter().map(typed_value_to_legacy).collect() },
         TypedValueKind::If { condition, then_ops, else_ops } => crate::ir::IrValue::If {

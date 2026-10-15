@@ -184,6 +184,11 @@ fn collect_expr(expr: &Expr, effects: &mut FunctionEffects) {
             collect_expr(collection, effects);
             collect_expr(index, effects);
         }
+        ExprKind::Slice { collection, start, end } => {
+            collect_expr(collection, effects);
+            collect_expr(start, effects);
+            collect_expr(end, effects);
+        }
         ExprKind::If {
             condition,
             then_branch,

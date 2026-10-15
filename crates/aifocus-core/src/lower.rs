@@ -190,6 +190,14 @@ impl Lowerer {
                 self.expr(index, indent);
                 self.out.push(']');
             }
+            ExprKind::Slice { collection, start, end } => {
+                self.expr(collection, indent);
+                self.out.push('[');
+                self.expr(start, indent);
+                self.out.push_str(":");
+                self.expr(end, indent);
+                self.out.push(']');
+            }
             ExprKind::Group(inner) => {
                 self.out.push('(');
                 self.expr(inner, indent);

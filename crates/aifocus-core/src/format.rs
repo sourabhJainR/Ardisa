@@ -179,6 +179,14 @@ fn format_expr(expr: &Expr, indent: usize, out: &mut String) {
             format_expr(index, indent, out);
             out.push(']');
         }
+        ExprKind::Slice { collection, start, end } => {
+            format_expr(collection, indent, out);
+            out.push('[');
+            format_expr(start, indent, out);
+            out.push(':');
+            format_expr(end, indent, out);
+            out.push(']');
+        }
         ExprKind::Group(inner) => {
             out.push('(');
             format_expr(inner, indent, out);

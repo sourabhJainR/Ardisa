@@ -92,6 +92,8 @@ pub enum NativeInstr {
     PushString(String),
     PushList(usize),
     Index,
+    /// Copy the half-open range [start, end) from a List into a new owned List.
+    Slice,
     Len,
     Append(String),
     MakeOk,
@@ -733,6 +735,12 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
             emit_value(index, code)?;
             code.push(NativeInstr::Index);
         }
+        IrValue::Slice { collection, start, end } => {
+            emit_value(collection, code)?;
+            emit_value(start, code)?;
+            emit_value(end, code)?;
+            code.push(NativeInstr::Slice);
+        }
         IrValue::Bool(value) => code.push(NativeInstr::PushBool(*value)),
         IrValue::Name(name) => code.push(NativeInstr::Load(name.clone())),
         IrValue::Binary { op, left, right } => {
@@ -1105,6 +1113,7 @@ fn run_function(
                 | NativeInstr::PushString(_)
                 | NativeInstr::PushList(_)
                 | NativeInstr::Index
+                | NativeInstr::Slice
                 | NativeInstr::Len
                 | NativeInstr::Append(_)
                 | NativeInstr::MakeOk
@@ -1865,6 +1874,29 @@ fn run_function(
                     }
                 }
             }
+            NativeInstr::Slice => {
+                let end = pop_int(&mut stack)?;
+                let start = pop_int(&mut stack)?;
+                let collection = stack.pop().ok_or_else(|| NativeError::InvalidProgram("slice from empty stack".into()))?;
+                let NativeValue::List(values) = collection else {
+                    return Err(NativeError::Type("slicing currently requires List<T>".into()));
+                };
+                let start = usize::try_from(start).map_err(|_| NativeError::Type("negative slice start".into()))?;
+                let end = usize::try_from(end).map_err(|_| NativeError::Type("negative slice end".into()))?;
+                if start > end {
+                    return Err(NativeError::Type("slice start must not exceed slice end".into()));
+                }
+                if end > values.len() {
+                    return Err(NativeError::Type("slice end out of bounds".into()));
+                }
+                let length = end - start;
+                if length > state.limits.max_collection_items {
+                    return Err(NativeError::ResourceLimit("slice exceeds collection item limit".into()));
+                }
+                let sliced = NativeValue::List(values[start..end].to_vec());
+                validate_value(&sliced, state.limits)?;
+                stack.push(sliced);
+            }
             NativeInstr::Len => {
                 let value = stack
                     .pop()
@@ -2333,7 +2365,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::PushUnit => "PushUnit".into(),
         NativeInstr::PushString(v) => format!("PushString:{}", escape_artifact(v)),
         NativeInstr::PushList(v) => format!("PushList:{v}"),
-        NativeInstr::Index => "Index".into(), NativeInstr::Len => "Len".into(),
+        NativeInstr::Index => "Index".into(), NativeInstr::Slice => "Slice".into(), NativeInstr::Len => "Len".into(),
         NativeInstr::Append(v) => format!("Append:{}", escape_artifact(v)),
         NativeInstr::MakeOk => "MakeOk".into(), NativeInstr::Chr => "Chr".into(),
         NativeInstr::MakeErr => "MakeErr".into(), NativeInstr::Unwrap => "Unwrap".into(),
@@ -2408,7 +2440,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "KvAppend"=>{let (name,policy)=arg.rsplit_once(',').ok_or_else(bad)?; let policy=policy.parse::<bool>().map_err(|_|bad())?; NativeInstr::KvAppend{name:unescape_artifact(name)?,evict_oldest:policy}},
         "MakeContextWindow"=>NativeInstr::MakeContextWindow,"ContextLen"=>NativeInstr::ContextLen,"ContextBytes"=>NativeInstr::ContextBytes,"ContextTokens"=>NativeInstr::ContextTokens,
         "ContextAppend"=>NativeInstr::ContextAppend{name:unescape_artifact(arg)?},
-        "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Len"=>NativeInstr::Len,
+        "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Slice"=>NativeInstr::Slice,"Len"=>NativeInstr::Len,
         "PushString"=>NativeInstr::PushString(unescape_artifact(arg)?),
         "PushList"=>NativeInstr::PushList(int(arg)?),"Append"=>NativeInstr::Append(unescape_artifact(arg)?),
         "MakeOk"=>NativeInstr::MakeOk,"Chr"=>NativeInstr::Chr,"MakeErr"=>NativeInstr::MakeErr,"Unwrap"=>NativeInstr::Unwrap,

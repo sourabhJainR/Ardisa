@@ -251,6 +251,9 @@ fn find_expr(expr: &Expr, target: NodeId) -> Option<Span> {
         ExprKind::Index { collection, index } => {
             find_expr(collection, target).or_else(|| find_expr(index, target))
         }
+        ExprKind::Slice { collection, start, end } => find_expr(collection, target)
+            .or_else(|| find_expr(start, target))
+            .or_else(|| find_expr(end, target)),
         ExprKind::If {
             condition,
             then_branch,

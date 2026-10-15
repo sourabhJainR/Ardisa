@@ -321,6 +321,11 @@ impl Checker {
                 self.check_expr(collection, locals, AccessMode::SharedBorrow);
                 self.check_expr(index, locals, AccessMode::Move)
             }
+            ExprKind::Slice { collection, start, end } => {
+                self.check_expr(collection, locals, AccessMode::SharedBorrow);
+                self.check_expr(start, locals, AccessMode::Move);
+                self.check_expr(end, locals, AccessMode::Move)
+            }
             ExprKind::Group(inner) => self.check_expr(inner, locals, mode),
             ExprKind::Binary { op, left, right } => {
                 let operand_mode = if matches!(
