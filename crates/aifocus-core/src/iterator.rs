@@ -1,10 +1,11 @@
 //! Bounded ownership-taking iterator semantics for Ardisa's first iterator subset.
 //!
-//! This module is the reference semantics for owned `List<T>` iteration. It is
-//! deliberately not wired into source compilation yet: `for/in` remains rejected
-//! until the typed IR and native artifact/runtime paths can enforce the same rules.
-//! Keeping the executable surface small prevents parser acceptance from overstating
-//! language support.
+//! This module defines generic reference semantics for owned `List<T>` iteration.
+//! The source compiler currently lowers its supported `for/in` subset through a
+//! deterministic index-based native path; it does not instantiate this generic
+//! iterator in the VM. Consequently, this module's no-clone semantics are not a
+//! claim that native iteration is zero-copy. Keep that distinction explicit until
+//! the runtime and ownership model can share a move-based iterator implementation.
 
 use std::vec::IntoIter;
 
