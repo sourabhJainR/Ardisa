@@ -677,6 +677,25 @@ fn f(value: String) -> String
             infer(&module).is_ok(),
             "consuming a loop-local binding must not mark an unrelated outer value moved"
         );
+        assert!(crate::sema::check(&module).is_ok());
+    }
+
+    #[test]
+    fn a_move_on_one_if_branch_is_visible_after_the_join() {
+        let module = parse(
+            "module branch_join\\nfn f(flag: Bool, value: String) -> String\\n  if flag\\n    let consumed = value\\n  else\\n    let other = \"safe\"\\n  value\\n",
+        ).unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+    }
+
+    #[test]
+    fn assignment_reinitializes_a_previously_moved_local() {
+        let module = parse(
+            "module reinit\\nfn f(value: String) -> String\\n  let consumed = value\\n  set value = \"restored\"\\n  value\\n",
+        ).unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(infer(&module).is_ok());
     }
 
 
