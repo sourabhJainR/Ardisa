@@ -75,7 +75,7 @@ fn for_in_consumes_the_iterable_binding() {
 
 #[test]
 fn iterable_expression_is_emitted_once_before_the_loop() {
-    let source = "module iterator_once\\nfn source() -> List<Int>\\n  [2, 4, 6]\\nfn main() -> Int\\n  let total = 0\\n  for value in source()\\n    set total = total + value\\n  total\\n";
+    let source = "module iterator_once\nfn source() -> List<Int>\n  [2, 4, 6]\nfn main() -> Int\n  let total = 0\n  for value in source()\n    set total = total + value\n  total\n";
     let compiled = compile_source(source).expect("call expression should compile");
     let program = decode_program(&compiled.artifact).expect("artifact should decode");
     let main = program.functions.get("main").expect("main function should exist");
@@ -88,14 +88,14 @@ fn iterable_expression_is_emitted_once_before_the_loop() {
 
 #[test]
 fn mutation_of_the_consumed_iterable_is_rejected() {
-    let source = "module iterator_alias\\nfn main() -> Int\\n  let values = [1, 2]\\n  let alias = values\\n  for item in alias\\n    set alias[0] = item\\n  0\\n";
+    let source = "module iterator_alias\nfn main() -> Int\n  let values = [1, 2]\n  let alias = values\n  for item in alias\n    set alias[0] = item\n  0\n";
     let error = compile_source(source).expect_err("a consumed iterable must not be mutable in the loop body");
     assert!(format!("{error:?}").contains("AIF400"), "unexpected error: {error:?}");
 }
 
 #[test]
 fn iteration_respects_the_vm_instruction_budget() {
-    let source = "module iterator_budget\\nfn main(values: List<Int>) -> Int\\n  let total = 0\\n  for value in values\\n    set total = total + value\\n  total\\n";
+    let source = "module iterator_budget\nfn main(values: List<Int>) -> Int\n  let total = 0\n  for value in values\n    set total = total + value\n  total\n";
     let compiled = compile_source(source).expect("bounded loop should compile");
     let program = decode_program(&compiled.artifact).expect("artifact should decode");
     let values = NativeValue::List((0..32).map(NativeValue::Int).collect());
