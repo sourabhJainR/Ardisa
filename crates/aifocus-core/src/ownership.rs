@@ -109,6 +109,7 @@ impl OwnershipClass {
 enum State {
     Available,
     Moved,
+    MaybeMoved,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,7 +227,7 @@ impl Checker {
                     let mut scoped = locals.clone();
                     self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
-                    merge_states(locals, &scoped, true);
+                    merge_states(locals, &scoped);
                 }
                 StmtKind::For { name, iterable, body } => {
                     // Iteration consumes an owned List<T>. This aligns static move state
@@ -270,12 +271,13 @@ impl Checker {
                 let Some((ty, state)) = locals.get_mut(name) else {
                     return None;
                 };
-                if *state == State::Moved {
-                    self.errors.push(Diagnostic::error(
-                        "AIF400",
-                        format!("use of moved value '{name}'"),
-                        Some(expr.span),
-                    ));
+                if *state != State::Available {
+                    let message = if *state == State::Moved {
+                        format!("use of moved value '{name}'")
+                    } else {
+                        format!("use of possibly moved value '{name}'")
+                    };
+                    self.errors.push(Diagnostic::error("AIF400", message, Some(expr.span)));
                     return None;
                 }
                 let access = if ownership_of(ty) == OwnershipClass::Copy {
@@ -445,20 +447,16 @@ impl Checker {
                         // A value is available after the join only if both paths
                         // leave it available. This also permits a moved value to be
                         // reinitialized on every path before it is used again.
-                        match (then_state, else_state) {
-                            (Some(State::Available), Some(State::Available)) => {
-                                *state = State::Available;
-                            }
-                            (Some(State::Moved), _) | (_, Some(State::Moved)) => {
-                                *state = State::Moved;
-                            }
-                            _ => {}
+                        if let (Some(then_state), Some(else_state)) =
+                            (then_state, else_state)
+                        {
+                            *state = join_state(then_state, else_state);
                         }
                     }
                 } else {
                     // The branch may execute, so a move in it is conservatively
                     // considered visible after the conditional.
-                    merge_states(locals, &then_locals, false);
+                    merge_states(locals, &then_locals);
                 }
                 Some(type_node(TypeKind::Unit, expr))
             }
@@ -491,13 +489,16 @@ fn ownership_of(ty: &Type) -> OwnershipClass {
 fn merge_states(
     outer: &mut HashMap<String, (Type, State)>,
     inner: &HashMap<String, (Type, State)>,
-    _loop_body: bool,
 ) {
     for (name, (_, state)) in outer.iter_mut() {
-        if inner.get(name).map(|entry| entry.1) == Some(State::Moved) {
-            *state = State::Moved;
+        if let Some((_, inner_state)) = inner.get(name) {
+            *state = join_state(*state, *inner_state);
         }
     }
+}
+
+fn join_state(left: State, right: State) -> State {
+    if left == right { left } else { State::MaybeMoved }
 }
 
 fn merge_scope_states(
