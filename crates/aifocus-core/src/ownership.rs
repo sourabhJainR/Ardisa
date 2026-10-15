@@ -650,4 +650,13 @@ fn f(value: String) -> String
             Err("borrow remains active at scope exit")
         );
     }
+
+    #[test]
+    fn reference_and_lifetime_escape_syntax_is_rejected_until_supported() {
+        let reference = "module x\nfn return_ref(value: &String) -> &String\n  value\n";
+        assert!(parse(reference).is_err(), "reference types must not be silently accepted without lifetime checking");
+
+        let named_lifetime = "module x\nfn return_ref<'a>(value: &'a String) -> &'a String\n  value\n";
+        assert!(parse(named_lifetime).is_err(), "named lifetime syntax must fail closed until Ardisa defines and checks its own regions");
+    }
 }
