@@ -2,9 +2,9 @@ use ardisa_core::{parse, sema};
 
 #[test]
 fn incompatible_result_error_type_has_explicit_diagnostic() {
-    let source = "module result_error_mismatch\nfn value() -> Result<Int, String>\n  ok(1)\n";
+    let source = "module result_error_mismatch\nfn value() -> Result<Int, String>\n  err(123)\n";
     let module = parse(source).expect("valid source syntax");
-    let errors = sema::check(&module).expect_err("Unit error type must not convert implicitly to String");
+    let errors = sema::check(&module).expect_err("Int error payload must not convert implicitly to String");
     assert!(
         errors.iter().any(|error| error.code == "AIF333"),
         "expected AIF333 for incompatible Result error type, got {errors:?}"
