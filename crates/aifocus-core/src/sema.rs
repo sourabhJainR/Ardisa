@@ -506,6 +506,13 @@ impl Checker {
                     self.check_block(body, &mut scoped);
                     last = None;
                 }
+                StmtKind::For { iterable, .. } => {
+                    // Parse the construct for useful diagnostics, but never let it reach lowering
+                    // until element typing, ownership, and runtime iteration are implemented.
+                    let _ = self.check_expr(iterable, locals);
+                    self.error("AIF320", "for/in iteration is not implemented: typed iterator protocol, mutation/ownership rules, and deterministic native execution are required", stmt.span);
+                    last = None;
+                }
             }
         }
         last

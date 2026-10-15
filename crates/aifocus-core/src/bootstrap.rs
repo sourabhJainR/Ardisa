@@ -495,6 +495,8 @@ fn token_kind_name(kind: &crate::token::TokenKind) -> String {
         crate::token::TokenKind::Join => "Join".into(),
         crate::token::TokenKind::Cancel => "Cancel".into(),
         crate::token::TokenKind::While => "While".into(),
+        crate::token::TokenKind::For => "For".into(),
+        crate::token::TokenKind::In => "In".into(),
         crate::token::TokenKind::True => "True".into(),
         crate::token::TokenKind::False => "False".into(),
         crate::token::TokenKind::Ident => "Ident".into(),
@@ -615,6 +617,19 @@ mod tests {
         assert!(report.evidence.stage2_deterministic);
         assert!(report.evidence.rust_host_required);
         assert!(report.evidence.independently_verified);
+    }
+
+    #[test]
+    fn bootstrap_compiler_rejects_for_in_until_iterator_runtime_exists() {
+        let source = "module iteration_gate\nfn main() -> Int\n  let values = [1, 2]\n  for item in values\n    item\n  0\n";
+        let module = crate::parse(source)
+            .expect("for/in source syntax should parse into an explicit AST node");
+        let errors = crate::sema::analyze(&module)
+            .expect_err("unsupported for/in iteration must be rejected by semantic analysis");
+        assert!(
+            errors.iter().any(|diagnostic| diagnostic.code == "AIF320"),
+            "unsupported iteration should report the dedicated AIF320 diagnostic, got: {errors:?}"
+        );
     }
 
     #[test]

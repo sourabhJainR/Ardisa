@@ -152,6 +152,10 @@ fn collect_block(block: &Block, effects: &mut FunctionEffects) {
                 collect_expr(condition, effects);
                 collect_block(body, effects);
             }
+            StmtKind::For { iterable, body, .. } => {
+                collect_expr(iterable, effects);
+                collect_block(body, effects);
+            }
             StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
         }
     }

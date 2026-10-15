@@ -231,6 +231,9 @@ fn find_stmt(stmt: &Stmt, target: NodeId) -> Option<Span> {
         StmtKind::While { condition, body } => {
             find_expr(condition, target).or_else(|| find_block(body, target))
         }
+        StmtKind::For { iterable, body, .. } => {
+            find_expr(iterable, target).or_else(|| find_block(body, target))
+        }
         StmtKind::Join { .. } | StmtKind::Cancel { .. } => None,
     }
 }

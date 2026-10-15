@@ -67,13 +67,19 @@ fn keyword(word: String) -> String
                         if word == "while"
                           "While"
                         else
-                          if word == "true"
-                            "True"
+                          if word == "for"
+                            "For"
                           else
-                            if word == "false"
-                              "False"
+                            if word == "in"
+                              "In"
                             else
-                              "Ident"
+                              if word == "true"
+                                "True"
+                              else
+                                if word == "false"
+                                  "False"
+                                else
+                                  "Ident"
 
 fn lex_source(source: String) -> String
   let output = ""
@@ -483,10 +489,13 @@ fn check_ast(ast: String) -> String
             if contains(ast, "(Unknown")
               "Err:unknown-token"
             else
-              if balanced(ast)
-                "Ok"
+              if contains(ast, "(F" + "or")
+                "Err:unsupported-iteration"
               else
-                "Err:unbalanced-ast"
+                if balanced(ast)
+                  "Ok"
+                else
+                  "Err:unbalanced-ast"
           else
             "Err:missing-function-body"
         else

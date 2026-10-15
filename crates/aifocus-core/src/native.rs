@@ -692,6 +692,7 @@ fn emit_op(op: &IrOp, code: &mut Vec<NativeInstr>) -> Result<(), NativeError> {
         }
         IrOp::Join { name } => code.push(NativeInstr::Join { name: name.clone() }),
         IrOp::Cancel { name } => code.push(NativeInstr::Cancel { name: name.clone() }),
+        IrOp::Unsupported { reason } => return Err(NativeError::Unsupported(reason.clone())),
     }
     Ok(())
 }

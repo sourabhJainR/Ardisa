@@ -141,6 +141,17 @@ impl Lowerer {
                     self.indent(indent);
                     self.out.push_str("}\n");
                 }
+                StmtKind::For { name, iterable, body } => {
+                    self.record(stmt.id, stmt.span);
+                    self.out.push_str("for ");
+                    self.out.push_str(name);
+                    self.out.push_str(" in ");
+                    self.expr(iterable, indent);
+                    self.out.push_str(" {\n");
+                    self.block(body, indent + 1, false);
+                    self.indent(indent);
+                    self.out.push_str("}\n");
+                }
                 StmtKind::Expr(expr) => {
                     self.record(stmt.id, stmt.span);
                     self.expr(expr, indent);
