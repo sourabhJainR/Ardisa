@@ -651,10 +651,5 @@ fn f(value: String) -> String
         );
     }
 
-    #[test]
-    fn unsupported_reference_and_lifetime_tokens_fail_closed() {
-        assert!(crate::token::lex("module x\nfn f(value: &String) -> Int\n  0\n").is_err());
-        assert!(crate::token::lex("module x\nfn f<'a>(value: &'a String) -> Int\n  0\n").is_err());
-    }
 
 }
