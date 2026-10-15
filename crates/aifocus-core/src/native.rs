@@ -2440,7 +2440,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "KvAppend"=>{let (name,policy)=arg.rsplit_once(',').ok_or_else(bad)?; let policy=policy.parse::<bool>().map_err(|_|bad())?; NativeInstr::KvAppend{name:unescape_artifact(name)?,evict_oldest:policy}},
         "MakeContextWindow"=>NativeInstr::MakeContextWindow,"ContextLen"=>NativeInstr::ContextLen,"ContextBytes"=>NativeInstr::ContextBytes,"ContextTokens"=>NativeInstr::ContextTokens,
         "ContextAppend"=>NativeInstr::ContextAppend{name:unescape_artifact(arg)?},
-        "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Len"=>NativeInstr::Len,
+        "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Slice"=>NativeInstr::Slice,"Len"=>NativeInstr::Len,
         "PushString"=>NativeInstr::PushString(unescape_artifact(arg)?),
         "PushList"=>NativeInstr::PushList(int(arg)?),"Append"=>NativeInstr::Append(unescape_artifact(arg)?),
         "MakeOk"=>NativeInstr::MakeOk,"Chr"=>NativeInstr::Chr,"MakeErr"=>NativeInstr::MakeErr,"Unwrap"=>NativeInstr::Unwrap,
