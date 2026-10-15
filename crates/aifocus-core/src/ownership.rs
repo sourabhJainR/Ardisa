@@ -383,7 +383,13 @@ impl Checker {
                 // Slices are owned copies with the same collection type, not views.
                 collection_type
             }
-            ExprKind::Group(inner) => self.check_expr(inner, locals, mode),
+            ExprKind::Group(inner) => {
+                let ty = self.check_expr(inner, locals, mode);
+                if self.terminated_exprs.contains(&inner.id) {
+                    self.terminated_exprs.insert(expr.id);
+                }
+                ty
+            },
             ExprKind::Binary { op, left, right } => {
                 let operand_mode = if matches!(
                     op,
@@ -892,6 +898,37 @@ fn f(value: String) -> String
         assert!(
             !model.accesses.contains_key(&final_expr_id),
             "an expression after an assignment that always returns must be unreachable to ownership analysis"
+        );
+    }
+
+    #[test]
+    fn propagates_termination_through_grouped_expression() {
+        let mut module = parse(
+            "module terminated_group\nfn f(flag: Bool, value: String) -> String\n  if flag\n    return value\n  else\n    return value\n  value\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &mut module.items[0];
+        let StmtKind::Expr(terminating_if) = &function.body.stmts[0].kind else {
+            panic!("expected if expression statement");
+        };
+        let terminating_if = terminating_if.clone();
+        let grouped = Expr {
+            id: crate::NodeId(usize::MAX),
+            span: terminating_if.span,
+            kind: ExprKind::Group(Box::new(terminating_if)),
+        };
+        function.body.stmts[0].kind = StmtKind::Let {
+            name: "unreachable".into(),
+            value: grouped,
+        };
+        let StmtKind::Expr(final_expr) = &function.body.stmts.last().unwrap().kind else {
+            panic!("expected final expression");
+        };
+        let final_expr_id = final_expr.id;
+        let model = analyze(&module).unwrap();
+        assert!(
+            !model.accesses.contains_key(&final_expr_id),
+            "grouping must preserve a non-fallthrough expression's termination state"
         );
     }
 
