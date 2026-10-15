@@ -735,6 +735,12 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
             emit_value(index, code)?;
             code.push(NativeInstr::Index);
         }
+        IrValue::Slice { collection, start, end } => {
+            emit_value(collection, code)?;
+            emit_value(start, code)?;
+            emit_value(end, code)?;
+            code.push(NativeInstr::Slice);
+        }
         IrValue::Bool(value) => code.push(NativeInstr::PushBool(*value)),
         IrValue::Name(name) => code.push(NativeInstr::Load(name.clone())),
         IrValue::Binary { op, left, right } => {
