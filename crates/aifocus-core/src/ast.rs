@@ -182,6 +182,12 @@ pub enum ExprKind {
         collection: Box<Expr>,
         index: Box<Expr>,
     },
+    /// Half-open owned list slice: collection[start..end] (surface syntax uses ':').
+    Slice {
+        collection: Box<Expr>,
+        start: Box<Expr>,
+        end: Box<Expr>,
+    },
     If {
         condition: Box<Expr>,
         then_branch: Block,
