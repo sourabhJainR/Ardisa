@@ -226,6 +226,19 @@ fn reference_expr(
                 _ => Err("indexing requires a list or String".into()),
             }
         }
+        ExprKind::Slice { collection, start, end } => {
+            let collection = reference_expr(module, collection, locals)?;
+            let start = usize::try_from(expect_int(reference_expr(module, start, locals)?)?)
+                .map_err(|_| "negative slice start".to_string())?;
+            let end = usize::try_from(expect_int(reference_expr(module, end, locals)?)?)
+                .map_err(|_| "negative slice end".to_string())?;
+            let native::NativeValue::List(items) = collection else {
+                return Err("slicing currently requires List<T>".into());
+            };
+            if start > end { return Err("slice start must not exceed slice end".into()); }
+            if end > items.len() { return Err("slice end out of bounds".into()); }
+            Ok(native::NativeValue::List(items[start..end].to_vec()))
+        }
         ExprKind::Binary { op, left, right } => {
             let left = reference_expr(module, left, locals)?;
             let right = reference_expr(module, right, locals)?;
