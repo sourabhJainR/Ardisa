@@ -49,6 +49,12 @@ pub enum IrOp {
         condition: IrValue,
         ops: Vec<IrOp>,
     },
+    For {
+        id: u64,
+        name: String,
+        iterable: IrValue,
+        ops: Vec<IrOp>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +135,12 @@ pub fn lower(module: &Module) -> IrModule {
                             condition: value_to_ir(condition),
                             ops: block_to_ops(body),
                         }),
+                        StmtKind::For { name, iterable, body } => ops.push(IrOp::For {
+                            id: stmt.id.0,
+                            name: name.clone(),
+                            iterable: value_to_ir(iterable),
+                            ops: block_to_ops(body),
+                        }),
                     }
                 }
                 IrFunction {
@@ -181,6 +193,12 @@ fn block_to_ops(block: &crate::Block) -> Vec<IrOp> {
             StmtKind::Cancel { name } => IrOp::Cancel { name: name.clone() },
             StmtKind::While { condition, body } => IrOp::While {
                 condition: value_to_ir(condition),
+                ops: block_to_ops(body),
+            },
+            StmtKind::For { name, iterable, body } => IrOp::For {
+                id: stmt.id.0,
+                name: name.clone(),
+                iterable: value_to_ir(iterable),
                 ops: block_to_ops(body),
             },
         })
