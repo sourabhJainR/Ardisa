@@ -7,8 +7,9 @@ fn execute(source: &str, args: &[NativeValue]) -> NativeValue {
     let compiled = compile_source(source).expect("source should compile through all compiler phases");
     let program = decode_program(&compiled.artifact).expect("native artifact should round-trip");
     assert_eq!(ardisa_core::native::encode_program(&program), compiled.artifact);
-    run_program_with_limits(&program, "main", args, ExecutionLimits::default())
-        .expect("native execution should succeed")
+    let limits = ExecutionLimits { max_instructions: 10_000, ..ExecutionLimits::default() };
+    run_program_with_limits(&program, "main", args, limits)
+        .expect("native execution should succeed within the regression-test budget")
 }
 
 #[test]
