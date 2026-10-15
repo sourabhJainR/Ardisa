@@ -9,8 +9,11 @@ fn source_iteration_stays_fail_closed_until_full_native_pipeline_is_integrated()
 
     match error {
         PipelineError::CompilerContract(errors) => assert!(
-            errors.iter().any(|message| message.contains("for/in iteration cannot enter typed CFG")),
-            "expected stable fail-closed iterator diagnostic, got {errors:?}",
+            errors.iter().any(|message| {
+                message.contains("AIF320")
+                    && message.contains("for/in iteration is not implemented")
+            }),
+            "expected stable fail-closed diagnostic AIF320, got {errors:?}",
         ),
         other => panic!("expected semantic fail-closed error, got {other:?}"),
     }
