@@ -241,6 +241,11 @@ impl Checker {
                     self.scope_depth += 1;
                     self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
+                    // The loop binding shadows any outer local with the same name.
+                    // Do not merge the shadow binding's state back into the outer
+                    // binding; the iterable's own move state was already recorded
+                    // before the loop scope was created.
+                    scoped.remove(name);
                     merge_states(locals, &scoped, true);
                 }
                 StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
@@ -335,13 +340,23 @@ impl Checker {
                 ))
             }
             ExprKind::Index { collection, index } => {
-                self.check_expr(collection, locals, AccessMode::SharedBorrow);
-                self.check_expr(index, locals, AccessMode::Move)
+                let collection_type =
+                    self.check_expr(collection, locals, AccessMode::SharedBorrow);
+                self.check_expr(index, locals, AccessMode::Move);
+                collection_type.and_then(|ty| match ty.kind {
+                    TypeKind::List(element) => Some(*element),
+                    // String indexing is byte-based in the current language contract.
+                    TypeKind::String => Some(type_node(TypeKind::Int, expr)),
+                    _ => None,
+                })
             }
             ExprKind::Slice { collection, start, end } => {
-                self.check_expr(collection, locals, AccessMode::SharedBorrow);
+                let collection_type =
+                    self.check_expr(collection, locals, AccessMode::SharedBorrow);
                 self.check_expr(start, locals, AccessMode::Move);
-                self.check_expr(end, locals, AccessMode::Move)
+                self.check_expr(end, locals, AccessMode::Move);
+                // Slices are owned copies with the same collection type, not views.
+                collection_type
             }
             ExprKind::Group(inner) => self.check_expr(inner, locals, mode),
             ExprKind::Binary { op, left, right } => {
@@ -661,6 +676,56 @@ fn f(value: String) -> String
             ]),
             Err("borrow remains active at scope exit")
         );
+    }
+
+    #[test]
+    fn moving_a_loop_binding_does_not_move_unrelated_outer_bindings() {
+        let module = parse(
+            "module loop_binding\nfn f(values: List<String>, value: String) -> String\n  for item in values\n    let consumed = item\n  value\n",
+        ).unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "consuming a loop-local binding must not mark an unrelated outer value moved"
+        );
+        assert!(crate::sema::check(&module).is_ok());
+    }
+
+    #[test]
+    fn a_move_on_one_if_branch_is_visible_after_the_join() {
+        let module = parse(
+            "module branch_join\nfn f(flag: Bool, value: String) -> String\n  if flag\n    let consumed = value\n  else\n    let other = \"safe\"\n  value\n",
+        ).unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+    }
+
+    #[test]
+    fn assignment_reinitializes_a_previously_moved_local() {
+        let module = parse(
+            "module reinit\nfn f(value: String) -> String\n  let consumed = value\n  set value = \"restored\"\n  value\n",
+        ).unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(infer(&module).is_ok());
+    }
+
+    #[test]
+    fn indexing_infers_the_element_ownership_class() {
+        let module = parse(
+            "module index_move\nfn f(values: List<String>) -> String\n  let selected = values[0]\n  let moved = selected\n  selected\n",
+        ).unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+    }
+
+    #[test]
+    fn slicing_preserves_the_owned_collection_type_for_move_analysis() {
+        let module = parse(
+            "module slice_move\nfn f(values: List<String>) -> Int\n  let selected = values[0:1]\n  let moved = selected\n  len(selected)\n",
+        ).unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
     }
 
 

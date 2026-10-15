@@ -35,7 +35,7 @@ No claim is made for Rust `String`, `Vec`, slice, iterator, or standard-library 
 
 ## Regression coverage
 
-- `crates/aifocus-core/tests/list_slices.rs`: source-to-native tests for half-open list/string ranges, copy isolation, empty/full slices, UTF-8 boundary rejection, negative and out-of-range bounds, byte-for-byte artifact round trips, iteration rejection, and list resource limits.
+- `crates/aifocus-core/tests/list_slices.rs`: source-to-native tests for half-open list/string ranges, copy isolation, empty/full slices, UTF-8 boundary rejection, negative and out-of-range bounds, byte-for-byte artifact round trips, native `for`/`in` iteration, artifact round trips, and list resource limits.
 - `crates/aifocus-core/tests/string_collection_boundaries.rs`: empty/negative/out-of-range indexing, parser and semantic coverage for slice syntax, explicit string-slice rejection, and UTF-8 byte-budget enforcement.
 - `crates/aifocus-core/tests/list_mutation_adversarial.rs`: negative index, selected-element mutation, and neighboring-element preservation.
 - `crates/aifocus-core/src/native.rs`: native execution bounds and resource checks for indexing and owned slices.
