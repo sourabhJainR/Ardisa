@@ -6,7 +6,7 @@ This document describes the currently evidenced Ardisa subset. It is not a state
 
 - Int, Bool, Unit, and the currently supported scalar numeric values are copy-class values.
 - String and List<T> are owned values. Binding an owned value to a new local consumes the source name under the flow-sensitive move checker. A later use of that name is rejected with AIF400.
-- Assignment to an existing local reinitializes that local only after the assigned expression passes analysis. Conditional and loop-body moves are merged conservatively; use after a potentially moved value is rejected. Loop bindings that shadow outer locals are scoped to the loop and must not change the outer binding's state.
+- Assignment to an existing local reinitializes that local only after the assigned expression passes analysis. Conditional and loop-body moves are merged conservatively; use after a potentially moved value is rejected. Loop bindings are rejected if they shadow an existing local (AIF303); consuming a loop-local binding must not change the state of unrelated outer locals.
 - The VM's internal cloning for loads/serialization is an implementation detail; it does not grant source programs a reference or shared-mutation capability.
 
 ## Borrowing
@@ -26,4 +26,4 @@ This document describes the currently evidenced Ardisa subset. It is not a state
 
 ## Evidence and limits
 
-The ownership.rs unit tests exercise use-after-move, modeled borrow conflicts, active-borrow scope exit, conservative loop/conditional move tracking, and loop-binding shadow isolation. list_slices.rs exercises owned-copy isolation, bounds, nested values, resource limits, and byte-identical native artifact round trips. These tests are useful contract evidence but do not establish complete path-sensitive borrowing, lifetime regions, drop order, or aliasing soundness. Keep the compatibility matrix at Partial until those gaps have independent source-to-runtime and adversarial evidence.
+The ownership.rs unit tests exercise use-after-move, modeled borrow conflicts, active-borrow scope exit, conservative loop/conditional move tracking, and loop-local move isolation. list_slices.rs exercises owned-copy isolation, bounds, nested values, resource limits, and byte-identical native artifact round trips. These tests are useful contract evidence but do not establish complete path-sensitive borrowing, lifetime regions, drop order, or aliasing soundness. Keep the compatibility matrix at Partial until those gaps have independent source-to-runtime and adversarial evidence.
