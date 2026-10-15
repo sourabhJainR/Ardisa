@@ -506,6 +506,22 @@ impl Checker {
                     self.check_block(body, &mut scoped);
                     last = None;
                 }
+                StmtKind::For { name, iterable, body } => {
+                    if let Some(iterable_type) = self.check_expr(iterable, locals) {
+                        match &iterable_type.kind {
+                            TypeKind::List(element) => {
+                                let mut scoped = locals.clone();
+                                scoped.insert(name.clone(), (**element).clone());
+                                self.check_block(body, &mut scoped);
+                            }
+                            TypeKind::String => {
+                                self.error("AIF555", "String iteration requires the Unicode scalar iterator runtime; use List<T> iteration in this compiler version", iterable.span);
+                            }
+                            _ => self.error("AIF556", "for-in currently requires List<T>", iterable.span),
+                        }
+                    }
+                    last = None;
+                }
             }
         }
         last
