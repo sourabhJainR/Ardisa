@@ -1,4 +1,4 @@
-use aifocus_core::{compile_source, PipelineError};
+use ardisa_core::{compile_source, PipelineError};
 
 #[test]
 fn source_iteration_stays_fail_closed_until_full_native_pipeline_is_integrated() {
