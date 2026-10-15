@@ -90,6 +90,7 @@ pub fn analyze_constructs(module: &Module) -> Result<Vec<TypedConstructDeclarati
         functions: HashMap::new(),
         inferred_types: HashMap::new(),
         function_returns: HashMap::new(),
+        current_return_type: None,
         errors: Vec::new(),
     };
     validate_construct_declarations(module, &mut checker);
@@ -124,6 +125,7 @@ pub fn analyze(module: &Module) -> Result<SemanticModel, Vec<Diagnostic>> {
         functions: HashMap::new(),
         inferred_types: HashMap::new(),
         function_returns: HashMap::new(),
+        current_return_type: None,
         errors: Vec::new(),
     };
 
@@ -353,6 +355,8 @@ struct Checker {
     functions: HashMap<String, FunctionSignature>,
     inferred_types: HashMap<crate::NodeId, Type>,
     function_returns: HashMap<String, Type>,
+    /// Declared return type used to infer the omitted side of Result constructors.
+    current_return_type: Option<Type>,
     errors: Vec<Diagnostic>,
 }
 
@@ -373,7 +377,10 @@ impl Checker {
             self.inferred_types.insert(param.id, param.ty.clone());
         }
 
+        let previous_return_type =
+            std::mem::replace(&mut self.current_return_type, function.return_type.clone());
         let block_type = self.check_block(&function.body, &mut locals);
+        self.current_return_type = previous_return_type;
         if let Some(expected) = &function.return_type {
             if let Some(actual) = block_type {
                 if !same_type(&actual, expected) {
@@ -1252,17 +1259,25 @@ impl Checker {
                     }
                     let value_type = self.check_expr(&args[0], locals)?;
                     let unit = type_node(TypeKind::Unit, expr.span);
-                    return Some(if name == "ok" {
-                        type_node(
-                            TypeKind::Result(Box::new(value_type), Box::new(unit)),
-                            expr.span,
-                        )
-                    } else {
-                        type_node(
-                            TypeKind::Result(Box::new(unit), Box::new(value_type)),
-                            expr.span,
-                        )
+                    let expected_result_sides = self.current_return_type.as_ref().and_then(|ty| {
+                        if let TypeKind::Result(ok, err) = &ty.kind {
+                            Some((ok.as_ref().clone(), err.as_ref().clone()))
+                        } else {
+                            None
+                        }
                     });
+                    let result_type = if name == "ok" {
+                        let error_type = expected_result_sides
+                            .map(|(_, err)| err)
+                            .unwrap_or(unit);
+                        TypeKind::Result(Box::new(value_type), Box::new(error_type))
+                    } else {
+                        let success_type = expected_result_sides
+                            .map(|(ok, _)| ok)
+                            .unwrap_or(unit);
+                        TypeKind::Result(Box::new(success_type), Box::new(value_type))
+                    };
+                    return Some(type_node(result_type, expr.span));
                 }
                 if name == "unwrap" {
                     if args.len() != 1 {
@@ -1597,4 +1612,33 @@ mod ai_routing_semantic_tests {
         rejects("module bad\nfn main()\n  let index = vector_index(\"text\", 2)\n  vector_index_insert(index, true, \"text\", [1.0, 2.0])\n", "AIF392");
         rejects("module bad\nfn main()\n  let index = vector_index(\"text\", 2)\n  vector_index_search(index, 7, [1.0, 2.0], 1)\n", "AIF398");
     }
+
+    #[test]
+    fn ok_constructor_infers_error_type_from_declared_result_return() {
+        let module = crate::parse(
+            "module ok_result_context\nfn f() -> Result<Int, String>\n  ok(42)\n",
+        )
+        .unwrap();
+        assert!(check(&module).is_ok());
+    }
+
+    #[test]
+    fn err_constructor_infers_success_type_from_declared_result_return() {
+        let module = crate::parse(
+            "module err_result_context\nfn f() -> Result<Int, String>\n  err(\"failure\")\n",
+        )
+        .unwrap();
+        assert!(check(&module).is_ok());
+    }
+
+    #[test]
+    fn result_constructor_still_rejects_wrong_payload_type() {
+        let module = crate::parse(
+            "module wrong_result_payload\nfn f() -> Result<Int, String>\n  ok(\"not an Int\")\n",
+        )
+        .unwrap();
+        let errors = check(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF302"));
+    }
+
 }
