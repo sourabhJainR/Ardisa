@@ -15,7 +15,8 @@ This document is the current contract for the numeric subset exercised by the Ar
 
 - The current native scalar floating-point representation is IEEE-754 binary32 (`F32`).
 - Encoded native artifacts reject non-finite embedded float payloads. Operations that produce non-finite tensor results are rejected by the corresponding native operations.
-- This does not establish a complete policy for every scalar float operation, casts, rounding modes, signed zero, NaN propagation, or cross-platform bit-for-bit floating-point equivalence.
+- Scalar `F32` arithmetic and ordering comparisons are currently rejected by semantic analysis; they must not reach the integer-only native arithmetic instructions. Float literals are accepted where the existing AI/tensor APIs explicitly require them.
+- This does not establish a complete policy for scalar float operations, casts, rounding modes, signed zero, NaN propagation, or cross-platform bit-for-bit floating-point equivalence.
 
 ## Conversions and unsupported forms
 
