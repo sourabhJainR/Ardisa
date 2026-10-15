@@ -271,9 +271,7 @@ impl Default for ExecutionLimits {
     fn default() -> Self {
         Self {
             max_instructions: 1_000_000,
-            // Keep the VM's bounded recursion below the host test/worker stack ceiling.
-            // The interpreter still uses host frames; deeper recursion must fail closed.
-            max_call_depth: 48,
+            max_call_depth: 128,
             max_tasks: 64,
             max_collection_items: 16_384,
             max_string_bytes: 1_048_576,
