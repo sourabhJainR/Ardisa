@@ -630,4 +630,24 @@ fn f(value: String) -> String
         let errors = infer(&module).unwrap_err();
         assert!(errors.iter().any(|error| error.code == "AIF400"));
     }
+
+    #[test]
+    fn list_binding_move_invalidates_the_source_name() {
+        let module = parse(
+            "module list_move\nfn f() -> Int\n  let values = [1, 2]\n  let moved = values\n  len(values)\n",
+        ).unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+    }
+
+    #[test]
+    fn active_borrow_cannot_escape_its_scope() {
+        let id = crate::NodeId(2);
+        assert_eq!(
+            OwnershipModel::validate_borrow_transitions(&[
+                (id, OwnershipTransition::BorrowStart(BorrowKind::Shared)),
+            ]),
+            Err("borrow remains active at scope exit")
+        );
+    }
 }
