@@ -109,6 +109,7 @@ impl OwnershipClass {
 enum State {
     Available,
     Moved,
+    MaybeMoved,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,7 +214,9 @@ impl Checker {
                     let mut scoped = locals.clone();
                     self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
-                    merge_states(locals, &scoped, false);
+                    // A lexical scope executes unconditionally, so assignments and
+                    // reinitializations of outer locals must propagate out of it.
+                    merge_scope_states(locals, &scoped);
                 }
                 StmtKind::Spawn { call, .. } => {
                     self.check_expr(call, locals, AccessMode::Move);
@@ -224,7 +227,7 @@ impl Checker {
                     let mut scoped = locals.clone();
                     self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
-                    merge_states(locals, &scoped, true);
+                    merge_states(locals, &scoped);
                 }
                 StmtKind::For { name, iterable, body } => {
                     // Iteration consumes an owned List<T>. This aligns static move state
@@ -246,7 +249,7 @@ impl Checker {
                     // binding; the iterable's own move state was already recorded
                     // before the loop scope was created.
                     scoped.remove(name);
-                    merge_states(locals, &scoped, true);
+                    merge_states(locals, &scoped);
                 }
                 StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
             }
@@ -268,12 +271,13 @@ impl Checker {
                 let Some((ty, state)) = locals.get_mut(name) else {
                     return None;
                 };
-                if *state == State::Moved {
-                    self.errors.push(Diagnostic::error(
-                        "AIF400",
-                        format!("use of moved value '{name}'"),
-                        Some(expr.span),
-                    ));
+                if *state != State::Available {
+                    let message = if *state == State::Moved {
+                        format!("use of moved value '{name}'")
+                    } else {
+                        format!("use of possibly moved value '{name}'")
+                    };
+                    self.errors.push(Diagnostic::error("AIF400", message, Some(expr.span)));
                     return None;
                 }
                 let access = if ownership_of(ty) == OwnershipClass::Copy {
@@ -440,14 +444,19 @@ impl Checker {
                     for (name, (_, state)) in locals.iter_mut() {
                         let then_state = then_locals.get(name).map(|entry| entry.1);
                         let else_state = else_locals.get(name).map(|entry| entry.1);
-                        if then_state == Some(State::Moved) || else_state == Some(State::Moved) {
-                            *state = State::Moved;
+                        // A value is available after the join only if both paths
+                        // leave it available. This also permits a moved value to be
+                        // reinitialized on every path before it is used again.
+                        if let (Some(then_state), Some(else_state)) =
+                            (then_state, else_state)
+                        {
+                            *state = join_state(then_state, else_state);
                         }
                     }
                 } else {
                     // The branch may execute, so a move in it is conservatively
                     // considered visible after the conditional.
-                    merge_states(locals, &then_locals, false);
+                    merge_states(locals, &then_locals);
                 }
                 Some(type_node(TypeKind::Unit, expr))
             }
@@ -480,15 +489,25 @@ fn ownership_of(ty: &Type) -> OwnershipClass {
 fn merge_states(
     outer: &mut HashMap<String, (Type, State)>,
     inner: &HashMap<String, (Type, State)>,
-    loop_body: bool,
 ) {
     for (name, (_, state)) in outer.iter_mut() {
-        if inner.get(name).map(|entry| entry.1) == Some(State::Moved) {
-            *state = State::Moved;
+        if let Some((_, inner_state)) = inner.get(name) {
+            *state = join_state(*state, *inner_state);
         }
-        if loop_body && inner.get(name).map(|entry| entry.1) == Some(State::Available) {
-            // A loop body may execute zero or many times; availability is safe to
-            // retain only when the body itself did not consume the value.
+    }
+}
+
+fn join_state(left: State, right: State) -> State {
+    if left == right { left } else { State::MaybeMoved }
+}
+
+fn merge_scope_states(
+    outer: &mut HashMap<String, (Type, State)>,
+    inner: &HashMap<String, (Type, State)>,
+) {
+    for (name, (_, state)) in outer.iter_mut() {
+        if let Some((_, inner_state)) = inner.get(name) {
+            *state = *inner_state;
         }
     }
 }
@@ -728,5 +747,62 @@ fn f(value: String) -> String
         assert!(errors.iter().any(|error| error.code == "AIF400"));
     }
 
+
+
+    #[test]
+    fn scope_reinitialization_restores_outer_local_availability() {
+        let module = parse(
+            "module scope_reinit\nfn f(value: String) -> String\n  let consumed = value\n  scope\n    set value = \"restored\"\n  value\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(infer(&module).is_ok());
+    }
+
+    #[test]
+    fn reinitialization_on_both_if_paths_restores_availability_after_join() {
+        let module = parse(
+            "module branch_reinit\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  if flag\n    set value = \"left\"\n  else\n    set value = \"right\"\n  value\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(infer(&module).is_ok());
+    }
+
+    #[test]
+    fn reinitialization_on_only_one_if_path_remains_path_dependent() {
+        let module = parse(
+            "module branch_partial_reinit\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  if flag\n    set value = \"restored\"\n  value\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+        assert!(errors.iter().any(|error| error.message.contains("possibly moved")));
+    }
+
+
+    #[test]
+    fn loop_reinitialization_does_not_assume_the_loop_executes() {
+        let module = parse(
+            "module loop_reinit\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  while flag\n    set value = \"restored\"\n  value\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+        assert!(errors.iter().any(|error| error.message.contains("possibly moved")));
+    }
+
+    #[test]
+    fn a_move_on_both_if_branches_is_definitely_moved_after_join() {
+        let module = parse(
+            "module branch_both_move\nfn f(flag: Bool, value: String) -> String\n  if flag\n    let left = value\n  else\n    let right = value\n  value\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+        assert!(errors.iter().any(|error| error.message.contains("use of moved value")));
+    }
 
 }
