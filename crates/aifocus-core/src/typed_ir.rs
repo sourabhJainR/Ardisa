@@ -155,6 +155,7 @@ pub enum TypedIrOp {
     Assign { name: String, value: TypedValue },
     AssignIndex { collection: TypedValue, index: TypedValue, value: TypedValue },
     Expr(TypedValue),
+    Return(Option<TypedValue>),
     Scope(Vec<TypedIrOp>),
     /// Typed, structured iteration over an owned List<T>; body-local binding is T.
     ForEach { name: String, iterable: TypedValue, body: Vec<TypedIrOp> },
@@ -266,7 +267,7 @@ fn lower_stmt(
         }
         StmtKind::Return(value) => {
             let v = value.as_ref().and_then(|e| lower_expr(e, types, locals, errors));
-            ops.push(TypedIrOp::Expr(v.unwrap_or(TypedValue { ty:TypeKind::Unit, span:stmt.span, kind:TypedValueKind::Bool(false) })));
+            ops.push(TypedIrOp::Return(v));
         }
         StmtKind::Expr(e) => if let Some(v)=lower_expr(e,types,locals,errors){ ops.push(TypedIrOp::Expr(v)); },
         StmtKind::Scope { body } => {
@@ -489,6 +490,7 @@ fn optimize_op(op: &mut TypedIrOp) {
             optimize_value(index);
             optimize_value(value);
         }
+        TypedIrOp::Return(value) => if let Some(value) = value { optimize_value(value); },
         TypedIrOp::Scope(ops) => ops.iter_mut().for_each(optimize_op),
         TypedIrOp::ForEach { iterable, body, .. } => {
             optimize_value(iterable);
@@ -624,6 +626,7 @@ fn typed_op_to_legacy(op: &TypedIrOp) -> crate::ir::IrOp {
         TypedIrOp::Assign { name, value } => crate::ir::IrOp::Set { name: name.clone(), value: typed_value_to_legacy(value) },
         TypedIrOp::AssignIndex { collection, index, value } => crate::ir::IrOp::SetIndex { collection: typed_value_to_legacy(collection), index: typed_value_to_legacy(index), value: typed_value_to_legacy(value) },
         TypedIrOp::Expr(value) => crate::ir::IrOp::Expr(typed_value_to_legacy(value)),
+        TypedIrOp::Return(value) => crate::ir::IrOp::Return(value.as_ref().map(typed_value_to_legacy)),
         TypedIrOp::Scope(ops) => crate::ir::IrOp::Scope { ops: ops.iter().map(typed_op_to_legacy).collect() },
         TypedIrOp::ForEach { name, iterable, body } => crate::ir::IrOp::ForEach {
             name: name.clone(),
