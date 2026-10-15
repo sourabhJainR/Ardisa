@@ -913,7 +913,7 @@ fn f(value: String) -> String
         };
         let terminating_if = terminating_if.clone();
         let grouped = Expr {
-            id: crate::NodeId(usize::MAX),
+            id: crate::NodeId(u64::MAX),
             span: terminating_if.span,
             kind: ExprKind::Group(Box::new(terminating_if)),
         };
