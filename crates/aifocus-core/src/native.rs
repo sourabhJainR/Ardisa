@@ -1072,6 +1072,29 @@ fn run_unicode_builtin(
     Ok(Some(value))
 }
 
+fn execute_unicode_instruction(
+    instr: &NativeInstr,
+    stack: &mut Vec<NativeValue>,
+    limits: ExecutionLimits,
+) -> Result<(), NativeError> {
+    let (callee, expected_args) = match instr {
+        NativeInstr::ScalarLen => ("scalar_len", 1),
+        NativeInstr::ScalarAt => ("scalar_at", 2),
+        NativeInstr::GraphemeLen => ("grapheme_len", 1),
+        NativeInstr::GraphemeAt => ("grapheme_at", 2),
+        _ => return Err(NativeError::InvalidProgram("not a Unicode instruction".into())),
+    };
+    if stack.len() < expected_args {
+        return Err(NativeError::InvalidProgram(format!("{callee} has insufficient stack arguments")));
+    }
+    let start = stack.len() - expected_args;
+    let args = stack.split_off(start);
+    let value = run_unicode_builtin(callee, &args, limits)?
+        .ok_or_else(|| NativeError::InvalidProgram(format!("missing builtin '{callee}'")))?;
+    stack.push(value);
+    Ok(())
+}
+
 fn run_function(
     program: &Arc<NativeProgram>,
     function: &NativeFunction,
@@ -2003,30 +2026,8 @@ fn run_function(
                     ))?;
                 stack.push(NativeValue::String(scalar.to_string()));
             }
-            NativeInstr::ScalarLen | NativeInstr::GraphemeLen => {
-                let text = match stack.pop() {
-                    Some(NativeValue::String(text)) => text,
-                    Some(_) => return Err(NativeError::Type("Unicode length builtin requires String".into())),
-                    None => return Err(NativeError::InvalidProgram("Unicode length from empty stack".into())),
-                };
-                let callee = if matches!(instr, NativeInstr::ScalarLen) { "scalar_len" } else { "grapheme_len" };
-                let args = [NativeValue::String(text)];
-                let value = run_unicode_builtin(callee, &args, state.limits)?
-                    .ok_or_else(|| NativeError::InvalidProgram(format!("missing builtin '{callee}'")))?;
-                stack.push(value);
-            }
-            NativeInstr::ScalarAt | NativeInstr::GraphemeAt => {
-                let index = pop_int(&mut stack)?;
-                let text = match stack.pop() {
-                    Some(NativeValue::String(text)) => text,
-                    Some(_) => return Err(NativeError::Type("Unicode index builtin requires String".into())),
-                    None => return Err(NativeError::InvalidProgram("Unicode index from empty stack".into())),
-                };
-                let callee = if matches!(instr, NativeInstr::ScalarAt) { "scalar_at" } else { "grapheme_at" };
-                let args = [NativeValue::String(text), NativeValue::Int(index)];
-                let value = run_unicode_builtin(callee, &args, state.limits)?
-                    .ok_or_else(|| NativeError::InvalidProgram(format!("missing builtin '{callee}'")))?;
-                stack.push(value);
+            NativeInstr::ScalarLen | NativeInstr::ScalarAt | NativeInstr::GraphemeLen | NativeInstr::GraphemeAt => {
+                execute_unicode_instruction(instr, &mut stack, state.limits)?;
             }
             NativeInstr::MakeOk => {
                 let value = stack
