@@ -582,10 +582,7 @@ impl Checker {
                     match (then_reachable, else_reachable) {
                         (true, true) => {
                             let then_shadowed = declared_names(then_branch);
-                            let else_shadowed = else_branch
-                                .as_ref()
-                                .map(declared_names)
-                                .unwrap_or_default();
+                            let else_shadowed = declared_names(else_branch);
                             for (name, (_, state)) in locals.iter_mut() {
                                 if then_shadowed.contains(name) || else_shadowed.contains(name) {
                                     continue;
@@ -603,10 +600,7 @@ impl Checker {
                             merge_scope_states_excluding(locals, &then_locals, &shadowed)
                         }
                         (false, true) => {
-                            let shadowed = else_branch
-                                .as_ref()
-                                .map(declared_names)
-                                .unwrap_or_default();
+                            let shadowed = declared_names(else_branch);
                             merge_scope_states_excluding(locals, &else_locals, &shadowed)
                         },
                         (false, false) => { self.terminated_exprs.insert(expr.id); }
