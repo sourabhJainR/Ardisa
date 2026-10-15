@@ -67,6 +67,7 @@ fn fold_op(op: IrOp) -> Option<IrOp> {
         IrOp::Join { name } => Some(IrOp::Join { name }),
         IrOp::Cancel { name } => Some(IrOp::Cancel { name }),
         IrOp::While { condition, ops } => Some(IrOp::While { condition: fold_value(condition), ops: ops.into_iter().filter_map(fold_op).collect() }),
+        IrOp::Unsupported { reason } => Some(IrOp::Unsupported { reason }),
     }
 }
 
