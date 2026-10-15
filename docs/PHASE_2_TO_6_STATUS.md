@@ -2,7 +2,7 @@
 
 Status: **IN PROGRESS — NOT PROMOTED**
 
-This document tracks the Phase 2 source-level `for/in` implementation. The merged iterator reference implementation is only a foundation. It does not make source-level iteration executable. Keep the compiler's stable fail-closed diagnostic until every required gate below is implemented and tested.
+This document tracks Phase 2 source-level `for/in` implementation. The branch now wires `List<T>` iteration through semantic typing, ownership/move analysis, typed IR, native lowering, artifact decoding, and runtime execution. It is not yet promoted: exact-head CI and remaining alias/mutation, side-effect, resource-budget, differential/holdout, and Stage 2/3 evidence gates must pass before Phase 2 is called complete.
 
 ## Phase 2 — required implementation
 
