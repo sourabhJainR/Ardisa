@@ -183,7 +183,9 @@ impl Checker {
     fn check_block(&mut self, block: &Block, locals: &mut HashMap<String, (Type, State)>) -> bool {
         let mut reachable = true;
         for stmt in &block.stmts {
-            if !reachable { break; }
+            if !reachable {
+                break;
+            }
             match &stmt.kind {
                 StmtKind::Set { name, value } => {
                     self.check_expr(value, locals, AccessMode::Move);
@@ -829,7 +831,10 @@ fn f(value: String) -> String
         )
         .unwrap();
         assert!(crate::sema::check(&module).is_ok());
-        assert!(infer(&module).is_ok(), "the returning branch must not poison the state of the only path that reaches the final use");
+        assert!(
+            infer(&module).is_ok(),
+            "the returning branch must not poison the state of the only path that reaches the final use"
+        );
     }
 
 }
