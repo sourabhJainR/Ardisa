@@ -17,14 +17,18 @@ This document records the currently implemented native behavior, not Rust standa
 - List values contain a sequence of native values. The supported subset relies on semantic analysis to enforce a consistent element type in source expressions.
 - `List[index]` uses a zero-based integer index and returns the value at that position.
 - Negative indexes and indexes at or beyond the list length fail explicitly; the runtime does not silently clamp or wrap indexes.
-- The native runtime supports mutation for named list bindings through the implemented indexed-assignment and append paths. This does not establish Rust ownership, borrowing, aliasing, slice/view, iterator, or drop semantics.
+- `List[start:end]` supports a half-open range (`start` inclusive, `end` exclusive) and returns a new owned list copy. It is not a view and does not alias the source list; mutating the slice result does not mutate the source.
+- Both slice bounds must be non-negative integers with `start <= end <= len(list)`. Negative bounds, reversed ranges, and an end beyond the list length fail explicitly. Empty ranges and ranges ending exactly at the list length are valid.
+- Slice output is subject to the same collection item, nested-value, and frame resource limits as other lists. Slicing a string is rejected because byte slicing can split UTF-8 sequences; string indexing remains byte-based.
+- The native runtime supports mutation for named list bindings through indexed assignment and append. Iteration syntax, aliasing views, borrowing, and drop semantics are not implemented or claimed.
 - List/string length and indexing use byte count for strings and element count for lists. These are distinct units.
 
 ## Deliberate limitations
 
-No claim is made for Rust `String`, `Vec`, slice, iterator, or standard-library parity. Unicode scalar/grapheme indexing and grapheme segmentation, slices/views with ownership or lifetime guarantees, collection aliasing guarantees, and a complete collection API remain unsupported or unproven. `chr` supports Unicode scalar construction but does not provide scalar- or grapheme-based indexing. New behavior must be backed by source-to-runtime tests and adversarial bounds/resource tests before the capability matrix is promoted.
+No claim is made for Rust `String`, `Vec`, slice, iterator, or standard-library parity. Unicode scalar/grapheme indexing and grapheme segmentation, string slicing, list slice views, iterator syntax, borrowing/aliasing views, and a complete collection API remain unsupported or unproven. List slices are explicitly copy-on-slice. `chr` supports Unicode scalar construction but does not provide scalar- or grapheme-based indexing. New behavior must be backed by source-to-runtime tests and adversarial bounds/resource tests before the capability matrix is promoted.
 
 ## Regression coverage
 
-- `crates/aifocus-core/src/pipeline.rs`: source-to-native test for UTF-8 byte indexing and valid/invalid list indexing.
-- `crates/aifocus-core/src/native.rs`: native execution bounds checks for string and list indexing.
+- `crates/aifocus-core/tests/list_slices.rs`: source-to-native tests for half-open ranges, copy isolation, empty/full slices, negative and reversed bounds, and out-of-range ends.
+- `crates/aifocus-core/tests/string_collection_boundaries.rs`: parser and semantic coverage for slice syntax and explicit string-slice rejection.
+- `crates/aifocus-core/src/native.rs`: native execution bounds and resource checks for indexing and owned slices.
