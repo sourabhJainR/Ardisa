@@ -35,6 +35,8 @@ fn is_pure_value(v: &IrValue) -> bool {
         IrValue::Int(_) | IrValue::Float(_) | IrValue::Bool(_) | IrValue::String(_) | IrValue::Name(_) => true,
         IrValue::List(xs) => xs.iter().all(is_pure_value),
         IrValue::Index { collection, index } => is_pure_value(collection) && is_pure_value(index),
+        // Slices can fail on invalid bounds; retain them as observable operations.
+        IrValue::Slice { .. } => false,
         IrValue::Binary { left, right, .. } => is_pure_value(left) && is_pure_value(right),
         IrValue::If { condition, then_ops, else_ops } =>
             is_pure_value(condition) && then_ops.iter().all(is_pure_expr) && else_ops.iter().all(is_pure_expr),
@@ -98,6 +100,7 @@ fn fold_value(value: IrValue) -> IrValue {
         }
         IrValue::List(values) => IrValue::List(values.into_iter().map(fold_value).collect()),
         IrValue::Index { collection, index } => IrValue::Index { collection: Box::new(fold_value(*collection)), index: Box::new(fold_value(*index)) },
+        IrValue::Slice { collection, start, end } => IrValue::Slice { collection: Box::new(fold_value(*collection)), start: Box::new(fold_value(*start)), end: Box::new(fold_value(*end)) },
         IrValue::Call { callee, args } => IrValue::Call { callee, args: args.into_iter().map(fold_value).collect() },
         other => other,
     }
