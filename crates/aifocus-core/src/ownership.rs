@@ -669,13 +669,13 @@ fn f(value: String) -> String
     }
 
     #[test]
-    fn moving_a_shadowing_for_binding_does_not_move_the_outer_binding() {
+    fn moving_a_loop_binding_does_not_move_unrelated_outer_bindings() {
         let module = parse(
-            "module shadow_loop\nfn f(values: List<String>, value: String) -> String\n  for value in values\n    let consumed = value\n  value\n",
+            "module loop_binding\nfn f(values: List<String>, value: String) -> String\n  for item in values\n    let consumed = item\n  value\n",
         ).unwrap();
         assert!(
             infer(&module).is_ok(),
-            "consuming a loop-local shadow must not mark the outer value moved"
+            "consuming a loop-local binding must not mark an unrelated outer value moved"
         );
     }
 
