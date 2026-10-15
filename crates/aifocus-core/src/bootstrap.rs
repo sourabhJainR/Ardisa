@@ -68,7 +68,6 @@ fn run_native(
 }
 
 pub fn verify() -> BootstrapReport {
-    #[cfg(test)] eprintln!("bootstrap-debug: verify start");
     let Ok(module) = parse(BOOTSTRAP_SOURCE) else {
         return failed("bootstrap source does not parse");
     };
@@ -125,7 +124,6 @@ pub fn verify() -> BootstrapReport {
         && stage0.instruction_count == stage1.instruction_count
         && stage0.functions == stage1.functions;
 
-    #[cfg(test)] eprintln!("bootstrap-debug: stage2 replay start");
     let stage2 = match self_hosted_pipeline_artifact() {
         Ok(artifact) => artifact,
         Err(blocker) => {
@@ -153,7 +151,6 @@ pub fn verify() -> BootstrapReport {
             };
         }
     };
-    #[cfg(test)] eprintln!("bootstrap-debug: repeat replay start");
     let stage2_repeat = match self_hosted_pipeline_artifact() {
         Ok(artifact) => artifact,
         Err(blocker) => {
@@ -227,7 +224,6 @@ fn self_hosted_pipeline_artifact() -> Result<BootstrapArtifact, &'static str> {
     let mut programs = BTreeMap::new();
 
     for (name, source) in SELF_HOSTED_SOURCES {
-        #[cfg(test)] eprintln!("bootstrap-debug: source {name} parse start");
         let module = match parse(source) {
             Ok(module) => module,
             Err(errors) => {
@@ -251,7 +247,6 @@ fn self_hosted_pipeline_artifact() -> Result<BootstrapArtifact, &'static str> {
                 });
             }
         };
-        #[cfg(test)] eprintln!("bootstrap-debug: source {name} parse ok; sema start");
         sema::check(&module).map_err(|_| match *name {
             "lexer" => "self-hosted lexer fails semantic validation",
             "parser" => "self-hosted parser fails semantic validation",
@@ -261,7 +256,6 @@ fn self_hosted_pipeline_artifact() -> Result<BootstrapArtifact, &'static str> {
             "compiler" => "self-hosted compiler source fails semantic validation",
             _ => "self-hosted source fails semantic validation",
         })?;
-        #[cfg(test)] eprintln!("bootstrap-debug: source {name} sema ok; ownership start");
         ownership::infer(&module).map_err(|errors| {
             let code = errors.first().map(|error| error.code).unwrap_or("AIF000");
             match (*name, code) {
@@ -280,7 +274,6 @@ fn self_hosted_pipeline_artifact() -> Result<BootstrapArtifact, &'static str> {
                 _ => "self-hosted source fails ownership validation",
             }
         })?;
-        #[cfg(test)] eprintln!("bootstrap-debug: source {name} ownership ok; native compile start");
         let lowered = ir::lower(&module);
         let program = native::compile_program(&lowered)
             .map_err(|_| "self-hosted source cannot compile natively")?;
@@ -311,7 +304,6 @@ fn main(a: Int) -> Int
         .map(|(_, source)| (*source).to_string())
         .ok_or("missing compiler source")?;
 
-    #[cfg(test)] eprintln!("bootstrap-debug: all source artifacts compiled; self-compile start");
     let self_compile = run_native(
         compiler_program,
         "compile",
@@ -602,7 +594,17 @@ mod tests {
 
     #[test]
     fn bootstrap_pipeline_is_multi_function_and_reproducible() {
-        let report = verify();
+        // libtest workers use a small stack by default; the bootstrap verifier walks
+        // recursive parser/AST/compiler structures and should run with the same 8 MiB
+        // stack budget as a normal process entry thread rather than aborting the test
+        // process before Rust can report a bounded failure.
+        let report = std::thread::Builder::new()
+            .name("ardisa-bootstrap-verification".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(verify)
+            .expect("bootstrap verification thread should start")
+            .join()
+            .expect("bootstrap verification must not overflow its process-sized stack");
         assert!(report.parsed && report.semantically_valid && report.ownership_valid);
         assert!(report.native_compiled);
         assert_eq!(
