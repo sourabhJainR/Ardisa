@@ -561,10 +561,7 @@ impl Checker {
                 }
                 match collection_type.kind {
                     TypeKind::List(element) => Some(type_node(TypeKind::List(element), expr.span)),
-                    TypeKind::String => {
-                        self.error("AIF319", "String slicing is unsupported; strings are indexed by UTF-8 byte and slices could split a code point", collection.span);
-                        None
-                    }
+                    TypeKind::String => Some(type_node(TypeKind::String, expr.span)),
                     _ => {
                         self.error("AIF319", "slicing currently requires List<T>", collection.span);
                         None
@@ -1249,6 +1246,27 @@ impl Checker {
                     if !matches!(argument_type.kind, TypeKind::String | TypeKind::List(_)) {
                         self.error("AIF323", "len requires String or List<T>", args[0].span);
                         return None;
+                    }
+                    return Some(type_node(TypeKind::Int, expr.span));
+                }
+                if name == "scalar_len" || name == "scalar_at" {
+                    let expected_args = if name == "scalar_len" { 1 } else { 2 };
+                    if args.len() != expected_args {
+                        self.error("AIF552", format!("{name} expects {expected_args} argument(s)"), expr.span);
+                        return None;
+                    }
+                    let text_type = self.check_expr(&args[0], locals)?;
+                    if !is_kind(&text_type, &TypeKind::String) {
+                        self.error("AIF553", format!("{name} requires String as its first argument"), args[0].span);
+                        return None;
+                    }
+                    if name == "scalar_at" {
+                        let index_type = self.check_expr(&args[1], locals)?;
+                        if !is_kind(&index_type, &TypeKind::Int) {
+                            self.error("AIF554", "scalar_at index must be Int", args[1].span);
+                            return None;
+                        }
+                        return Some(type_node(TypeKind::String, expr.span));
                     }
                     return Some(type_node(TypeKind::Int, expr.span));
                 }
