@@ -203,7 +203,14 @@ impl Checker {
                     index,
                     value,
                 } => {
-                    self.check_expr(collection, locals, AccessMode::MutableBorrow);
+                    // The target collection is mutably borrowed for the full
+                    // indexed assignment operation, not only while its name is read.
+                    self.check_expr_in_region(
+                        collection,
+                        locals,
+                        AccessMode::MutableBorrow,
+                        stmt.span,
+                    );
                     if self.terminated_exprs.contains(&collection.id) {
                         reachable = false;
                         continue;
@@ -1198,5 +1205,43 @@ fn f(value: String) -> String
         let errors = infer(&module).unwrap_err();
         assert!(errors.iter().any(|error| error.code == "AIF400"));
     }
+
+    #[test]
+    fn rejects_reading_same_collection_during_indexed_mutation() {
+        let mut module = parse(
+            "module index_assignment_alias\nfn f(values: List<List<Int>>) -> Int\n  0\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &mut module.items[0];
+        let span = function.body.stmts[0].span;
+        let name = |id, span| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Name("values".into()),
+        };
+        let integer = |id, span| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Int(0),
+        };
+        function.body.stmts[0].kind = StmtKind::SetIndex {
+            collection: name(9_200_001, span),
+            index: integer(9_200_002, span),
+            value: Expr {
+                id: crate::NodeId(9_200_003),
+                span,
+                kind: ExprKind::Index {
+                    collection: Box::new(name(9_200_004, span)),
+                    index: Box::new(integer(9_200_005, span)),
+                },
+            },
+        };
+        let errors = infer(&module).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.code == "AIF404"),
+            "the mutable target borrow must overlap reads from the same collection"
+        );
+    }
+
 
 }
