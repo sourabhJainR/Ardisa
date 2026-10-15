@@ -67,7 +67,13 @@ fn keyword(word: String) -> String
                         if word == "while"
                           "While"
                         else
-                          if word == "true"
+                          if word == "for"
+                            "For"
+                          else
+                            if word == "in"
+                              "In"
+                            else
+                              if word == "true"
                             "True"
                           else
                             if word == "false"
@@ -483,10 +489,13 @@ fn check_ast(ast: String) -> String
             if contains(ast, "(Unknown")
               "Err:unknown-token"
             else
-              if balanced(ast)
-                "Ok"
+              if contains(ast, "(For")
+                "Err:unsupported-iteration"
               else
-                "Err:unbalanced-ast"
+                if balanced(ast)
+                  "Ok"
+                else
+                  "Err:unbalanced-ast"
           else
             "Err:missing-function-body"
         else
