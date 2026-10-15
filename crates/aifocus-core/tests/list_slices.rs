@@ -3,6 +3,11 @@ use ardisa_core::{compile_source, native, NativeError, NativeValue};
 fn execute(source: &str) -> Result<NativeValue, NativeError> {
     let compiled = compile_source(source).expect("fixture should compile to a checked native artifact");
     let program = native::decode_program(&compiled.artifact).expect("slice instruction must round-trip in artifact encoding");
+    assert_eq!(
+        native::encode_program(&program),
+        compiled.artifact,
+        "native artifact encode/decode must be deterministic for slice instructions"
+    );
     native::run_program(&program, "main", &[])
 }
 
