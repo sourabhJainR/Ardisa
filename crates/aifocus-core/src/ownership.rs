@@ -781,4 +781,28 @@ fn f(value: String) -> String
         assert!(errors.iter().any(|error| error.message.contains("possibly moved")));
     }
 
+
+    #[test]
+    fn loop_reinitialization_does_not_assume_the_loop_executes() {
+        let module = parse(
+            "module loop_reinit\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  while flag\n    set value = \"restored\"\n  value\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+        assert!(errors.iter().any(|error| error.message.contains("possibly moved")));
+    }
+
+    #[test]
+    fn a_move_on_both_if_branches_is_definitely_moved_after_join() {
+        let module = parse(
+            "module branch_both_move\nfn f(flag: Bool, value: String) -> String\n  if flag\n    let left = value\n  else\n    let right = value\n  value\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+        assert!(errors.iter().any(|error| error.message.contains("use of moved value")));
+    }
+
 }
