@@ -92,6 +92,8 @@ pub enum NativeInstr {
     PushString(String),
     PushList(usize),
     Index,
+    /// Copy the half-open range [start, end) from a List into a new owned List.
+    Slice,
     Len,
     Append(String),
     MakeOk,
