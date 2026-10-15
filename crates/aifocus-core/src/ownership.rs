@@ -247,7 +247,8 @@ impl Checker {
                     // Only a scope that can fall through contributes state to the
                     // following statement. A returning scope terminates this path.
                     if scope_reachable {
-                        merge_scope_states(locals, &scoped);
+                        let shadowed = declared_names(body);
+                        merge_scope_states_excluding(locals, &scoped, &shadowed);
                     } else {
                         reachable = false;
                     }
@@ -268,7 +269,8 @@ impl Checker {
                     let mut scoped = locals.clone();
                     self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
-                    merge_states(locals, &scoped);
+                    let shadowed = declared_names(body);
+                    merge_states_excluding(locals, &scoped, &shadowed);
                 }
                 StmtKind::For { name, iterable, body } => {
                     // Iteration consumes an owned List<T>. This aligns static move state
@@ -289,12 +291,13 @@ impl Checker {
                     self.scope_depth += 1;
                     self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
-                    // The loop binding shadows any outer local with the same name.
-                    // Do not merge the shadow binding's state back into the outer
-                    // binding; the iterable's own move state was already recorded
-                    // before the loop scope was created.
+                    // The loop binding and declarations in the loop body are
+                    // lexical shadows; their state must never overwrite an outer
+                    // binding with the same spelling.
                     scoped.remove(name);
-                    merge_states(locals, &scoped);
+                    let mut shadowed = declared_names(body);
+                    shadowed.insert(name.clone());
+                    merge_states_excluding(locals, &scoped, &shadowed);
                 }
                 StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
             }
@@ -578,7 +581,15 @@ impl Checker {
                     let else_reachable = self.check_block(else_branch, &mut else_locals);
                     match (then_reachable, else_reachable) {
                         (true, true) => {
+                            let then_shadowed = declared_names(then_branch);
+                            let else_shadowed = else_branch
+                                .as_ref()
+                                .map(declared_names)
+                                .unwrap_or_default();
                             for (name, (_, state)) in locals.iter_mut() {
+                                if then_shadowed.contains(name) || else_shadowed.contains(name) {
+                                    continue;
+                                }
                                 if let (Some(then_state), Some(else_state)) = (
                                     then_locals.get(name).map(|entry| entry.1),
                                     else_locals.get(name).map(|entry| entry.1),
@@ -587,15 +598,25 @@ impl Checker {
                                 }
                             }
                         }
-                        (true, false) => merge_scope_states(locals, &then_locals),
-                        (false, true) => merge_scope_states(locals, &else_locals),
+                        (true, false) => {
+                            let shadowed = declared_names(then_branch);
+                            merge_scope_states_excluding(locals, &then_locals, &shadowed)
+                        }
+                        (false, true) => {
+                            let shadowed = else_branch
+                                .as_ref()
+                                .map(declared_names)
+                                .unwrap_or_default();
+                            merge_scope_states_excluding(locals, &else_locals, &shadowed)
+                        },
                         (false, false) => { self.terminated_exprs.insert(expr.id); }
                     }
                 } else if then_reachable {
                     // The implicit false path is always reachable, so join it with
-                    // the then path. If the then path returns, only the false path
-                    // reaches the next statement and its original state is retained.
-                    merge_states(locals, &then_locals);
+                    // the then path. A declaration in the branch shadows the outer
+                    // binding and must not change its state after the branch.
+                    let shadowed = declared_names(then_branch);
+                    merge_states_excluding(locals, &then_locals, &shadowed);
                 }
                 Some(type_node(TypeKind::Unit, expr))
             }
@@ -625,11 +646,26 @@ fn ownership_of(ty: &Type) -> OwnershipClass {
     }
 }
 
-fn merge_states(
+fn declared_names(block: &Block) -> HashSet<String> {
+    block
+        .stmts
+        .iter()
+        .filter_map(|stmt| match &stmt.kind {
+            StmtKind::Let { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn merge_states_excluding(
     outer: &mut HashMap<String, (Type, State)>,
     inner: &HashMap<String, (Type, State)>,
+    shadowed: &HashSet<String>,
 ) {
     for (name, (_, state)) in outer.iter_mut() {
+        if shadowed.contains(name) {
+            continue;
+        }
         if let Some((_, inner_state)) = inner.get(name) {
             *state = join_state(*state, *inner_state);
         }
@@ -640,11 +676,15 @@ fn join_state(left: State, right: State) -> State {
     if left == right { left } else { State::MaybeMoved }
 }
 
-fn merge_scope_states(
+fn merge_scope_states_excluding(
     outer: &mut HashMap<String, (Type, State)>,
     inner: &HashMap<String, (Type, State)>,
+    shadowed: &HashSet<String>,
 ) {
     for (name, (_, state)) in outer.iter_mut() {
+        if shadowed.contains(name) {
+            continue;
+        }
         if let Some((_, inner_state)) = inner.get(name) {
             *state = *inner_state;
         }
@@ -1146,6 +1186,37 @@ fn f(value: String) -> String
             !model.accesses.contains_key(&final_expr_id),
             "statements after a non-fallthrough indexed assignment value must be unreachable"
         );
+    }
+
+
+    #[test]
+    fn nested_scope_shadow_cannot_resurrect_moved_outer_binding() {
+        let module = parse(
+            "module scope_shadow_move\nfn f(value: String) -> String\n  let consumed = value\n  scope\n    let value = \"fresh\"\n  value\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+    }
+
+    #[test]
+    fn conditional_shadow_cannot_resurrect_moved_outer_binding() {
+        let module = parse(
+            "module branch_shadow_move\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  if flag\n    let value = \"fresh\"\n  value\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
+    }
+
+    #[test]
+    fn loop_body_shadow_cannot_resurrect_moved_outer_binding() {
+        let module = parse(
+            "module loop_shadow_move\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  while flag\n    let value = \"fresh\"\n  value\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(errors.iter().any(|error| error.code == "AIF400"));
     }
 
 }
