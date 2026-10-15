@@ -44,7 +44,7 @@
           ".github/workflows/ci.yml"
         ]
       },
-      "limitations": "Subset only; not Rust numeric or type-system parity."
+      "limitations": "Int is signed 64-bit with checked arithmetic, deterministic overflow and zero-divisor errors, and truncation-toward-zero division/remainder (docs/language/native-numeric-contract.md; native.rs source-to-native edge tests). Scalar float arithmetic, casts/conversions, NaN/Infinity policy, and complete Rust numeric/type-system parity remain unestablished."
     },
     {
       "id": "user-defined-structs-enums-patterns",
