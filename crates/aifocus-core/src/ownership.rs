@@ -139,6 +139,7 @@ pub fn analyze(module: &Module) -> Result<OwnershipModel, Vec<Diagnostic>> {
         borrow_regions: Vec::new(),
         scope_depth: 0,
         terminated_exprs: HashSet::new(),
+        borrow_context: Vec::new(),
     };
 
     for item in &module.items {
@@ -169,6 +170,8 @@ struct Checker {
     borrow_regions: Vec<BorrowRegion>,
     scope_depth: usize,
     terminated_exprs: HashSet<crate::NodeId>,
+    /// Extent of the operation evaluating a borrowed expression.
+    borrow_context: Vec<Span>,
 }
 
 impl Checker {
@@ -299,6 +302,19 @@ impl Checker {
         reachable
     }
 
+    fn check_expr_in_region(
+        &mut self,
+        expr: &Expr,
+        locals: &mut HashMap<String, (Type, State)>,
+        mode: AccessMode,
+        span: Span,
+    ) -> Option<Type> {
+        self.borrow_context.push(span);
+        let result = self.check_expr(expr, locals, mode);
+        self.borrow_context.pop();
+        result
+    }
+
     fn check_expr(
         &mut self,
         expr: &Expr,
@@ -332,6 +348,25 @@ impl Checker {
                 } else {
                     AccessKind::Move
                 };
+                let operation_span = self
+                    .borrow_context
+                    .last()
+                    .copied()
+                    .unwrap_or(expr.span);
+                if access == AccessKind::Move
+                    && self.borrow_regions.iter().any(|region| {
+                        region.local == *name
+                            && region.span.start < expr.span.end
+                            && expr.span.start < region.span.end
+                    })
+                {
+                    self.errors.push(Diagnostic::error(
+                        "AIF405",
+                        format!("cannot move '{name}' while a borrow is active in this expression"),
+                        Some(expr.span),
+                    ));
+                    return None;
+                }
                 self.accesses.insert(expr.id, access);
                 match access {
                     AccessKind::Move => {
@@ -342,7 +377,7 @@ impl Checker {
                         self.borrow_regions.push(BorrowRegion {
                             local: name.clone(),
                             kind: BorrowKind::Shared,
-                            span: expr.span,
+                            span: operation_span,
                             scope_depth: self.scope_depth,
                         });
                         self.transitions.push((
@@ -356,7 +391,7 @@ impl Checker {
                         self.borrow_regions.push(BorrowRegion {
                             local: name.clone(),
                             kind: BorrowKind::Mutable,
-                            span: expr.span,
+                            span: operation_span,
                             scope_depth: self.scope_depth,
                         });
                         self.transitions.push((
@@ -449,12 +484,20 @@ impl Checker {
                 } else {
                     AccessMode::Move
                 };
-                let left_type = self.check_expr(left, locals, operand_mode);
+                let left_type = if operand_mode == AccessMode::SharedBorrow {
+                    self.check_expr_in_region(left, locals, operand_mode, expr.span)
+                } else {
+                    self.check_expr(left, locals, operand_mode)
+                };
                 if self.terminated_exprs.contains(&left.id) {
                     self.terminated_exprs.insert(expr.id);
                     return left_type;
                 }
-                let right_type = self.check_expr(right, locals, operand_mode);
+                let right_type = if operand_mode == AccessMode::SharedBorrow {
+                    self.check_expr_in_region(right, locals, operand_mode, expr.span)
+                } else {
+                    self.check_expr(right, locals, operand_mode)
+                };
                 if self.terminated_exprs.contains(&right.id) {
                     self.terminated_exprs.insert(expr.id);
                     return left_type.or(right_type);
@@ -490,7 +533,7 @@ impl Checker {
                         } else {
                             AccessMode::Move
                         };
-                        self.check_expr(arg, locals, mode);
+                        self.check_expr_in_region(arg, locals, mode, expr.span);
                         if self.terminated_exprs.contains(&arg.id) {
                             self.terminated_exprs.insert(expr.id);
                             return None;
@@ -510,7 +553,7 @@ impl Checker {
                             }
                         })
                         .unwrap_or(AccessMode::Move);
-                    self.check_expr(arg, locals, mode);
+                    self.check_expr_in_region(arg, locals, mode, expr.span);
                     if self.terminated_exprs.contains(&arg.id) {
                         self.terminated_exprs.insert(expr.id);
                         return function.return_type;
@@ -700,6 +743,40 @@ fn reuse(source: String) -> String
         .unwrap();
         let errors = infer(&module).unwrap_err();
         assert!(errors.iter().any(|error| error.code == "AIF400"));
+    }
+
+    #[test]
+    fn rejects_reading_an_item_while_its_collection_is_mutably_borrowed() {
+        let module = parse(
+            "module alias_conflict\nfn f(items: List<List<Int>>) -> Int\n  push(items, items[0])\n  0\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.code == "AIF404"),
+            "the mutable collection borrow and nested shared read overlap for the whole call"
+        );
+    }
+
+    #[test]
+    fn ends_nested_read_borrows_before_a_later_move_in_the_same_call() {
+        let module = parse(
+            "module nested_read_then_move\nfn consume(flag: Bool, values: List<Int>) -> Int\n  len(values)\nfn f(values: List<Int>) -> Int\n  consume(values == values, values)\n",
+        )
+        .unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "a read-only comparison completes before the later argument moves the collection"
+        );
+    }
+
+    #[test]
+    fn permits_separate_read_only_calls_on_the_same_owned_value() {
+        let module = parse(
+            "module separate_reads\nfn f(items: List<Int>) -> Int\n  len(items) + len(items)\n",
+        )
+        .unwrap();
+        assert!(infer(&module).is_ok());
     }
 
     #[test]
