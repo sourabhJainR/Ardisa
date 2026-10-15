@@ -8,7 +8,6 @@ This document records the currently implemented native behavior, not Rust standa
 - `len(String)` currently reports the UTF-8 byte length.
 - `String[index]` treats the index as a zero-based **byte offset** and returns that byte as an `Int` in the range 0–255. This remains distinct from Unicode scalar indexing.
 - `String[start:end]` is a half-open UTF-8 byte range and returns an owned `String` copy. Both bounds must be non-negative, ordered, at most the byte length, and on UTF-8 scalar boundaries. A range that splits a multi-byte encoding fails explicitly; it never creates invalid UTF-8. The result obeys the configured string-byte limit.
-- `scalar_len(text)` counts Unicode scalar values (Rust `char`-like code points, not grapheme clusters); `scalar_at(text, index)` returns the selected scalar as a one-scalar `String`. Scalar indices are zero-based and bounds-checked.
 - A negative index fails with a runtime type error. An index at or beyond the byte length fails with `string index out of bounds`.
 - Indexing inside a multi-byte UTF-8 sequence is permitted because indexing is byte-based. It does not return a Unicode scalar value or grapheme cluster.
 - `chr(Int)` converts a valid Unicode scalar value to a one-scalar UTF-8 string. It rejects negative values, values above `0x10FFFF`, and the surrogate range `0xD800..=0xDFFF` at runtime. It is not a byte conversion; use string indexing when a UTF-8 byte is specifically required.
@@ -30,11 +29,11 @@ This document records the currently implemented native behavior, not Rust standa
 
 ## Deliberate limitations
 
-No claim is made for Rust `String`, `Vec`, slice, iterator, or standard-library parity. Unicode grapheme-cluster indexing/segmentation, list slice views, iterator syntax/protocol, full borrowing/lifetime/aliasing guarantees, drop semantics, and a complete collection API remain unsupported or unproven. Both list slices and string slices are explicitly owned copies. `chr` constructs one valid Unicode scalar; `scalar_len` and `scalar_at` operate on Unicode scalars but do not implement grapheme-cluster boundaries. New behavior must be backed by source-to-runtime tests and adversarial bounds/resource tests before the capability matrix is promoted.
+No claim is made for Rust `String`, `Vec`, slice, iterator, or standard-library parity. Unicode scalar/grapheme indexing, list slice views, iterator syntax/protocol, full borrowing/lifetime/aliasing guarantees, drop semantics, and a complete collection API remain unsupported or unproven. Both list slices and string slices are explicitly owned copies. `chr` constructs one valid Unicode scalar but does not provide scalar- or grapheme-based indexing. New behavior must be backed by source-to-runtime tests and adversarial bounds/resource tests before the capability matrix is promoted.
 
 ## Regression coverage
 
-- `crates/aifocus-core/tests/list_slices.rs`: source-to-native tests for half-open list/string ranges, copy isolation, empty/full slices, UTF-8 boundary rejection, Unicode scalar count/index, negative and out-of-range bounds, byte-for-byte artifact round trips, iteration rejection, and list resource limits.
+- `crates/aifocus-core/tests/list_slices.rs`: source-to-native tests for half-open list/string ranges, copy isolation, empty/full slices, UTF-8 boundary rejection, negative and out-of-range bounds, byte-for-byte artifact round trips, iteration rejection, and list resource limits.
 - `crates/aifocus-core/tests/string_collection_boundaries.rs`: empty/negative/out-of-range indexing, parser and semantic coverage for slice syntax, explicit string-slice rejection, and UTF-8 byte-budget enforcement.
 - `crates/aifocus-core/tests/list_mutation_adversarial.rs`: negative index, selected-element mutation, and neighboring-element preservation.
 - `crates/aifocus-core/src/native.rs`: native execution bounds and resource checks for indexing and owned slices.
