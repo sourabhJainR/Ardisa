@@ -4866,4 +4866,61 @@ mod activation_cache_adversarial_hardening_tests {
             );
         }
     }
+
+    #[test]
+    fn source_integer_division_and_remainder_truncate_toward_zero() {
+        let module = crate::parse(
+            "module numeric_contract\nfn divide(a: Int, b: Int) -> Int\n  a / b\nfn remainder(a: Int, b: Int) -> Int\n  a % b\n",
+        )
+        .unwrap();
+        crate::sema::check(&module).unwrap();
+        let ir = crate::ir::lower(&module);
+        let program = compile_program(&ir).unwrap();
+
+        assert_eq!(
+            run_program(&program, "divide", &[NativeValue::Int(-7), NativeValue::Int(3)]).unwrap(),
+            NativeValue::Int(-2)
+        );
+        assert_eq!(
+            run_program(&program, "remainder", &[NativeValue::Int(-7), NativeValue::Int(3)]).unwrap(),
+            NativeValue::Int(-1)
+        );
+        assert_eq!(
+            run_program(&program, "divide", &[NativeValue::Int(7), NativeValue::Int(-3)]).unwrap(),
+            NativeValue::Int(-2)
+        );
+        assert_eq!(
+            run_program(&program, "remainder", &[NativeValue::Int(7), NativeValue::Int(-3)]).unwrap(),
+            NativeValue::Int(1)
+        );
+    }
+
+    #[test]
+    fn source_integer_division_and_remainder_reject_zero_and_min_overflow() {
+        let module = crate::parse(
+            "module numeric_edges\nfn divide(a: Int, b: Int) -> Int\n  a / b\nfn remainder(a: Int, b: Int) -> Int\n  a % b\n",
+        )
+        .unwrap();
+        crate::sema::check(&module).unwrap();
+        let ir = crate::ir::lower(&module);
+        let program = compile_program(&ir).unwrap();
+
+        for function in ["divide", "remainder"] {
+            assert!(
+                matches!(
+                    run_program(&program, function, &[NativeValue::Int(1), NativeValue::Int(0)]),
+                    Err(NativeError::Type(message)) if message.contains("zero")
+                ),
+                "{function} by zero must fail deterministically"
+            );
+            assert!(
+                matches!(
+                    run_program(&program, function, &[NativeValue::Int(i64::MIN), NativeValue::Int(-1)]),
+                    Err(NativeError::Type(message)) if message.contains("overflow")
+                ),
+                "{function} at i64::MIN / -1 must fail deterministically"
+            );
+        }
+    }
+
 }
