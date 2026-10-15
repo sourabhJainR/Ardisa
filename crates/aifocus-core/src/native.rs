@@ -673,6 +673,42 @@ fn emit_op(op: &IrOp, code: &mut Vec<NativeInstr>) -> Result<(), NativeError> {
             let end = code.len();
             code[jump_if] = NativeInstr::JumpIfFalse(end);
         }
+        IrOp::ForEach { name, iterable, ops } => {
+            // Hidden names cannot collide with source identifiers. Evaluate the iterable once,
+            // then use the VM's existing bounded list/length/index instructions.
+            let suffix = code.len();
+            let collection = format!("$ardisa_iterable_{suffix}");
+            let index = format!("$ardisa_iter_index_{suffix}");
+            emit_value(iterable, code)?;
+            code.push(NativeInstr::Store(collection.clone()));
+            code.push(NativeInstr::PushInt(0));
+            code.push(NativeInstr::Store(index.clone()));
+
+            let loop_start = code.len();
+            code.push(NativeInstr::Load(index.clone()));
+            code.push(NativeInstr::Load(collection.clone()));
+            code.push(NativeInstr::Len);
+            code.push(NativeInstr::Less);
+            let jump_if = code.len();
+            code.push(NativeInstr::JumpIfFalse(usize::MAX));
+
+            code.push(NativeInstr::Load(collection));
+            code.push(NativeInstr::Load(index.clone()));
+            code.push(NativeInstr::Index);
+            code.push(NativeInstr::Store(name.clone()));
+            code.push(NativeInstr::ScopeStart);
+            for op in ops {
+                emit_op(op, code)?;
+            }
+            code.push(NativeInstr::ScopeEnd);
+            code.push(NativeInstr::Load(index.clone()));
+            code.push(NativeInstr::PushInt(1));
+            code.push(NativeInstr::Add);
+            code.push(NativeInstr::Store(index));
+            code.push(NativeInstr::Jump(loop_start));
+            let end = code.len();
+            code[jump_if] = NativeInstr::JumpIfFalse(end);
+        }
         IrOp::Scope { ops } => {
             code.push(NativeInstr::ScopeStart);
             for op in ops {
