@@ -170,6 +170,9 @@ fn reference_block(
                 }
                 last = None;
             }
+            StmtKind::For { .. } => {
+                return Err("for/in iteration is unsupported by the independent reference evaluator".into());
+            }
             StmtKind::While { condition, body } => {
                 while expect_bool(reference_expr(module, condition, locals)?)? {
                     match reference_block(module, body, locals)? {
