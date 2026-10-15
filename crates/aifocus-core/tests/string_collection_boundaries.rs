@@ -71,3 +71,19 @@ fn main() -> Int
     assert!(matches!(args[0].kind, ExprKind::Slice { .. }));
     assert!(sema::analyze(&module).is_ok());
 }
+
+
+#[test]
+fn string_payload_fails_closed_at_configured_utf8_byte_limit() {
+    let source = r#"module string_byte_limit
+fn main() -> Int
+  len("éé")
+"#;
+    let compiled = compile_source(source).expect("fixture should compile before runtime limits are applied");
+    let program = native::decode_program(&compiled.artifact).expect("artifact should decode");
+    let limits = native::ExecutionLimits { max_string_bytes: 3, ..native::ExecutionLimits::default() };
+    assert!(
+        matches!(native::run_program_with_limits(&program, "main", &[], limits), Err(NativeError::ResourceLimit(message)) if message.contains("string")),
+        "two two-byte UTF-8 scalars must exceed a three-byte string budget"
+    );
+}
