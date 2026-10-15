@@ -150,7 +150,8 @@ fn main() -> Int
 }
 
 #[test]
-fn iteration_syntax_is_rejected_until_iterator_semantics_exist() {
+fn for_in_parses_but_is_rejected_by_semantic_analysis() {
+    use ardisa_core::{parse, sema};
     let source = r#"module unsupported_for_iteration
 fn main() -> Int
   let values = [1, 2, 3]
@@ -158,9 +159,15 @@ fn main() -> Int
     item
   0
 "#;
+    let module = parse(source).expect("for/in syntax should parse to produce a targeted diagnostic");
+    let errors = sema::analyze(&module).expect_err("for/in must be rejected until typed iteration and runtime paths exist");
+    assert!(
+        format!("{errors:?}").contains("AIF320"),
+        "unsupported iteration should fail at semantic analysis with AIF320, got: {errors:?}"
+    );
     assert!(
         compile_source(source).is_err(),
-        "for/in iteration must not be accepted until iterator typing, ownership, and runtime semantics exist"
+        "unsupported for/in syntax must never reach native code generation"
     );
 }
 
