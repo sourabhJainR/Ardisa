@@ -1878,24 +1878,30 @@ fn run_function(
                 let end = pop_int(&mut stack)?;
                 let start = pop_int(&mut stack)?;
                 let collection = stack.pop().ok_or_else(|| NativeError::InvalidProgram("slice from empty stack".into()))?;
-                let NativeValue::List(values) = collection else {
-                    return Err(NativeError::Type("slicing currently requires List<T>".into()));
-                };
                 let start = usize::try_from(start).map_err(|_| NativeError::Type("negative slice start".into()))?;
                 let end = usize::try_from(end).map_err(|_| NativeError::Type("negative slice end".into()))?;
                 if start > end {
                     return Err(NativeError::Type("slice start must not exceed slice end".into()));
                 }
-                if end > values.len() {
-                    return Err(NativeError::Type("slice end out of bounds".into()));
+                match collection {
+                    NativeValue::List(values) => {
+                        if end > values.len() { return Err(NativeError::Type("slice end out of bounds".into())); }
+                        if end - start > state.limits.max_collection_items { return Err(NativeError::ResourceLimit("slice exceeds collection item limit".into())); }
+                        let sliced = NativeValue::List(values[start..end].to_vec());
+                        validate_value(&sliced, state.limits)?;
+                        stack.push(sliced);
+                    }
+                    NativeValue::String(value) => {
+                        if end > value.len() { return Err(NativeError::Type("string slice end out of bounds".into())); }
+                        if !value.is_char_boundary(start) || !value.is_char_boundary(end) {
+                            return Err(NativeError::Type("string slice bounds must be UTF-8 scalar boundaries".into()));
+                        }
+                        let sliced = value[start..end].to_owned();
+                        if sliced.len() > state.limits.max_string_bytes { return Err(NativeError::ResourceLimit("string slice exceeds byte limit".into())); }
+                        stack.push(NativeValue::String(sliced));
+                    }
+                    _ => return Err(NativeError::Type("slicing requires List<T> or String".into())),
                 }
-                let length = end - start;
-                if length > state.limits.max_collection_items {
-                    return Err(NativeError::ResourceLimit("slice exceeds collection item limit".into()));
-                }
-                let sliced = NativeValue::List(values[start..end].to_vec());
-                validate_value(&sliced, state.limits)?;
-                stack.push(sliced);
             }
             NativeInstr::Len => {
                 let value = stack

@@ -561,10 +561,7 @@ impl Checker {
                 }
                 match collection_type.kind {
                     TypeKind::List(element) => Some(type_node(TypeKind::List(element), expr.span)),
-                    TypeKind::String => {
-                        self.error("AIF319", "String slicing is unsupported; strings are indexed by UTF-8 byte and slices could split a code point", collection.span);
-                        None
-                    }
+                    TypeKind::String => Some(type_node(TypeKind::String, expr.span)),
                     _ => {
                         self.error("AIF319", "slicing currently requires List<T>", collection.span);
                         None
