@@ -1249,27 +1249,6 @@ impl Checker {
                     }
                     return Some(type_node(TypeKind::Int, expr.span));
                 }
-                if name == "scalar_len" || name == "scalar_at" {
-                    let expected_args = if name == "scalar_len" { 1 } else { 2 };
-                    if args.len() != expected_args {
-                        self.error("AIF552", format!("{name} expects {expected_args} argument(s)"), expr.span);
-                        return None;
-                    }
-                    let text_type = self.check_expr(&args[0], locals)?;
-                    if !is_kind(&text_type, &TypeKind::String) {
-                        self.error("AIF553", format!("{name} requires String as its first argument"), args[0].span);
-                        return None;
-                    }
-                    if name == "scalar_at" {
-                        let index_type = self.check_expr(&args[1], locals)?;
-                        if !is_kind(&index_type, &TypeKind::Int) {
-                            self.error("AIF554", "scalar_at index must be Int", args[1].span);
-                            return None;
-                        }
-                        return Some(type_node(TypeKind::String, expr.span));
-                    }
-                    return Some(type_node(TypeKind::Int, expr.span));
-                }
                 let Some(signature) = self.functions.get(name).cloned() else {
                     self.error("AIF308", format!("unknown function '{name}'"), callee.span);
                     return None;
