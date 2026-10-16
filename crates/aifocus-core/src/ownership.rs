@@ -560,6 +560,7 @@ impl Checker {
                 if access == AccessKind::Move
                     && self.borrow_regions.iter().any(|region| {
                         region.binding_id == binding_id
+                            && paths_may_alias(&region.path, &borrow_path)
                             && region.span.start < expr.span.end
                             && expr.span.start < region.span.end
                     })
