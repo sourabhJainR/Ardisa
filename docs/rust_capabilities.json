@@ -250,6 +250,24 @@
       },
       "limitations": "Ardisa exposes no native source-level atomic, mutex, lock, channel, or memory-ordering operations. Internal host Rust synchronization is not language support. The structured task subset does not establish shared-memory race freedom or Rust memory-ordering parity; see docs/language/synchronization-contract.md.",
       "tracking": "https://github.com/sourabhJainR/Ardisa/issues/173"
+    },
+    {
+      "id": "references-pointers-pinning",
+      "label": "Native references, raw pointers, aliasing, provenance, and pinning",
+      "status": "unsupported",
+      "evidence": {
+        "source_syntax": [
+          "crates/aifocus-core/tests/phase3_ownership_fail_closed.rs"
+        ],
+        "semantic_checks": [
+          "crates/aifocus-core/src/sema.rs"
+        ],
+        "adversarial_tests": [
+          "crates/aifocus-core/tests/phase3_ownership_fail_closed.rs"
+        ]
+      },
+      "limitations": "No native reference or pointer form is supported. &T, &mut T and *T syntax fail parsing; Pin, NonNull, RawPtr, SharedRef and MutableRef type spellings fail semantic validation with AIF320. Stable ownership binding/place analysis does not prove reference lifetimes, provenance, reborrowing, pinning or Rust aliasing soundness; see docs/language/reference-contract.md and issue #158.",
+      "tracking": "https://github.com/sourabhJainR/Ardisa/issues/177"
     }
   ]
 }
