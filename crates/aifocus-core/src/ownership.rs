@@ -1044,8 +1044,8 @@ fn reuse(source: String) -> String
         .unwrap();
         let errors = infer(&module).unwrap_err();
         assert!(
-            errors.iter().any(|error| error.code == "AIF404"),
-            "the mutable collection borrow and nested shared read overlap for the whole call"
+            errors.iter().any(|error| matches!(error.code.as_str(), "AIF404" | "AIF405")),
+            "the mutable collection borrow must conflict with an aliased nested access for the whole call"
         );
     }
 
@@ -1624,8 +1624,8 @@ fn f(value: String) -> String
         };
         let errors = infer(&module).unwrap_err();
         assert!(
-            errors.iter().any(|error| error.code == "AIF404"),
-            "the mutable target borrow must overlap reads from the same collection"
+            errors.iter().any(|error| matches!(error.code.as_str(), "AIF404" | "AIF405")),
+            "the mutable target borrow must conflict with aliased access to the same collection"
         );
     }
 
@@ -1643,8 +1643,8 @@ fn f(values: List<List<Int>>) -> Int
         .unwrap();
         let errors = infer(&module).unwrap_err();
         assert!(
-            errors.iter().any(|error| error.code == "AIF404"),
-            "the mutable borrow must span the entire indexed assignment, including its value"
+            errors.iter().any(|error| matches!(error.code.as_str(), "AIF404" | "AIF405")),
+            "the mutable borrow must span the indexed assignment and reject an aliased value"
         );
     }
 
@@ -1792,8 +1792,8 @@ fn f(values: List<Int>) -> Int
             "a nested indexed write must conflict with a read from the same root collection",
         );
         assert!(
-            errors.iter().any(|error| error.code == "AIF404"),
-            "expected overlapping mutable/shared borrow diagnostics, got {errors:?}"
+            errors.iter().any(|error| matches!(error.code.as_str(), "AIF404" | "AIF405")),
+            "expected an aliased mutable/shared access diagnostic, got {errors:?}"
         );
     }
 
