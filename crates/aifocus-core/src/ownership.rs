@@ -1118,6 +1118,10 @@ fn f(value: String) -> String
             errors.iter().any(|error| error.code == "AIF400"),
             "re-reading a moved path must be rejected, got {errors:?}"
         );
+        assert!(
+            errors.iter().any(|error| error.message.contains("use of moved indexed place")),
+            "a statically identified repeated path is definitely moved, got {errors:?}"
+        );
     }
 
     #[test]
