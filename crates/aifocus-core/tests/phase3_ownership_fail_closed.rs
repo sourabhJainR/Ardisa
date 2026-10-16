@@ -23,13 +23,24 @@ fn reference_returning_functions_fail_closed() {
 }
 
 #[test]
-fn nested_scope_shadowing_is_rejected_until_bindings_have_stable_identity() {
-    let source = "module rejected_shadow\nfn f(value: String) -> String\n  scope\n    let value = \"shadow\"\n  value\n";
+fn nested_scope_shadowing_preserves_outer_binding_identity() {
+    let source = "module nested_shadow\nfn f(value: String) -> String\n  scope\n    let value = \"shadow\"\n  value\n";
     let module = parse(source).expect("scope syntax should parse");
-    let errors = sema::check(&module).expect_err("shadowing must fail closed");
+    assert!(sema::check(&module).is_ok(), "shadowing in a nested scope is legal");
     assert!(
-        errors.iter().any(|error| error.code == "AIF303"),
-        "expected the stable shadowing diagnostic AIF303, got {errors:?}"
+        ownership::infer(&module).is_ok(),
+        "the nested binding must not overwrite or move the outer binding"
+    );
+}
+
+#[test]
+fn loop_binding_shadowing_preserves_outer_binding_identity() {
+    let source = "module loop_shadow\nfn f(values: List<String>, item: String) -> String\n  for item in values\n    len(item)\n  item\n";
+    let module = parse(source).expect("source syntax should parse");
+    assert!(sema::check(&module).is_ok(), "loop bindings may shadow outer locals");
+    assert!(
+        ownership::infer(&module).is_ok(),
+        "the outer item remains available after the loop-local binding leaves scope"
     );
 }
 
