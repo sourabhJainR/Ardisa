@@ -1044,7 +1044,7 @@ fn reuse(source: String) -> String
         .unwrap();
         let errors = infer(&module).unwrap_err();
         assert!(
-            errors.iter().any(|error| matches!(error.code.as_str(), "AIF404" | "AIF405")),
+            errors.iter().any(|error| matches!(error.code, "AIF404" | "AIF405")),
             "the mutable collection borrow must conflict with an aliased nested access for the whole call"
         );
     }
@@ -1624,7 +1624,7 @@ fn f(value: String) -> String
         };
         let errors = infer(&module).unwrap_err();
         assert!(
-            errors.iter().any(|error| matches!(error.code.as_str(), "AIF404" | "AIF405")),
+            errors.iter().any(|error| matches!(error.code, "AIF404" | "AIF405")),
             "the mutable target borrow must conflict with aliased access to the same collection"
         );
     }
@@ -1643,7 +1643,7 @@ fn f(values: List<List<Int>>) -> Int
         .unwrap();
         let errors = infer(&module).unwrap_err();
         assert!(
-            errors.iter().any(|error| matches!(error.code.as_str(), "AIF404" | "AIF405")),
+            errors.iter().any(|error| matches!(error.code, "AIF404" | "AIF405")),
             "the mutable borrow must span the indexed assignment and reject an aliased value"
         );
     }
@@ -1792,7 +1792,7 @@ fn f(values: List<Int>) -> Int
             "a nested indexed write must conflict with a read from the same root collection",
         );
         assert!(
-            errors.iter().any(|error| matches!(error.code.as_str(), "AIF404" | "AIF405")),
+            errors.iter().any(|error| matches!(error.code, "AIF404" | "AIF405")),
             "expected an aliased mutable/shared access diagnostic, got {errors:?}"
         );
     }
@@ -1909,7 +1909,7 @@ fn f(values: List<Int>) -> Int
             "unknown index projections may alias and must not bypass mutable borrow checks",
         );
         assert!(
-            errors.iter().any(|error| matches!(error.code.as_str(), "AIF404" | "AIF405")),
+            errors.iter().any(|error| matches!(error.code, "AIF404" | "AIF405")),
             "expected conservative rejection for dynamic aliasing, got {errors:?}"
         );
     }
