@@ -499,13 +499,8 @@ impl Checker {
                     last = None;
                 }
                 StmtKind::Let { name, value } => {
-                    if locals.contains_key(name) {
-                        self.error(
-                            "AIF303",
-                            format!("binding '{}' shadows an existing local", name),
-                            stmt.span,
-                        );
-                    }
+                    // Shadowing introduces a new lexical binding. The old type
+                    // remains in the parent scope when this block is scoped.
                     if let Some(ty) = self.check_expr(value, locals) {
                         locals.insert(name.clone(), ty);
                     }
@@ -542,13 +537,9 @@ impl Checker {
                 StmtKind::For { name, iterable, body } => {
                     match self.check_expr(iterable, locals) {
                         Some(Type { kind: TypeKind::List(element), .. }) => {
-                            if locals.contains_key(name) {
-                                self.error("AIF303", format!("binding '{}' shadows an existing local", name), stmt.span);
-                            } else {
-                                let mut scoped = locals.clone();
-                                scoped.insert(name.clone(), (*element).clone());
-                                self.check_block(body, &mut scoped);
-                            }
+                            let mut scoped = locals.clone();
+                            scoped.insert(name.clone(), (*element).clone());
+                            self.check_block(body, &mut scoped);
                         }
                         Some(other) => self.error(
                             "AIF321",

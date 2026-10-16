@@ -41,6 +41,8 @@ pub struct OwnershipModel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BorrowRegion {
+    /// Stable identity of the declaration, independent of its source-level name.
+    pub binding_id: BindingId,
     pub local: String,
     pub kind: BorrowKind,
     pub span: Span,
@@ -53,7 +55,7 @@ impl BorrowRegion {
     }
 
     pub fn overlaps(&self, other: &Self) -> bool {
-        self.local == other.local
+        self.binding_id == other.binding_id
             && self.span.start < other.span.end
             && other.span.start < self.span.end
     }
@@ -105,6 +107,16 @@ impl OwnershipClass {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BindingId(pub crate::NodeId);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum PlaceProjection {
+    Index(usize),
+    /// An unknown index may alias any element at this depth.
+    DynamicIndex,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Available,
@@ -117,6 +129,102 @@ enum AccessMode {
     Move,
     SharedBorrow,
     MutableBorrow,
+    /// Borrow the aggregate only to access one projection; other moved projections
+    /// remain independently tracked.
+    PathBorrow,
+    PathMutableBorrow,
+}
+
+#[derive(Debug, Clone)]
+struct LocalBinding {
+    id: BindingId,
+    ty: Type,
+    state: State,
+    path_states: HashMap<Vec<PlaceProjection>, State>,
+}
+
+impl LocalBinding {
+    fn new(id: BindingId, ty: Type) -> Self {
+        Self { id, ty, state: State::Available, path_states: HashMap::new() }
+    }
+
+    fn path_state(&self, path: &[PlaceProjection]) -> State {
+        let mut result: Option<State> = None;
+        for (existing, state) in &self.path_states {
+            if *state != State::Available && paths_may_alias(existing, path) {
+                result = Some(match result {
+                    Some(previous) => join_state(previous, *state),
+                    None => *state,
+                });
+            }
+        }
+        result.unwrap_or(State::Available)
+    }
+
+    fn has_moved_paths(&self) -> bool {
+        self.path_states.values().any(|state| *state != State::Available)
+    }
+
+    fn set_path_state(&mut self, path: Vec<PlaceProjection>, state: State) {
+        self.path_states.retain(|existing, _| !existing.starts_with(&path) || existing == &path);
+        if state == State::Available {
+            self.path_states.remove(&path);
+        } else {
+            self.path_states.insert(path, state);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct Locals {
+    visible: HashMap<String, BindingId>,
+    bindings: HashMap<BindingId, LocalBinding>,
+}
+
+impl Locals {
+    fn insert(&mut self, name: String, binding: LocalBinding) {
+        self.visible.insert(name, binding.id);
+        self.bindings.insert(binding.id, binding);
+    }
+    fn get(&self, name: &str) -> Option<&LocalBinding> {
+        self.visible.get(name).and_then(|id| self.bindings.get(id))
+    }
+    fn get_mut(&mut self, name: &str) -> Option<&mut LocalBinding> {
+        let id = *self.visible.get(name)?;
+        self.bindings.get_mut(&id)
+    }
+    fn contains_key(&self, name: &str) -> bool { self.visible.contains_key(name) }
+    fn remove(&mut self, name: &str) -> Option<BindingId> { self.visible.remove(name) }
+}
+
+fn index_projection(index: &Expr) -> PlaceProjection {
+    match index.kind {
+        ExprKind::Int(value) if value >= 0 => PlaceProjection::Index(value as usize),
+        _ => PlaceProjection::DynamicIndex,
+    }
+}
+
+fn place_path(expr: &Expr) -> Option<(String, Vec<PlaceProjection>)> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some((name.clone(), Vec::new())),
+        ExprKind::Index { collection, index } => {
+            let (name, mut path) = place_path(collection)?;
+            path.push(index_projection(index));
+            Some((name, path))
+        }
+        _ => None,
+    }
+}
+
+fn paths_may_alias(left: &[PlaceProjection], right: &[PlaceProjection]) -> bool {
+    for (a, b) in left.iter().zip(right.iter()) {
+        match (a, b) {
+            (PlaceProjection::DynamicIndex, _) | (_, PlaceProjection::DynamicIndex) => return true,
+            (a, b) if a != b => return false,
+            _ => {}
+        }
+    }
+    true
 }
 
 pub fn infer(module: &Module) -> Result<(), Vec<Diagnostic>> {
@@ -176,14 +284,17 @@ struct Checker {
 
 impl Checker {
     fn check_function(&mut self, function: &Function) {
-        let mut locals = HashMap::new();
+        let mut locals = Locals::default();
         for param in &function.params {
-            locals.insert(param.name.clone(), (param.ty.clone(), State::Available));
+            locals.insert(
+                param.name.clone(),
+                LocalBinding::new(BindingId(param.id), param.ty.clone()),
+            );
         }
         self.check_block(&function.body, &mut locals);
     }
 
-    fn check_block(&mut self, block: &Block, locals: &mut HashMap<String, (Type, State)>) -> bool {
+    fn check_block(&mut self, block: &Block, locals: &mut Locals) -> bool {
         let mut reachable = true;
         for stmt in &block.stmts {
             if !reachable {
@@ -194,8 +305,9 @@ impl Checker {
                     self.check_expr(value, locals, AccessMode::Move);
                     if self.terminated_exprs.contains(&value.id) {
                         reachable = false;
-                    } else if let Some((_, state)) = locals.get_mut(name) {
-                        *state = State::Available;
+                    } else if let Some(binding) = locals.get_mut(name) {
+                        binding.state = State::Available;
+                        binding.path_states.clear();
                     }
                 }
                 StmtKind::SetIndex {
@@ -203,13 +315,8 @@ impl Checker {
                     index,
                     value,
                 } => {
-                    // The target collection is mutably borrowed for the full
-                    // indexed assignment operation, not only while its name is read.
                     self.check_expr_in_region(
-                        collection,
-                        locals,
-                        AccessMode::MutableBorrow,
-                        stmt.span,
+                        collection, locals, AccessMode::PathMutableBorrow, stmt.span,
                     );
                     if self.terminated_exprs.contains(&collection.id) {
                         reachable = false;
@@ -223,24 +330,25 @@ impl Checker {
                     self.check_expr(value, locals, AccessMode::Move);
                     if self.terminated_exprs.contains(&value.id) {
                         reachable = false;
+                        continue;
+                    }
+                    if let Some((name, mut path)) = place_path(collection) {
+                        if !matches!(index_projection(index), PlaceProjection::DynamicIndex) {
+                            path.push(index_projection(index));
+                            if let Some(binding) = locals.get_mut(&name) {
+                                binding.set_path_state(path, State::Available);
+                            }
+                        }
                     }
                 }
                 StmtKind::Let { name, value } => {
-                    let shadows_existing = locals.contains_key(name);
                     let value_type = self.check_expr(value, locals, AccessMode::Move);
-                    if shadows_existing {
-                        self.errors.push(Diagnostic::error(
-                            "AIF406",
-                            format!("shadowing local '{name}' is unsupported until ownership bindings have stable identities"),
-                            Some(stmt.span),
-                        ));
-                    }
                     if self.terminated_exprs.contains(&value.id) {
                         reachable = false;
-                    } else if !shadows_existing {
-                        if let Some(ty) = value_type {
-                            locals.insert(name.clone(), (ty, State::Available));
-                        }
+                    } else if let Some(ty) = value_type {
+                        // The declaration node is a stable identity. Reusing a source
+                        // name creates a new binding, not an alias for the old one.
+                        locals.insert(name.clone(), LocalBinding::new(BindingId(stmt.id), ty));
                     }
                 }
                 StmtKind::Return(value) => {
@@ -287,40 +395,30 @@ impl Checker {
                     merge_states(locals, &scoped);
                 }
                 StmtKind::For { name, iterable, body } => {
-                    // Binding identity is not represented in the current checker.
-                    // Reject shadowing here rather than letting the loop-local name
-                    // overwrite an outer binding in the string-keyed state map.
-                    let shadows_existing = locals.contains_key(name);
-                    if shadows_existing {
-                        self.errors.push(Diagnostic::error(
-                            "AIF303",
-                            format!("loop binding '{name}' shadows an existing local"),
-                            Some(stmt.span),
-                        ));
-                    }
-                    // Iteration consumes an owned List<T>. This aligns static move state
-                    // with the native loop's single evaluation of the iterable.
+                    // Evaluate the iterable before snapshotting the outer binding:
+                    // the iterable itself may move a binding with the same name as
+                    // the loop variable (for example, \`for values in values\`).
+                    let had_previous_binding = locals.contains_key(name);
                     let iterable_type = self.check_expr(iterable, locals, AccessMode::Move);
                     if self.terminated_exprs.contains(&iterable.id) {
                         reachable = false;
                         continue;
                     }
+                    let previous_binding = had_previous_binding.then(|| locals.get(name).cloned()).flatten();
                     let element_type = iterable_type.and_then(|ty| match ty.kind {
                         TypeKind::List(element) => Some(*element),
                         _ => None,
                     });
                     let mut scoped = locals.clone();
-                    if !shadows_existing {
-                        if let Some(element) = element_type {
-                            scoped.insert(name.clone(), (element, State::Available));
-                        }
+                    if let Some(element) = element_type {
+                        scoped.insert(name.clone(), LocalBinding::new(BindingId(stmt.id), element));
                     }
                     self.scope_depth += 1;
                     self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
-                    // Merge only pre-existing bindings. A rejected shadow binding is
-                    // never allowed to overwrite an outer local's state.
-                    if !shadows_existing {
+                    if let Some(previous) = previous_binding {
+                        scoped.insert(name.clone(), previous);
+                    } else {
                         scoped.remove(name);
                     }
                     merge_states(locals, &scoped);
@@ -334,7 +432,7 @@ impl Checker {
     fn check_expr_in_region(
         &mut self,
         expr: &Expr,
-        locals: &mut HashMap<String, (Type, State)>,
+        locals: &mut Locals,
         mode: AccessMode,
         span: Span,
     ) -> Option<Type> {
@@ -347,7 +445,7 @@ impl Checker {
     fn check_expr(
         &mut self,
         expr: &Expr,
-        locals: &mut HashMap<String, (Type, State)>,
+        locals: &mut Locals,
         mode: AccessMode,
     ) -> Option<Type> {
         match &expr.kind {
@@ -356,23 +454,35 @@ impl Checker {
             ExprKind::Bool(_) => Some(type_node(TypeKind::Bool, expr)),
             ExprKind::String(_) => Some(type_node(TypeKind::String, expr)),
             ExprKind::Name(name) => {
-                let Some((ty, state)) = locals.get_mut(name) else {
+                let Some(binding) = locals.get_mut(name) else {
                     return None;
                 };
-                if *state != State::Available {
-                    let message = if *state == State::Moved {
+                let blocked_by_partial_move = !matches!(mode, AccessMode::PathBorrow | AccessMode::PathMutableBorrow)
+                    && binding.has_moved_paths();
+                if binding.state != State::Available || blocked_by_partial_move {
+                    let message = if binding.state == State::Moved {
                         format!("use of moved value '{name}'")
+                    } else if binding.state == State::MaybeMoved {
+                        format!("use of possibly moved value '{name}'")
+                    } else if blocked_by_partial_move
+                        && binding.path_states.values().any(|state| *state == State::MaybeMoved)
+                    {
+                        format!("use of possibly moved or partially moved value '{name}'")
+                    } else if blocked_by_partial_move {
+                        format!("use of partially moved value '{name}'")
                     } else {
                         format!("use of possibly moved value '{name}'")
                     };
                     self.errors.push(Diagnostic::error("AIF400", message, Some(expr.span)));
                     return None;
                 }
+                let ty = &binding.ty;
+                let binding_id = binding.id;
                 let access = if ownership_of(ty) == OwnershipClass::Copy {
                     AccessKind::Copy
-                } else if mode == AccessMode::SharedBorrow {
+                } else if mode == AccessMode::SharedBorrow || mode == AccessMode::PathBorrow {
                     AccessKind::SharedBorrow
-                } else if mode == AccessMode::MutableBorrow {
+                } else if mode == AccessMode::MutableBorrow || mode == AccessMode::PathMutableBorrow {
                     AccessKind::MutableBorrow
                 } else {
                     AccessKind::Move
@@ -384,7 +494,7 @@ impl Checker {
                     .unwrap_or(expr.span);
                 if access == AccessKind::Move
                     && self.borrow_regions.iter().any(|region| {
-                        region.local == *name
+                        region.binding_id == binding_id
                             && region.span.start < expr.span.end
                             && expr.span.start < region.span.end
                     })
@@ -400,10 +510,11 @@ impl Checker {
                 match access {
                     AccessKind::Move => {
                         self.transitions.push((expr.id, OwnershipTransition::Move));
-                        *state = State::Moved;
+                        binding.state = State::Moved;
                     }
                     AccessKind::SharedBorrow => {
                         self.borrow_regions.push(BorrowRegion {
+                            binding_id,
                             local: name.clone(),
                             kind: BorrowKind::Shared,
                             span: operation_span,
@@ -418,6 +529,7 @@ impl Checker {
                     }
                     AccessKind::MutableBorrow => {
                         self.borrow_regions.push(BorrowRegion {
+                            binding_id,
                             local: name.clone(),
                             kind: BorrowKind::Mutable,
                             span: operation_span,
@@ -455,8 +567,7 @@ impl Checker {
                 ))
             }
             ExprKind::Index { collection, index } => {
-                let collection_type =
-                    self.check_expr(collection, locals, AccessMode::SharedBorrow);
+                let collection_type = self.check_expr(collection, locals, AccessMode::PathBorrow);
                 if self.terminated_exprs.contains(&collection.id) {
                     self.terminated_exprs.insert(expr.id);
                     return collection_type;
@@ -467,8 +578,47 @@ impl Checker {
                     return collection_type;
                 }
                 collection_type.and_then(|ty| match ty.kind {
-                    TypeKind::List(element) => Some(*element),
-                    // String indexing is byte-based in the current language contract.
+                    TypeKind::List(element) => {
+                        let element_type = *element;
+                        if mode == AccessMode::Move && ownership_of(&element_type) == OwnershipClass::Move {
+                            if let Some((name, path)) = place_path(expr) {
+                                if let Some(binding) = locals.get_mut(&name) {
+                                    let path_state = binding.path_state(&path);
+                                    if path_state != State::Available {
+                                        let message = if path_state == State::Moved {
+                                            format!("use of moved indexed place '{name}'")
+                                        } else {
+                                            format!("use of possibly moved indexed place '{name}'")
+                                        };
+                                        self.errors.push(Diagnostic::error("AIF400", message, Some(expr.span)));
+                                        return None;
+                                    }
+                                    let next_state = if path.iter().any(|part| *part == PlaceProjection::DynamicIndex) {
+                                        State::MaybeMoved
+                                    } else {
+                                        State::Moved
+                                    };
+                                    binding.set_path_state(path, next_state);
+                                    self.accesses.insert(expr.id, AccessKind::Move);
+                                    self.transitions.push((expr.id, OwnershipTransition::Move));
+                                }
+                            }
+                        } else if let Some((name, path)) = place_path(expr) {
+                            if let Some(binding) = locals.get(&name) {
+                                let path_state = binding.path_state(&path);
+                                if path_state != State::Available {
+                                    let message = if path_state == State::Moved {
+                                        format!("use of moved indexed place '{name}'")
+                                    } else {
+                                        format!("use of possibly moved indexed place '{name}'")
+                                    };
+                                    self.errors.push(Diagnostic::error("AIF400", message, Some(expr.span)));
+                                    return None;
+                                }
+                            }
+                        }
+                        Some(element_type)
+                    }
                     TypeKind::String => Some(type_node(TypeKind::Int, expr)),
                     _ => None,
                 })
@@ -607,12 +757,16 @@ impl Checker {
                     let else_reachable = self.check_block(else_branch, &mut else_locals);
                     match (then_reachable, else_reachable) {
                         (true, true) => {
-                            for (name, (_, state)) in locals.iter_mut() {
-                                if let (Some(then_state), Some(else_state)) = (
-                                    then_locals.get(name).map(|entry| entry.1),
-                                    else_locals.get(name).map(|entry| entry.1),
+                            for (id, binding) in locals.bindings.iter_mut() {
+                                if let (Some(then_binding), Some(else_binding)) = (
+                                    then_locals.bindings.get(id),
+                                    else_locals.bindings.get(id),
                                 ) {
-                                    *state = join_state(then_state, else_state);
+                                    binding.state = join_state(then_binding.state, else_binding.state);
+                                    binding.path_states = join_path_states(
+                                        &then_binding.path_states,
+                                        &else_binding.path_states,
+                                    );
                                 }
                             }
                         }
@@ -654,28 +808,40 @@ fn ownership_of(ty: &Type) -> OwnershipClass {
     }
 }
 
-fn merge_states(
-    outer: &mut HashMap<String, (Type, State)>,
-    inner: &HashMap<String, (Type, State)>,
-) {
-    for (name, (_, state)) in outer.iter_mut() {
-        if let Some((_, inner_state)) = inner.get(name) {
-            *state = join_state(*state, *inner_state);
+fn merge_states(outer: &mut Locals, inner: &Locals) {
+    for (id, binding) in outer.bindings.iter_mut() {
+        if let Some(inner_binding) = inner.bindings.get(id) {
+            binding.state = join_state(binding.state, inner_binding.state);
+            binding.path_states = join_path_states(&binding.path_states, &inner_binding.path_states);
         }
     }
+}
+
+fn join_path_states(
+    left: &HashMap<Vec<PlaceProjection>, State>,
+    right: &HashMap<Vec<PlaceProjection>, State>,
+) -> HashMap<Vec<PlaceProjection>, State> {
+    let mut paths = HashSet::new();
+    paths.extend(left.keys().cloned());
+    paths.extend(right.keys().cloned());
+    paths.into_iter().filter_map(|path| {
+        let state = join_state(
+            left.get(&path).copied().unwrap_or(State::Available),
+            right.get(&path).copied().unwrap_or(State::Available),
+        );
+        (state != State::Available).then_some((path, state))
+    }).collect()
 }
 
 fn join_state(left: State, right: State) -> State {
     if left == right { left } else { State::MaybeMoved }
 }
 
-fn merge_scope_states(
-    outer: &mut HashMap<String, (Type, State)>,
-    inner: &HashMap<String, (Type, State)>,
-) {
-    for (name, (_, state)) in outer.iter_mut() {
-        if let Some((_, inner_state)) = inner.get(name) {
-            *state = *inner_state;
+fn merge_scope_states(outer: &mut Locals, inner: &Locals) {
+    for (id, binding) in outer.bindings.iter_mut() {
+        if let Some(inner_binding) = inner.bindings.get(id) {
+            binding.state = inner_binding.state;
+            binding.path_states = inner_binding.path_states.clone();
         }
     }
 }
@@ -867,12 +1033,14 @@ fn f(value: String) -> String
         let span = Span::new(10, 20);
         let regions = [
             BorrowRegion {
+                binding_id: BindingId(crate::NodeId(10)),
                 local: "value".into(),
                 kind: BorrowKind::Shared,
                 span,
                 scope_depth: 0,
             },
             BorrowRegion {
+                binding_id: BindingId(crate::NodeId(10)),
                 local: "value".into(),
                 kind: BorrowKind::Mutable,
                 span: Span::new(15, 25),
@@ -913,15 +1081,103 @@ fn f(value: String) -> String
     }
 
     #[test]
-    fn rejects_loop_binding_shadowing_until_bindings_have_stable_identity() {
+    fn loop_binding_shadowing_preserves_the_outer_binding_identity() {
         let module = parse(
             "module loop_shadow\nfn f(values: List<String>, item: String) -> String\n  for item in values\n    len(item)\n  item\n",
         )
         .unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "the loop binding must shadow only inside the loop and preserve the outer binding"
+        );
+    }
+
+    #[test]
+    fn same_scope_shadowing_creates_a_new_binding_identity() {
+        let module = parse(
+            "module local_shadow\nfn f(value: String) -> String\n  let value = value\n  value\n",
+        )
+        .unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "the new binding must not inherit the moved state of the binding used to initialize it"
+        );
+    }
+
+    #[test]
+    fn moving_one_list_index_does_not_move_a_disjoint_index() {
+        let module = parse(
+            "module distinct_paths\nfn f(values: List<String>) -> String\n  let first = values[0]\n  let second = values[1]\n  first\n",
+        )
+        .unwrap();
+        assert!(infer(&module).is_ok());
+    }
+
+    #[test]
+    fn moving_the_same_list_index_twice_is_rejected() {
+        let module = parse(
+            "module repeated_path\nfn f(values: List<String>) -> String\n  let first = values[0]\n  let second = values[0]\n  first\n",
+        )
+        .unwrap();
         let errors = infer(&module).unwrap_err();
         assert!(
-            errors.iter().any(|error| error.code == "AIF303"),
-            "loop binding shadowing must fail closed, got {errors:?}"
+            errors.iter().any(|error| error.code == "AIF400"),
+            "re-reading a moved path must be rejected, got {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|error| error.message.contains("use of moved indexed place")),
+            "a statically identified repeated path is definitely moved, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn dynamic_index_move_conservatively_blocks_other_indices() {
+        let module = parse(
+            "module dynamic_path\nfn f(values: List<String>, index: Int) -> String\n  let first = values[index]\n  let second = values[0]\n  first\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "an unknown index may alias any concrete element, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn indexed_reinitialization_restores_only_the_assigned_path() {
+        let module = parse(
+            "module path_reinit\nfn f(values: List<String>) -> String\n  let first = values[0]\n  set values[0] = \"restored\"\n  let again = values[0]\n  again\n",
+        )
+        .unwrap();
+        assert!(infer(&module).is_ok());
+    }
+
+    #[test]
+    fn partial_move_on_one_branch_is_path_dependent_after_join() {
+        let module = parse(
+            "module path_join\nfn f(flag: Bool, values: List<String>) -> String\n  if flag\n    let selected = values[0]\n  else\n    let other = \"safe\"\n  values[0]\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "a path moved on only one branch must be maybe-moved after the join, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn moving_an_iterable_before_same_name_loop_shadow_is_preserved() {
+        let module = parse(
+            "module iterable_shadow_move\nfn f(values: List<String>) -> Int\n  for values in values\n    len(values)\n  len(values)\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        let errors = infer(&module).expect_err(
+            "the iterable is consumed before the loop-local binding shadows the same name",
+        );
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "the outer list must remain moved after iteration, got {errors:?}"
         );
     }
 
@@ -1030,7 +1286,10 @@ fn f(value: String) -> String
         .unwrap();
         let errors = infer(&module).unwrap_err();
         assert!(errors.iter().any(|error| error.code == "AIF400"));
-        assert!(errors.iter().any(|error| error.message.contains("use of moved value")));
+        assert!(
+            errors.iter().any(|error| error.message.contains("moved")),
+            "the joined state should be definitely moved, got {errors:?}"
+        );
     }
 
     #[test]
@@ -1206,13 +1465,16 @@ fn f(value: String) -> String
 
 
     #[test]
-    fn rejects_shadowing_until_binding_identity_is_tracked() {
+    fn nested_scope_shadowing_uses_distinct_binding_identity() {
         let module = parse(
-            "module reject_shadow\nfn f(value: String) -> String\n  scope\n    let value = \"fresh\"\n  value\n",
+            "module scope_shadow\nfn f(value: String) -> String\n  scope\n    let value = \"fresh\"\n  value\n",
         )
         .unwrap();
-        let errors = infer(&module).unwrap_err();
-        assert!(errors.iter().any(|error| error.code == "AIF406"));
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(
+            infer(&module).is_ok(),
+            "the nested shadow must not replace or move the outer binding"
+        );
     }
 
     #[test]
@@ -1325,6 +1587,7 @@ fn f(values: List<Int>) -> Int
             "f",
             &[crate::NativeValue::List(vec![
                 crate::NativeValue::String("item".into()),
+                crate::NativeValue::String("next".into()),
             ])],
             crate::ExecutionLimits::default(),
         )
@@ -1332,15 +1595,18 @@ fn f(values: List<Int>) -> Int
     }
 
     #[test]
-    fn moving_an_indexed_element_does_not_move_the_source_collection() {
+    fn moving_an_indexed_element_partially_moves_the_source_collection() {
         let module = parse(
             "module indexed_value_is_owned\nfn f(values: List<String>) -> Int\n  let selected = values[0]\n  let consumed = selected\n  len(values)\n",
         )
         .unwrap();
         assert!(crate::sema::check(&module).is_ok());
+        let errors = infer(&module).expect_err(
+            "using the whole list after moving an element must be rejected as a partial move",
+        );
         assert!(
-            infer(&module).is_ok(),
-            "indexing yields an owned element in the current runtime contract; moving it must not invalidate the source collection"
+            errors.iter().any(|error| error.code == "AIF400"),
+            "expected a partial-move diagnostic, got {errors:?}"
         );
     }
 
@@ -1358,33 +1624,33 @@ fn f(values: List<Int>) -> Int
     }
 
     #[test]
-    fn indexed_element_move_preserves_source_collection_at_runtime() {
-        let source = "module indexed_runtime
-fn f(values: List<String>) -> Int
-  let selected = values[0]
-  let consumed = selected
-  len(values)
-";
+    fn indexed_element_move_allows_a_disjoint_path_at_runtime() {
+        let source = "module indexed_runtime\nfn f(values: List<String>) -> Int\n  let selected = values[0]\n  let consumed = selected\n  len(values[1])\n";
         assert_eq!(
             run_owned_collection_case(source),
-            crate::NativeValue::Int(1),
-            "moving the copied indexed element must not consume the source list"
+            crate::NativeValue::Int(4),
+            "moving one element must leave a disjoint indexed path usable"
         );
     }
 
     #[test]
     fn slice_result_move_preserves_source_collection_at_runtime() {
-        let source = "module slice_runtime
-fn f(values: List<String>) -> Int
-  let selected = values[0:1]
-  let consumed = selected
-  len(values)
-";
+        let source = "module slice_runtime\nfn f(values: List<String>) -> Int\n  let selected = values[0:1]\n  let consumed = selected\n  len(values)\n";
         assert_eq!(
             run_owned_collection_case(source),
-            crate::NativeValue::Int(1),
+            crate::NativeValue::Int(2),
             "moving the owned slice must not consume the source list"
         );
+    }
+
+    #[test]
+    fn shadowed_inner_binding_does_not_mutate_outer_binding_state() {
+        let module = parse(
+            "module scope_shadow\nfn f(value: String) -> String\n  scope\n    let value = \"inner\"\n    len(value)\n  value\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(infer(&module).is_ok());
     }
 
 }
