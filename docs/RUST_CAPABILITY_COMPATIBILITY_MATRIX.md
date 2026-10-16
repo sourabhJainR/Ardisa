@@ -36,7 +36,7 @@
 | Const evaluation and const generics | Not implemented / not evidenced | No general const evaluator or compile-time value/type computation is established. |
 | Attributes, lint levels, conditional compilation | Not implemented / not evidenced | No Rust-compatible attribute system, lint model, cfg evaluation or build-script semantics. |
 | Drop, RAII and deterministic destruction | Partial / not evidenced | Scope and resource lease cleanup exist in runtime APIs; user-defined Drop, drop glue, drop order and unwind safety are not established. |
-| Panic/unwind semantics | Not implemented / not evidenced | Ardisa errors are explicit in supported paths; Rust panic payload, unwind boundaries, panic safety and abort profiles are not equivalent. |
+| Panic/unwind semantics | Unsupported (explicit-error subset) | `docs/language/failure-boundary-contract.md` specifies compiler/VM `NativeError` boundaries, malformed artifact rejection, and host task-panic capture as `AIF505`; Rust panic payloads, unwind/abort profiles, panic safety and user-defined drop cleanup are not claimed. Source/runtime boundary regressions live in `crates/aifocus-core/tests/failure_boundaries.rs`. |
 | Standard library and Cargo ecosystem | Not implemented as a compatibility layer | Ardisa is a standalone language/runtime; there is no claim of Rust std or Cargo ecosystem compatibility. |
 | no_std, allocators and custom targets | Not implemented / not evidenced | No supported target matrix, allocator contract, no_std core, or target-specific ABI contract is established. |
 | SIMD, intrinsics, GPU/NPU backends | Not implemented / not evidenced | Tensor/quantization runtime paths exist, but hardware-specific support requires real lowering, target checks and reproducible benchmarks. |
