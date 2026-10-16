@@ -132,6 +132,7 @@ enum AccessMode {
     /// Borrow the aggregate only to access one projection; other moved projections
     /// remain independently tracked.
     PathBorrow,
+    PathMutableBorrow,
 }
 
 #[derive(Debug, Clone)]
@@ -148,14 +149,13 @@ impl LocalBinding {
     }
 
     fn path_state(&self, path: &[PlaceProjection]) -> State {
-        let mut prefix = Vec::new();
-        for projection in path {
-            if let Some(state @ (State::Moved | State::MaybeMoved)) = self.path_states.get(&prefix) {
-                return *state;
+        let mut result = State::Available;
+        for (existing, state) in &self.path_states {
+            if *state != State::Available && paths_may_alias(existing, path) {
+                result = join_state(result, *state);
             }
-            prefix.push(projection.clone());
         }
-        self.path_states.get(path).copied().unwrap_or(State::Available)
+        result
     }
 
     fn has_moved_paths(&self) -> bool {
@@ -172,7 +172,57 @@ impl LocalBinding {
     }
 }
 
-type Locals = HashMap<String, LocalBinding>;
+#[derive(Debug, Clone, Default)]
+struct Locals {
+    visible: HashMap<String, BindingId>,
+    bindings: HashMap<BindingId, LocalBinding>,
+}
+
+impl Locals {
+    fn insert(&mut self, name: String, binding: LocalBinding) {
+        self.visible.insert(name, binding.id);
+        self.bindings.insert(binding.id, binding);
+    }
+    fn get(&self, name: &str) -> Option<&LocalBinding> {
+        self.visible.get(name).and_then(|id| self.bindings.get(id))
+    }
+    fn get_mut(&mut self, name: &str) -> Option<&mut LocalBinding> {
+        let id = *self.visible.get(name)?;
+        self.bindings.get_mut(&id)
+    }
+    fn contains_key(&self, name: &str) -> bool { self.visible.contains_key(name) }
+    fn remove(&mut self, name: &str) -> Option<BindingId> { self.visible.remove(name) }
+}
+
+fn index_projection(index: &Expr) -> PlaceProjection {
+    match index.kind {
+        ExprKind::Int(value) if value >= 0 => PlaceProjection::Index(value as usize),
+        _ => PlaceProjection::DynamicIndex,
+    }
+}
+
+fn place_path(expr: &Expr) -> Option<(String, Vec<PlaceProjection>)> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some((name.clone(), Vec::new())),
+        ExprKind::Index { collection, index } => {
+            let (name, mut path) = place_path(collection)?;
+            path.push(index_projection(index));
+            Some((name, path))
+        }
+        _ => None,
+    }
+}
+
+fn paths_may_alias(left: &[PlaceProjection], right: &[PlaceProjection]) -> bool {
+    for (a, b) in left.iter().zip(right.iter()) {
+        match (a, b) {
+            (PlaceProjection::DynamicIndex, _) | (_, PlaceProjection::DynamicIndex) => return true,
+            (a, b) if a != b => return false,
+            _ => {}
+        }
+    }
+    true
+}
 
 pub fn infer(module: &Module) -> Result<(), Vec<Diagnostic>> {
     analyze(module).map(|_| ())
@@ -263,7 +313,7 @@ impl Checker {
                     value,
                 } => {
                     self.check_expr_in_region(
-                        collection, locals, AccessMode::MutableBorrow, stmt.span,
+                        collection, locals, AccessMode::PathMutableBorrow, stmt.span,
                     );
                     if self.terminated_exprs.contains(&collection.id) {
                         reachable = false;
@@ -279,13 +329,11 @@ impl Checker {
                         reachable = false;
                         continue;
                     }
-                    if let Some((name, path)) = place_path(collection) {
-                        if let Some(PlaceProjection::Index(index_value)) = path.last() {
-                            let mut restored = path;
-                            restored.pop();
-                            restored.push(PlaceProjection::Index(*index_value));
+                    if let Some((name, mut path)) = place_path(collection) {
+                        if !matches!(index_projection(index), PlaceProjection::DynamicIndex) {
+                            path.push(index_projection(index));
                             if let Some(binding) = locals.get_mut(&name) {
-                                binding.set_path_state(restored, State::Available);
+                                binding.set_path_state(path, State::Available);
                             }
                         }
                     }
@@ -404,7 +452,8 @@ impl Checker {
                 let Some(binding) = locals.get_mut(name) else {
                     return None;
                 };
-                let blocked_by_partial_move = mode != AccessMode::PathBorrow && binding.has_moved_paths();
+                let blocked_by_partial_move = !matches!(mode, AccessMode::PathBorrow | AccessMode::PathMutableBorrow)
+                    && binding.has_moved_paths();
                 if binding.state != State::Available || blocked_by_partial_move {
                     let moved = binding.state == State::Moved
                         || binding.path_states.values().any(|state| *state == State::Moved);
@@ -422,7 +471,7 @@ impl Checker {
                     AccessKind::Copy
                 } else if mode == AccessMode::SharedBorrow || mode == AccessMode::PathBorrow {
                     AccessKind::SharedBorrow
-                } else if mode == AccessMode::MutableBorrow {
+                } else if mode == AccessMode::MutableBorrow || mode == AccessMode::PathMutableBorrow {
                     AccessKind::MutableBorrow
                 } else {
                     AccessKind::Move
@@ -507,8 +556,7 @@ impl Checker {
                 ))
             }
             ExprKind::Index { collection, index } => {
-                let collection_type =
-                    self.check_expr(collection, locals, AccessMode::SharedBorrow);
+                let collection_type = self.check_expr(collection, locals, AccessMode::PathBorrow);
                 if self.terminated_exprs.contains(&collection.id) {
                     self.terminated_exprs.insert(expr.id);
                     return collection_type;
@@ -519,8 +567,47 @@ impl Checker {
                     return collection_type;
                 }
                 collection_type.and_then(|ty| match ty.kind {
-                    TypeKind::List(element) => Some(*element),
-                    // String indexing is byte-based in the current language contract.
+                    TypeKind::List(element) => {
+                        let element_type = *element;
+                        if mode == AccessMode::Move && ownership_of(&element_type) == OwnershipClass::Move {
+                            if let Some((name, path)) = place_path(expr) {
+                                if let Some(binding) = locals.get_mut(&name) {
+                                    let path_state = binding.path_state(&path);
+                                    if path_state != State::Available {
+                                        let message = if path_state == State::Moved {
+                                            format!("use of moved indexed place '{name}'")
+                                        } else {
+                                            format!("use of possibly moved indexed place '{name}'")
+                                        };
+                                        self.errors.push(Diagnostic::error("AIF400", message, Some(expr.span)));
+                                        return None;
+                                    }
+                                    let next_state = if path.iter().any(|part| *part == PlaceProjection::DynamicIndex) {
+                                        State::MaybeMoved
+                                    } else {
+                                        State::Moved
+                                    };
+                                    binding.set_path_state(path, next_state);
+                                    self.accesses.insert(expr.id, AccessKind::Move);
+                                    self.transitions.push((expr.id, OwnershipTransition::Move));
+                                }
+                            }
+                        } else if let Some((name, path)) = place_path(expr) {
+                            if let Some(binding) = locals.get(&name) {
+                                let path_state = binding.path_state(&path);
+                                if path_state != State::Available {
+                                    let message = if path_state == State::Moved {
+                                        format!("use of moved indexed place '{name}'")
+                                    } else {
+                                        format!("use of possibly moved indexed place '{name}'")
+                                    };
+                                    self.errors.push(Diagnostic::error("AIF400", message, Some(expr.span)));
+                                    return None;
+                                }
+                            }
+                        }
+                        Some(element_type)
+                    }
                     TypeKind::String => Some(type_node(TypeKind::Int, expr)),
                     _ => None,
                 })
@@ -659,12 +746,16 @@ impl Checker {
                     let else_reachable = self.check_block(else_branch, &mut else_locals);
                     match (then_reachable, else_reachable) {
                         (true, true) => {
-                            for (name, (_, state)) in locals.iter_mut() {
-                                if let (Some(then_state), Some(else_state)) = (
-                                    then_locals.get(name).map(|entry| entry.1),
-                                    else_locals.get(name).map(|entry| entry.1),
+                            for (id, binding) in locals.bindings.iter_mut() {
+                                if let (Some(then_binding), Some(else_binding)) = (
+                                    then_locals.bindings.get(id),
+                                    else_locals.bindings.get(id),
                                 ) {
-                                    *state = join_state(then_state, else_state);
+                                    binding.state = join_state(then_binding.state, else_binding.state);
+                                    binding.path_states = join_path_states(
+                                        &then_binding.path_states,
+                                        &else_binding.path_states,
+                                    );
                                 }
                             }
                         }
@@ -706,28 +797,40 @@ fn ownership_of(ty: &Type) -> OwnershipClass {
     }
 }
 
-fn merge_states(
-    outer: &mut Locals,
-    inner: &Locals,
-) {
-    for (name, (_, state)) in outer.iter_mut() {
-        if let Some((_, inner_state)) = inner.get(name) {
-            *state = join_state(*state, *inner_state);
+fn merge_states(outer: &mut Locals, inner: &Locals) {
+    for (id, binding) in outer.bindings.iter_mut() {
+        if let Some(inner_binding) = inner.bindings.get(id) {
+            binding.state = join_state(binding.state, inner_binding.state);
+            binding.path_states = join_path_states(&binding.path_states, &inner_binding.path_states);
         }
     }
+}
+
+fn join_path_states(
+    left: &HashMap<Vec<PlaceProjection>, State>,
+    right: &HashMap<Vec<PlaceProjection>, State>,
+) -> HashMap<Vec<PlaceProjection>, State> {
+    let mut paths = HashSet::new();
+    paths.extend(left.keys().cloned());
+    paths.extend(right.keys().cloned());
+    paths.into_iter().filter_map(|path| {
+        let state = join_state(
+            left.get(&path).copied().unwrap_or(State::Available),
+            right.get(&path).copied().unwrap_or(State::Available),
+        );
+        (state != State::Available).then_some((path, state))
+    }).collect()
 }
 
 fn join_state(left: State, right: State) -> State {
     if left == right { left } else { State::MaybeMoved }
 }
 
-fn merge_scope_states(
-    outer: &mut Locals,
-    inner: &Locals,
-) {
-    for (name, (_, state)) in outer.iter_mut() {
-        if let Some((_, inner_state)) = inner.get(name) {
-            *state = *inner_state;
+fn merge_scope_states(outer: &mut Locals, inner: &Locals) {
+    for (id, binding) in outer.bindings.iter_mut() {
+        if let Some(inner_binding) = inner.bindings.get(id) {
+            binding.state = inner_binding.state;
+            binding.path_states = inner_binding.path_states.clone();
         }
     }
 }
@@ -919,12 +1022,14 @@ fn f(value: String) -> String
         let span = Span::new(10, 20);
         let regions = [
             BorrowRegion {
+                binding_id: BindingId(crate::NodeId(10)),
                 local: "value".into(),
                 kind: BorrowKind::Shared,
                 span,
                 scope_depth: 0,
             },
             BorrowRegion {
+                binding_id: BindingId(crate::NodeId(10)),
                 local: "value".into(),
                 kind: BorrowKind::Mutable,
                 span: Span::new(15, 25),
