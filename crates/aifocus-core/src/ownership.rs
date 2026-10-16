@@ -1780,7 +1780,7 @@ fn f(values: List<Int>) -> Int
         let aliased_value = index(
             9_300_004,
             index(9_300_005, name(9_300_006), int(9_300_007, 0)),
-            int(9_300_008, 1),
+            int(9_300_008, 0),
         );
         function.body.stmts[0].kind = StmtKind::SetIndex {
             collection: target_collection,
@@ -1853,5 +1853,48 @@ fn f(values: List<Int>) -> Int
             "the parent place must remain partially moved, got {errors:?}"
         );
     }
+
+
+    #[test]
+    fn nested_index_assignment_allows_disjoint_leaf_paths() {
+        let mut module = parse(
+            "module nested_index_disjoint\nfn f(values: List<List<Int>>) -> Int\n  0\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &mut module.items[0];
+        let span = function.body.stmts[0].span;
+        let name = |id| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Name("values".into()),
+        };
+        let int = |id, value| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Int(value),
+        };
+        let index = |id, collection, subscript| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Index {
+                collection: Box::new(collection),
+                index: Box::new(subscript),
+            },
+        };
+        function.body.stmts[0].kind = StmtKind::SetIndex {
+            collection: index(9_310_001, name(9_310_002), int(9_310_003, 0)),
+            index: int(9_310_004, 0),
+            value: index(
+                9_310_005,
+                index(9_310_006, name(9_310_007), int(9_310_008, 0)),
+                int(9_310_009, 1),
+            ),
+        };
+        assert!(
+            infer(&module).is_ok(),
+            "a mutable borrow of [0][0] must not conflict with a read/move of disjoint [0][1]"
+        );
+    }
+
 
 }
