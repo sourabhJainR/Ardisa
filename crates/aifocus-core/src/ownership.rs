@@ -681,17 +681,20 @@ impl Checker {
                     self.terminated_exprs.insert(expr.id);
                     return collection_type;
                 }
+                // Record every resolved indexed place, including String indexing.
+                // Ownership mutation rules differ by element type, but source-level
+                // place identity should not depend on whether indexing moves a value.
+                if let Some((name, path)) = place_path(expr) {
+                    if let Some(binding_id) = locals.binding_id(&name) {
+                        self.places.insert(expr.id, Place {
+                            binding_id,
+                            projections: path,
+                        });
+                    }
+                }
                 collection_type.and_then(|ty| match ty.kind {
                     TypeKind::List(element) => {
                         let element_type = *element;
-                        if let Some((name, path)) = place_path(expr) {
-                            if let Some(binding_id) = locals.binding_id(&name) {
-                                self.places.insert(expr.id, Place {
-                                    binding_id,
-                                    projections: path,
-                                });
-                            }
-                        }
                         if mode == AccessMode::Move && ownership_of(&element_type) == OwnershipClass::Move {
                             if let Some((name, path)) = place_path(expr) {
                                 if let Some(binding) = locals.get_mut(&name) {
@@ -2025,6 +2028,26 @@ fn f(values: List<Int>) -> Int
         assert_eq!(
             model.places.get(&second.id).map(|place| place.projections.clone()),
             Some(vec![PlaceProjection::Index(1)])
+        );
+    }
+
+
+    #[test]
+    fn string_index_access_also_has_a_stable_resolved_place() {
+        let module = parse(
+            "module string_place\nfn f(value: String) -> Int\n  value[0]\n",
+        ).unwrap();
+        let Item::Function(function) = &module.items[0];
+        let StmtKind::Expr(index) = &function.body.stmts[0].kind else {
+            panic!("expected indexed expression");
+        };
+        let model = analyze(&module).unwrap();
+        assert_eq!(
+            model.places.get(&index.id),
+            Some(&Place {
+                binding_id: BindingId(function.params[0].id),
+                projections: vec![PlaceProjection::Index(0)],
+            })
         );
     }
 
