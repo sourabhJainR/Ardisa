@@ -1693,6 +1693,23 @@ mod ai_routing_semantic_tests {
     }
 
     #[test]
+    fn propagation_rejects_incompatible_error_or_return_container() {
+        let module = crate::parse(
+            "module incompatible_result_propagation\nfn f(value: Result<Int, String>) -> Result<Int, Int>\n  propagate(value)\n",
+        )
+        .unwrap();
+        let errors = check(&module).expect_err("Result propagation must preserve a compatible error type");
+        assert!(errors.iter().any(|error| error.code == "AIF337"));
+
+        let module = crate::parse(
+            "module incompatible_option_propagation\nfn f(value: Option<Int>) -> Result<Int, String>\n  propagate(value)\n",
+        )
+        .unwrap();
+        let errors = check(&module).expect_err("Option cannot propagate from a Result-returning function");
+        assert!(errors.iter().any(|error| error.code == "AIF337"));
+    }
+
+    #[test]
     fn option_type_requires_one_payload_and_none_requires_return_context() {
         let invalid_type = crate::parse(
             "module invalid_option_arity\nfn f(value: Option<Int, String>) -> Int\n  0\n",
