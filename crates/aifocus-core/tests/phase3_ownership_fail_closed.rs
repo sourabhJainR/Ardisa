@@ -43,3 +43,29 @@ fn loop_binding_shadowing_preserves_outer_binding_identity() {
         "the outer item remains available after the loop-local binding leaves scope"
     );
 }
+
+
+#[test]
+fn pin_nonnull_and_reference_wrapper_types_fail_closed_semantically() {
+    for ty in [
+        "Pin<String>",
+        "NonNull<String>",
+        "RawPtr<String>",
+        "SharedRef<String>",
+        "MutableRef<String>",
+        "Pin",
+        "NonNull",
+    ] {
+        let source = format!(
+            "module rejected_pointer_constructor\nfn identity(value: {ty}) -> Int\n  0\n"
+        );
+        let module = parse(&source)
+            .unwrap_or_else(|error| panic!("type spelling {ty:?} should parse for a diagnostic: {error:?}"));
+        let errors = sema::check(&module)
+            .expect_err("unsupported reference/pointer/pinning constructors must fail semantic validation");
+        assert!(
+            errors.iter().any(|error| error.code == "AIF320"),
+            "type spelling {ty:?} must receive the unsupported native pointer diagnostic: {errors:?}"
+        );
+    }
+}
