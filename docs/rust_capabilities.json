@@ -206,6 +206,31 @@
       "tracking": "https://github.com/sourabhJainR/Ardisa/issues/163"
     },
     {
+      "id": "panic-unwind-failure-boundaries",
+      "label": "Panic, unwind, abort, and explicit failure boundaries",
+      "status": "partial",
+      "evidence": {
+        "semantic_checks": [
+          "crates/aifocus-core/src/sema.rs"
+        ],
+        "native_encoding": [
+          "crates/aifocus-core/src/native.rs"
+        ],
+        "runtime_behavior": [
+          "crates/aifocus-core/src/native.rs",
+          "crates/aifocus-core/src/concurrency.rs"
+        ],
+        "positive_tests": [
+          "crates/aifocus-core/tests/failure_boundaries.rs"
+        ],
+        "adversarial_tests": [
+          "crates/aifocus-core/tests/failure_boundaries.rs"
+        ]
+      },
+      "limitations": "The implemented subset returns explicit NativeError values, rejects malformed ARDISA-EXEC-V1 artifacts, and captures host worker panics at join as AIF505. Rust panic payloads, unwind/abort profiles, user-defined Drop glue, panic safety, foreign ABI unwinding, and deterministic cleanup of user-defined resources remain unsupported or unproven; see docs/language/failure-boundary-contract.md.",
+      "tracking": "https://github.com/sourabhJainR/Ardisa/issues/172"
+    },
+    {
       "id": "synchronization-memory-ordering",
       "label": "Source-level threads, atomics, locks, and memory ordering",
       "status": "unsupported",
