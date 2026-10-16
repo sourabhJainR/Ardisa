@@ -1760,4 +1760,28 @@ fn f(values: List<Int>) -> Int
 
 
 
+
+    #[test]
+    fn nested_index_move_preserves_disjoint_path_at_runtime() {
+        let source = "module nested_index_runtime\nfn f(values: List<List<String>>) -> Int\n  let selected = values[0][0]\n  let sibling = values[0][1]\n  len(sibling)\n";
+        let compiled = crate::compile_source(source)
+            .expect("nested disjoint paths should compile through the native pipeline");
+        let program = crate::native::decode_program(&compiled.artifact)
+            .expect("compiled nested-path artifact should decode");
+        let input = crate::NativeValue::List(vec![crate::NativeValue::List(vec![
+            crate::NativeValue::String("first".into()),
+            crate::NativeValue::String("next".into()),
+        ])]);
+        assert_eq!(
+            crate::native::run_program_with_limits(
+                &program,
+                "f",
+                &[input],
+                crate::ExecutionLimits::default(),
+            )
+            .expect("the disjoint nested path remains usable at runtime"),
+            crate::NativeValue::Int(4),
+        );
+    }
+
 }
