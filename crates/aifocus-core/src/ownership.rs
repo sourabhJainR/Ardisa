@@ -149,13 +149,16 @@ impl LocalBinding {
     }
 
     fn path_state(&self, path: &[PlaceProjection]) -> State {
-        let mut result = State::Available;
+        let mut result: Option<State> = None;
         for (existing, state) in &self.path_states {
             if *state != State::Available && paths_may_alias(existing, path) {
-                result = join_state(result, *state);
+                result = Some(match result {
+                    Some(previous) => join_state(previous, *state),
+                    None => *state,
+                });
             }
         }
-        result
+        result.unwrap_or(State::Available)
     }
 
     fn has_moved_paths(&self) -> bool {
