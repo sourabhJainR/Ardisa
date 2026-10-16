@@ -45,6 +45,8 @@ pub struct BorrowRegion {
     pub binding_id: BindingId,
     pub local: String,
     pub kind: BorrowKind,
+    /// Place path accessed within the binding; an empty path borrows the whole value.
+    pub path: Vec<PlaceProjection>,
     pub span: Span,
     pub scope_depth: usize,
 }
@@ -56,6 +58,7 @@ impl BorrowRegion {
 
     pub fn overlaps(&self, other: &Self) -> bool {
         self.binding_id == other.binding_id
+            && paths_may_alias(&self.path, &other.path)
             && self.span.start < other.span.end
             && other.span.start < self.span.end
     }
@@ -111,7 +114,7 @@ impl OwnershipClass {
 pub struct BindingId(pub crate::NodeId);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum PlaceProjection {
+pub enum PlaceProjection {
     Index(usize),
     /// An unknown index may alias any element at this depth.
     DynamicIndex,
@@ -263,6 +266,7 @@ pub fn analyze(module: &Module) -> Result<OwnershipModel, Vec<Diagnostic>> {
         scope_depth: 0,
         terminated_exprs: HashSet::new(),
         borrow_context: Vec::new(),
+        place_context: Vec::new(),
     };
 
     for item in &module.items {
@@ -295,6 +299,8 @@ struct Checker {
     terminated_exprs: HashSet<crate::NodeId>,
     /// Extent of the operation evaluating a borrowed expression.
     borrow_context: Vec<Span>,
+    /// Most-specific place currently being evaluated, preserved through nested projections.
+    place_context: Vec<(String, Vec<PlaceProjection>)>,
 }
 
 impl Checker {
@@ -330,9 +336,22 @@ impl Checker {
                     index,
                     value,
                 } => {
+                    // The mutable place is the collection projection plus its target index.
+                    // Carry that full path while analyzing the intermediate collection so
+                    // alias checks can distinguish a sibling path from the actual target.
+                    let has_target_place = if let Some((name, mut path)) = place_path(collection) {
+                        path.push(index_projection(index));
+                        self.place_context.push((name, path));
+                        true
+                    } else {
+                        false
+                    };
                     self.check_expr_in_region(
                         collection, locals, AccessMode::PathMutableBorrow, stmt.span,
                     );
+                    if has_target_place {
+                        self.place_context.pop();
+                    }
                     if self.terminated_exprs.contains(&collection.id) {
                         reachable = false;
                         continue;
@@ -463,6 +482,31 @@ impl Checker {
         locals: &mut Locals,
         mode: AccessMode,
     ) -> Option<Type> {
+        // The outermost projection is the most precise place for this access.
+        // Do not replace it with an intermediate parent projection while recursively
+        // evaluating a chain such as values[0][1].
+        let place = place_path(expr);
+        let should_push_place = match (place.as_ref(), self.place_context.last()) {
+            (Some((root, _)), Some((current_root, _))) if root == current_root => false,
+            (Some(_), _) => true,
+            (None, _) => false,
+        };
+        if should_push_place {
+            self.place_context.push(place.expect("place was checked above"));
+        }
+        let result = self.check_expr_inner(expr, locals, mode);
+        if should_push_place {
+            self.place_context.pop();
+        }
+        result
+    }
+
+    fn check_expr_inner(
+        &mut self,
+        expr: &Expr,
+        locals: &mut Locals,
+        mode: AccessMode,
+    ) -> Option<Type> {
         match &expr.kind {
             ExprKind::Int(_) => Some(type_node(TypeKind::Int, expr)),
             ExprKind::Float(_) => Some(type_node(TypeKind::Named("F32".into()), expr)),
@@ -507,6 +551,12 @@ impl Checker {
                     .last()
                     .copied()
                     .unwrap_or(expr.span);
+                let borrow_path = self
+                    .place_context
+                    .last()
+                    .filter(|(root, _)| root == name)
+                    .map(|(_, path)| path.clone())
+                    .unwrap_or_default();
                 if access == AccessKind::Move
                     && self.borrow_regions.iter().any(|region| {
                         region.binding_id == binding_id
@@ -532,6 +582,7 @@ impl Checker {
                             binding_id,
                             local: name.clone(),
                             kind: BorrowKind::Shared,
+                            path: borrow_path.clone(),
                             span: operation_span,
                             scope_depth: self.scope_depth,
                         });
@@ -547,6 +598,7 @@ impl Checker {
                             binding_id,
                             local: name.clone(),
                             kind: BorrowKind::Mutable,
+                            path: borrow_path.clone(),
                             span: operation_span,
                             scope_depth: self.scope_depth,
                         });
@@ -1066,6 +1118,7 @@ fn f(value: String) -> String
                 binding_id: BindingId(crate::NodeId(10)),
                 local: "value".into(),
                 kind: BorrowKind::Shared,
+                path: Vec::new(),
                 span,
                 scope_depth: 0,
             },
@@ -1073,6 +1126,7 @@ fn f(value: String) -> String
                 binding_id: BindingId(crate::NodeId(10)),
                 local: "value".into(),
                 kind: BorrowKind::Mutable,
+                path: Vec::new(),
                 span: Span::new(15, 25),
                 scope_depth: 0,
             },
