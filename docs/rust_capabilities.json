@@ -167,8 +167,22 @@
       "id": "async-await",
       "label": "Rust async/await and Future semantics",
       "status": "unsupported",
-      "evidence": {},
-      "tracking": "https://github.com/sourabhJainR/Ardisa/issues/161"
+      "evidence": {
+        "source_syntax": [
+          "crates/aifocus-core/tests/async_await_fail_closed.rs"
+        ],
+        "semantic_checks": [
+          "crates/aifocus-core/src/concurrency.rs"
+        ],
+        "runtime_behavior": [
+          "crates/aifocus-core/src/concurrency.rs"
+        ],
+        "adversarial_tests": [
+          "crates/aifocus-core/tests/async_await_fail_closed.rs"
+        ]
+      },
+      "tracking": "https://github.com/sourabhJainR/Ardisa/issues/161",
+      "limitations": "Rust async/await, Future polling, pinning and async cancellation are intentionally unsupported and tested fail-closed. The narrower structured spawn/join/cancel model is not equivalent; see docs/language/concurrency-contract.md."
     },
     {
       "id": "modules-packages",
