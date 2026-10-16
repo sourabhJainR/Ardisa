@@ -1273,7 +1273,10 @@ fn f(value: String) -> String
         .unwrap();
         let errors = infer(&module).unwrap_err();
         assert!(errors.iter().any(|error| error.code == "AIF400"));
-        assert!(errors.iter().any(|error| error.message.contains("use of moved value")));
+        assert!(
+            errors.iter().any(|error| error.message.contains("moved")),
+            "the joined state should be definitely moved, got {errors:?}"
+        );
     }
 
     #[test]
@@ -1449,13 +1452,16 @@ fn f(value: String) -> String
 
 
     #[test]
-    fn rejects_shadowing_until_binding_identity_is_tracked() {
+    fn nested_scope_shadowing_uses_distinct_binding_identity() {
         let module = parse(
-            "module reject_shadow\nfn f(value: String) -> String\n  scope\n    let value = \"fresh\"\n  value\n",
+            "module scope_shadow\nfn f(value: String) -> String\n  scope\n    let value = \"fresh\"\n  value\n",
         )
         .unwrap();
-        let errors = infer(&module).unwrap_err();
-        assert!(errors.iter().any(|error| error.code == "AIF406"));
+        assert!(crate::sema::check(&module).is_ok());
+        assert!(
+            infer(&module).is_ok(),
+            "the nested shadow must not replace or move the outer binding"
+        );
     }
 
     #[test]
@@ -1568,6 +1574,7 @@ fn f(values: List<Int>) -> Int
             "f",
             &[crate::NativeValue::List(vec![
                 crate::NativeValue::String("item".into()),
+                crate::NativeValue::String("next".into()),
             ])],
             crate::ExecutionLimits::default(),
         )
@@ -1575,15 +1582,18 @@ fn f(values: List<Int>) -> Int
     }
 
     #[test]
-    fn moving_an_indexed_element_does_not_move_the_source_collection() {
+    fn moving_an_indexed_element_partially_moves_the_source_collection() {
         let module = parse(
             "module indexed_value_is_owned\nfn f(values: List<String>) -> Int\n  let selected = values[0]\n  let consumed = selected\n  len(values)\n",
         )
         .unwrap();
         assert!(crate::sema::check(&module).is_ok());
+        let errors = infer(&module).expect_err(
+            "using the whole list after moving an element must be rejected as a partial move",
+        );
         assert!(
-            infer(&module).is_ok(),
-            "indexing yields an owned element in the current runtime contract; moving it must not invalidate the source collection"
+            errors.iter().any(|error| error.code == "AIF400"),
+            "expected a partial-move diagnostic, got {errors:?}"
         );
     }
 
@@ -1601,31 +1611,21 @@ fn f(values: List<Int>) -> Int
     }
 
     #[test]
-    fn indexed_element_move_preserves_source_collection_at_runtime() {
-        let source = "module indexed_runtime
-fn f(values: List<String>) -> Int
-  let selected = values[0]
-  let consumed = selected
-  len(values)
-";
+    fn indexed_element_move_allows_a_disjoint_path_at_runtime() {
+        let source = "module indexed_runtime\nfn f(values: List<String>) -> Int\n  let selected = values[0]\n  let consumed = selected\n  len(values[1])\n";
         assert_eq!(
             run_owned_collection_case(source),
-            crate::NativeValue::Int(1),
-            "moving the copied indexed element must not consume the source list"
+            crate::NativeValue::Int(4),
+            "moving one element must leave a disjoint indexed path usable"
         );
     }
 
     #[test]
     fn slice_result_move_preserves_source_collection_at_runtime() {
-        let source = "module slice_runtime
-fn f(values: List<String>) -> Int
-  let selected = values[0:1]
-  let consumed = selected
-  len(values)
-";
+        let source = "module slice_runtime\nfn f(values: List<String>) -> Int\n  let selected = values[0:1]\n  let consumed = selected\n  len(values)\n";
         assert_eq!(
             run_owned_collection_case(source),
-            crate::NativeValue::Int(1),
+            crate::NativeValue::Int(2),
             "moving the owned slice must not consume the source list"
         );
     }
@@ -1633,9 +1633,10 @@ fn f(values: List<String>) -> Int
     #[test]
     fn shadowed_inner_binding_does_not_mutate_outer_binding_state() {
         let module = parse(
-            "module scope_shadow\\nfn f(value: String) -> String\\n  scope\\n    let value = \\\"inner\\\"\\n    len(value)\\n  value\\n",
+            "module scope_shadow\nfn f(value: String) -> String\n  scope\n    let value = \"inner\"\n    len(value)\n  value\n",
         )
         .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
         assert!(infer(&module).is_ok());
     }
 
