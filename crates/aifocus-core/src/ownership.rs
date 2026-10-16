@@ -35,6 +35,9 @@ pub enum OwnershipTransition {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct OwnershipModel {
     pub accesses: HashMap<crate::NodeId, AccessKind>,
+    /// Resolved places for accesses, keyed by the expression node that performed them.
+    /// Unlike source names, these identities remain stable under shadowing.
+    pub places: HashMap<crate::NodeId, Place>,
     pub transitions: Vec<(crate::NodeId, OwnershipTransition)>,
     pub borrow_regions: Vec<BorrowRegion>,
 }
@@ -118,6 +121,22 @@ pub enum PlaceProjection {
     Index(usize),
     /// An unknown index may alias any element at this depth.
     DynamicIndex,
+}
+
+/// A resolved memory place. Binding identity is independent of source spelling;
+/// projections distinguish disjoint fields/elements while remaining conservative
+/// when any index is dynamic.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Place {
+    pub binding_id: BindingId,
+    pub projections: Vec<PlaceProjection>,
+}
+
+impl Place {
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.binding_id == other.binding_id
+            && paths_may_alias(&self.projections, &other.projections)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +231,7 @@ impl Locals {
         self.bindings.get_mut(&id)
     }
     fn contains_key(&self, name: &str) -> bool { self.visible.contains_key(name) }
+    fn binding_id(&self, name: &str) -> Option<BindingId> { self.visible.get(name).copied() }
     fn remove(&mut self, name: &str) -> Option<BindingId> { self.visible.remove(name) }
 }
 
@@ -262,6 +282,7 @@ pub fn analyze(module: &Module) -> Result<OwnershipModel, Vec<Diagnostic>> {
             .collect(),
         errors: Vec::new(),
         accesses: HashMap::new(),
+        places: HashMap::new(),
         transitions: Vec::new(),
         borrow_regions: Vec::new(),
         scope_depth: 0,
@@ -282,6 +303,7 @@ pub fn analyze(module: &Module) -> Result<OwnershipModel, Vec<Diagnostic>> {
             .map_err(|message| vec![Diagnostic::error("AIF404", message, None)])?;
         Ok(OwnershipModel {
             accesses: checker.accesses,
+            places: checker.places,
             transitions: checker.transitions,
             borrow_regions: checker.borrow_regions,
         })
@@ -294,6 +316,7 @@ struct Checker {
     functions: HashMap<String, Function>,
     errors: Vec<Diagnostic>,
     accesses: HashMap<crate::NodeId, AccessKind>,
+    places: HashMap<crate::NodeId, Place>,
     transitions: Vec<(crate::NodeId, OwnershipTransition)>,
     borrow_regions: Vec<BorrowRegion>,
     scope_depth: usize,
@@ -574,6 +597,10 @@ impl Checker {
                     return None;
                 }
                 self.accesses.insert(expr.id, access);
+                self.places.insert(expr.id, Place {
+                    binding_id,
+                    projections: borrow_path.clone(),
+                });
                 match access {
                     AccessKind::Move => {
                         self.transitions.push((expr.id, OwnershipTransition::Move));
@@ -657,6 +684,14 @@ impl Checker {
                 collection_type.and_then(|ty| match ty.kind {
                     TypeKind::List(element) => {
                         let element_type = *element;
+                        if let Some((name, path)) = place_path(expr) {
+                            if let Some(binding_id) = locals.binding_id(&name) {
+                                self.places.insert(expr.id, Place {
+                                    binding_id,
+                                    projections: path,
+                                });
+                            }
+                        }
                         if mode == AccessMode::Move && ownership_of(&element_type) == OwnershipClass::Move {
                             if let Some((name, path)) = place_path(expr) {
                                 if let Some(binding) = locals.get_mut(&name) {
@@ -1928,6 +1963,68 @@ fn f(values: List<Int>) -> Int
         assert!(
             errors.iter().any(|error| error.code == "AIF400"),
             "the same nested element cannot be moved twice through grouped syntax, got {errors:?}"
+        );
+    }
+
+
+    #[test]
+    fn ownership_places_resolve_shadowed_names_to_distinct_binding_ids() {
+        let module = parse(
+            "module stable_binding_identity\nfn f(value: String) -> String\n  let value = \"shadow\"\n  value\n",
+        ).unwrap();
+        let Item::Function(function) = &module.items[0];
+        let parameter_id = BindingId(function.params[0].id);
+        let declaration_id = BindingId(function.body.stmts[0].id);
+        let StmtKind::Expr(final_expr) = &function.body.stmts[1].kind else {
+            panic!("expected final name expression");
+        };
+        let model = analyze(&module).unwrap();
+        let resolved = model.places.get(&final_expr.id).expect("place must be recorded");
+        assert_eq!(resolved.binding_id, declaration_id);
+        assert_ne!(resolved.binding_id, parameter_id);
+        assert!(resolved.projections.is_empty());
+    }
+
+    #[test]
+    fn ownership_places_distinguish_disjoint_and_aliasing_index_paths() {
+        let first = Place {
+            binding_id: BindingId(crate::NodeId(1)),
+            projections: vec![PlaceProjection::Index(0)],
+        };
+        let second = Place {
+            binding_id: BindingId(crate::NodeId(1)),
+            projections: vec![PlaceProjection::Index(1)],
+        };
+        let dynamic = Place {
+            binding_id: BindingId(crate::NodeId(1)),
+            projections: vec![PlaceProjection::DynamicIndex],
+        };
+        let other_binding = Place {
+            binding_id: BindingId(crate::NodeId(2)),
+            projections: vec![PlaceProjection::Index(0)],
+        };
+        assert!(!first.overlaps(&second));
+        assert!(first.overlaps(&dynamic));
+        assert!(!first.overlaps(&other_binding));
+    }
+
+    #[test]
+    fn path_state_keeps_sibling_available_after_partial_move() {
+        let module = parse(
+            "module sibling_path_state\nfn f(values: List<String>) -> String\n  let first = values[0]\n  values[1]\n",
+        ).unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "moving one concrete element must not invalidate its disjoint sibling"
+        );
+        let Item::Function(function) = &module.items[0];
+        let StmtKind::Expr(second) = &function.body.stmts[1].kind else {
+            panic!("expected sibling index expression");
+        };
+        let model = analyze(&module).unwrap();
+        assert_eq!(
+            model.places.get(&second.id).map(|place| place.projections.clone()),
+            Some(vec![PlaceProjection::Index(1)])
         );
     }
 
