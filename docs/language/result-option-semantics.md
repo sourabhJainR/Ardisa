@@ -15,14 +15,14 @@ This document describes the subset that is currently implemented and tested. It 
 - `Option<T>` has native `OptionSome(T)` and `OptionNone` values.
 - `some(value)` constructs `Some(value)`; `none()` constructs `None` when the function's declared return type supplies an unambiguous `Option<T>` context.
 - `unwrap(OptionSome(value))` returns the payload. `unwrap(OptionNone)` fails at runtime with the stable message `unwrap on None`.
-- The supported subset has source-to-native tests for construction, unwrap, deterministic artifact round-tripping, and the None failure boundary. The ownership checker treats unwrap as consuming the Result/Option value.
+- `propagate(value)` unwraps `Ok(T)`/`Some(T)` to `T`. On `Err(E)` or `None`, it returns that variant directly from the current function. Result propagation requires the same error type as the function's declared Result return; Option propagation requires an Option return. The ownership checker treats unwrap and propagate as consuming the input value.
+- Source-to-native tests cover construction, unwrap, propagation short-circuiting, deterministic artifact round-tripping, and None/Err boundaries.
 
 ## Explicitly not implemented
 
-- Option/Result pattern matching, exhaustive variant analysis, and `? `-style propagation are not implemented.
-- There is no `?`-style propagation operator or equivalent early-return lowering yet.
-- Pattern matching, error conversion traits, and exhaustive handling of `Result` variants are not implemented as a unified language feature.
-- Cleanup on propagation cannot be claimed because propagation syntax is not enabled. Runtime `unwrap(Err)` is an execution error, not an automatically returned `Err`.
+- The `?` operator syntax is not implemented; `propagate(value)` is the current limited equivalent.
+- Option/Result pattern matching, exhaustive variant analysis, and error conversion traits are not implemented as a unified language feature.
+- Cleanup on propagation cannot be claimed because drop/cleanup semantics are not yet implemented. Runtime `unwrap(Err)` and `unwrap(None)` remain execution errors, not automatic propagation.
 - This subset does not claim Rust `Option`/`Result` compatibility.
 
 ## Promotion gate
