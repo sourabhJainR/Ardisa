@@ -1070,15 +1070,83 @@ fn f(value: String) -> String
     }
 
     #[test]
-    fn rejects_loop_binding_shadowing_until_bindings_have_stable_identity() {
+    fn loop_binding_shadowing_preserves_the_outer_binding_identity() {
         let module = parse(
             "module loop_shadow\nfn f(values: List<String>, item: String) -> String\n  for item in values\n    len(item)\n  item\n",
         )
         .unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "the loop binding must shadow only inside the loop and preserve the outer binding"
+        );
+    }
+
+    #[test]
+    fn same_scope_shadowing_creates_a_new_binding_identity() {
+        let module = parse(
+            "module local_shadow\nfn f(value: String) -> String\n  let value = value\n  value\n",
+        )
+        .unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "the new binding must not inherit the moved state of the binding used to initialize it"
+        );
+    }
+
+    #[test]
+    fn moving_one_list_index_does_not_move_a_disjoint_index() {
+        let module = parse(
+            "module distinct_paths\nfn f(values: List<String>) -> String\n  let first = values[0]\n  let second = values[1]\n  first\n",
+        )
+        .unwrap();
+        assert!(infer(&module).is_ok());
+    }
+
+    #[test]
+    fn moving_the_same_list_index_twice_is_rejected() {
+        let module = parse(
+            "module repeated_path\nfn f(values: List<String>) -> String\n  let first = values[0]\n  let second = values[0]\n  first\n",
+        )
+        .unwrap();
         let errors = infer(&module).unwrap_err();
         assert!(
-            errors.iter().any(|error| error.code == "AIF303"),
-            "loop binding shadowing must fail closed, got {errors:?}"
+            errors.iter().any(|error| error.code == "AIF400"),
+            "re-reading a moved path must be rejected, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn dynamic_index_move_conservatively_blocks_other_indices() {
+        let module = parse(
+            "module dynamic_path\nfn f(values: List<String>, index: Int) -> String\n  let first = values[index]\n  let second = values[0]\n  first\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "an unknown index may alias any concrete element, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn indexed_reinitialization_restores_only_the_assigned_path() {
+        let module = parse(
+            "module path_reinit\nfn f(values: List<String>) -> String\n  let first = values[0]\n  set values[0] = \"restored\"\n  let again = values[0]\n  again\n",
+        )
+        .unwrap();
+        assert!(infer(&module).is_ok());
+    }
+
+    #[test]
+    fn partial_move_on_one_branch_is_path_dependent_after_join() {
+        let module = parse(
+            "module path_join\nfn f(flag: Bool, values: List<String>) -> String\n  if flag\n    let selected = values[0]\n  else\n    let other = \"safe\"\n  values[0]\n",
+        )
+        .unwrap();
+        let errors = infer(&module).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "a path moved on only one branch must be maybe-moved after the join, got {errors:?}"
         );
     }
 
@@ -1542,6 +1610,15 @@ fn f(values: List<String>) -> Int
             crate::NativeValue::Int(1),
             "moving the owned slice must not consume the source list"
         );
+    }
+
+    #[test]
+    fn shadowed_inner_binding_does_not_mutate_outer_binding_state() {
+        let module = parse(
+            "module scope_shadow\\nfn f(value: String) -> String\\n  scope\\n    let value = \\\"inner\\\"\\n    len(value)\\n  value\\n",
+        )
+        .unwrap();
+        assert!(infer(&module).is_ok());
     }
 
 }
