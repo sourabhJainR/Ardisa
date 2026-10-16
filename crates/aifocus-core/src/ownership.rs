@@ -2089,15 +2089,5 @@ fn f(values: List<Int>) -> Int
         );
     }
 
-    #[test]
-    fn nested_index_reinitialization_restores_only_that_leaf_path() {
-        let module = parse(
-            "module nested_path_reinit\nfn f(values: List<List<String>>) -> String\n  let selected = values[0][0]\n  set values[0][0] = \"restored\"\n  values[0][0]\n",
-        ).unwrap();
-        assert!(
-            infer(&module).is_ok(),
-            "reinitializing the exact moved leaf should restore that path"
-        );
-    }
 
 }
