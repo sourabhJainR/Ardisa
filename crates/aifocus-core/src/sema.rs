@@ -1305,6 +1305,30 @@ impl Checker {
                     };
                     return Some(type_node(result_type, expr.span));
                 }
+                if name == "propagate" {
+                    if args.len() != 1 {
+                        self.error("AIF336", "propagate expects one argument", expr.span);
+                        return None;
+                    }
+                    let value_type = self.check_expr(&args[0], locals)?;
+                    match (&value_type.kind, self.current_return_type.as_ref().map(|ty| &ty.kind)) {
+                        (TypeKind::Result(ok, err), Some(TypeKind::Result(_, target_err)))
+                            if same_type(err, target_err) => return Some(ok.as_ref().clone()),
+                        (TypeKind::Generic(name, args), Some(TypeKind::Generic(target_name, target_args)))
+                            if name == "Option" && target_name == "Option" && args.len() == 1 && target_args.len() == 1 =>
+                        {
+                            return Some(args[0].clone());
+                        }
+                        _ => {
+                            self.error(
+                                "AIF337",
+                                "propagate requires Result<T, E> or Option<T> and a compatible Result/Option return type",
+                                args[0].span,
+                            );
+                            return None;
+                        }
+                    }
+                }
                 if name == "unwrap" {
                     if args.len() != 1 {
                         self.error("AIF328", "unwrap expects one argument", expr.span);
@@ -1657,6 +1681,23 @@ mod ai_routing_semantic_tests {
     fn vector_index_insert_and_search_reject_wrong_types() {
         rejects("module bad\nfn main()\n  let index = vector_index(\"text\", 2)\n  vector_index_insert(index, true, \"text\", [1.0, 2.0])\n", "AIF392");
         rejects("module bad\nfn main()\n  let index = vector_index(\"text\", 2)\n  vector_index_search(index, 7, [1.0, 2.0], 1)\n", "AIF398");
+    }
+
+    #[test]
+    fn propagation_rejects_incompatible_error_or_return_container() {
+        let module = crate::parse(
+            "module incompatible_result_propagation\nfn f(value: Result<Int, String>) -> Result<Int, Int>\n  propagate(value)\n",
+        )
+        .unwrap();
+        let errors = check(&module).expect_err("Result propagation must preserve a compatible error type");
+        assert!(errors.iter().any(|error| error.code == "AIF337"));
+
+        let module = crate::parse(
+            "module incompatible_option_propagation\nfn f(value: Option<Int>) -> Result<Int, String>\n  propagate(value)\n",
+        )
+        .unwrap();
+        let errors = check(&module).expect_err("Option cannot propagate from a Result-returning function");
+        assert!(errors.iter().any(|error| error.code == "AIF337"));
     }
 
     #[test]

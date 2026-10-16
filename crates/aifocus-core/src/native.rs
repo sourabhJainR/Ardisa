@@ -107,6 +107,7 @@ pub enum NativeInstr {
     GraphemeAt,
     MakeErr,
     Unwrap,
+    Propagate,
     Load(String),
     Store(String),
     AddAssign(String),
@@ -847,6 +848,8 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::MakeErr);
             } else if callee == "unwrap" && args.len() == 1 {
                 code.push(NativeInstr::Unwrap);
+            } else if callee == "propagate" && args.len() == 1 {
+                code.push(NativeInstr::Propagate);
             } else if callee == "tensor" && args.len() == 2 {
                 code.push(NativeInstr::MakeTensor);
             } else if callee == "tensor_add" && args.len() == 2 {
@@ -1252,6 +1255,7 @@ fn run_function(
                 | NativeInstr::GraphemeLen
                 | NativeInstr::GraphemeAt
                 | NativeInstr::Unwrap
+                | NativeInstr::Propagate
                 | NativeInstr::Load(_)
                 | NativeInstr::AddAssign(_)
                 | NativeInstr::StoreIndex(_)
@@ -2100,6 +2104,17 @@ fn run_function(
                 validate_value(&result, state.limits)?;
                 stack.push(result);
             }
+            NativeInstr::Propagate => {
+                match stack
+                    .pop()
+                    .ok_or_else(|| NativeError::InvalidProgram("propagate value missing".into()))?
+                {
+                    NativeValue::ResultOk(value) | NativeValue::OptionSome(value) => stack.push(*value),
+                    NativeValue::ResultErr(value) => return Ok(NativeValue::ResultErr(value)),
+                    NativeValue::OptionNone => return Ok(NativeValue::OptionNone),
+                    _ => return Err(NativeError::Type("propagate requires Result or Option".into())),
+                }
+            }
             NativeInstr::Unwrap => {
                 match stack
                     .pop()
@@ -2525,6 +2540,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::ScalarLen => "ScalarLen".into(), NativeInstr::ScalarAt => "ScalarAt".into(),
         NativeInstr::GraphemeLen => "GraphemeLen".into(), NativeInstr::GraphemeAt => "GraphemeAt".into(),
         NativeInstr::MakeErr => "MakeErr".into(), NativeInstr::Unwrap => "Unwrap".into(),
+        NativeInstr::Propagate => "Propagate".into(),
         NativeInstr::Load(v) => format!("Load:{}", escape_artifact(v)),
         NativeInstr::Store(v) => format!("Store:{}", escape_artifact(v)),
         NativeInstr::AddAssign(v) => format!("AddAssign:{}", escape_artifact(v)),
@@ -2603,7 +2619,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "MakeOk"=>NativeInstr::MakeOk,"Chr"=>NativeInstr::Chr,
         "ScalarLen"=>NativeInstr::ScalarLen,"ScalarAt"=>NativeInstr::ScalarAt,
         "GraphemeLen"=>NativeInstr::GraphemeLen,"GraphemeAt"=>NativeInstr::GraphemeAt,
-        "MakeErr"=>NativeInstr::MakeErr,"Unwrap"=>NativeInstr::Unwrap,
+        "MakeErr"=>NativeInstr::MakeErr,"Unwrap"=>NativeInstr::Unwrap,"Propagate"=>NativeInstr::Propagate,
         "Load"=>NativeInstr::Load(unescape_artifact(arg)?),"Store"=>NativeInstr::Store(unescape_artifact(arg)?),
         "AddAssign"=>NativeInstr::AddAssign(unescape_artifact(arg)?),
         "StoreIndex"=>NativeInstr::StoreIndex(unescape_artifact(arg)?),"Add"=>NativeInstr::Add,"Sub"=>NativeInstr::Sub,

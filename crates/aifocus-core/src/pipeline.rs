@@ -553,6 +553,56 @@ fn main() -> Int
 
 
     #[test]
+    fn result_propagation_returns_ok_payload_and_short_circuits_err() {
+        let success = r#"module result_propagation_ok
+fn main() -> Result<Int, String>
+  return ok(propagate(ok(41)) + 1)
+"#;
+        let compiled = compile_source(success).expect("compatible Result propagation compiles");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("Ok propagation executes"),
+            native::NativeValue::ResultOk(Box::new(native::NativeValue::Int(42)))
+        );
+
+        let failure = r#"module result_propagation_err
+fn main() -> Result<Int, String>
+  return ok(propagate(err("failure")) + 1)
+"#;
+        let compiled = compile_source(failure).expect("Err propagation compiles");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("Err propagates as a value"),
+            native::NativeValue::ResultErr(Box::new(native::NativeValue::String("failure".into())))
+        );
+    }
+
+    #[test]
+    fn option_propagation_returns_some_payload_and_short_circuits_none() {
+        let success = r#"module option_propagation_some
+fn main() -> Option<Int>
+  return some(propagate(some(41)) + 1)
+"#;
+        let compiled = compile_source(success).expect("Some propagation compiles");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("Some propagation executes"),
+            native::NativeValue::OptionSome(Box::new(native::NativeValue::Int(42)))
+        );
+
+        let failure = r#"module option_propagation_none
+fn main() -> Option<Int>
+  return some(propagate(none()) + 1)
+"#;
+        let compiled = compile_source(failure).expect("None propagation compiles");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("None propagates as a value"),
+            native::NativeValue::OptionNone
+        );
+    }
+
+    #[test]
     fn option_some_unwrap_survives_source_to_native_round_trip() {
         let source = r#"module option_some_unwrap
 fn main() -> Option<Int>
