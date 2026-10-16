@@ -69,6 +69,13 @@ fn validate_ai_type(ty: &Type, checker: &mut Checker) {
             }
             for arg in args { validate_ai_type(arg, checker); }
         }
+        TypeKind::Generic(name, args) if name == "Option" => {
+            if args.len() != 1 {
+                checker.error("AIF320", "Option expects exactly one type argument", ty.span);
+                return;
+            }
+            for arg in args { validate_ai_type(arg, checker); }
+        }
         TypeKind::Generic(name, args) if matches!(name.as_str(), "Probability" | "GraphTensor") => {
             checker.error("AIF320", format!("AI type '{}' does not accept type arguments", name), ty.span);
             for arg in args { validate_ai_type(arg, checker); }
@@ -1252,6 +1259,34 @@ impl Checker {
                     }
                     return Some(type_node(TypeKind::String, expr.span));
                 }
+                if name == "some" {
+                    if args.len() != 1 {
+                        self.error("AIF333", "some expects one argument", expr.span);
+                        return None;
+                    }
+                    let value_type = self.check_expr(&args[0], locals)?;
+                    return Some(type_node(
+                        TypeKind::Generic("Option".into(), vec![value_type]),
+                        expr.span,
+                    ));
+                }
+                if name == "none" {
+                    if !args.is_empty() {
+                        self.error("AIF334", "none expects no arguments", expr.span);
+                        return None;
+                    }
+                    let Some(Type { kind: TypeKind::Generic(option_name, args), .. }) =
+                        self.current_return_type.as_ref()
+                    else {
+                        self.error("AIF335", "none requires an Option<T> return context", expr.span);
+                        return None;
+                    };
+                    if option_name != "Option" || args.len() != 1 {
+                        self.error("AIF335", "none requires an Option<T> return context", expr.span);
+                        return None;
+                    }
+                    return Some(self.current_return_type.as_ref().unwrap().clone());
+                }
                 if name == "ok" || name == "err" {
                     if args.len() != 1 {
                         self.error("AIF327", format!("{name} expects one argument"), expr.span);
@@ -1285,11 +1320,16 @@ impl Checker {
                         return None;
                     }
                     let result_type = self.check_expr(&args[0], locals)?;
-                    let TypeKind::Result(ok, _) = result_type.kind else {
-                        self.error("AIF329", "unwrap requires Result<T, E>", args[0].span);
-                        return None;
-                    };
-                    return Some(*ok);
+                    match result_type.kind {
+                        TypeKind::Result(ok, _) => return Some(*ok),
+                        TypeKind::Generic(name, mut args) if name == "Option" && args.len() == 1 => {
+                            return Some(args.remove(0));
+                        }
+                        _ => {
+                            self.error("AIF329", "unwrap requires Result<T, E> or Option<T>", args[0].span);
+                            return None;
+                        }
+                    }
                 }
                 if name == "push" {
                     if args.len() != 2 {
