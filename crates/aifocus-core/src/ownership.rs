@@ -1153,6 +1153,22 @@ fn f(value: String) -> String
     }
 
     #[test]
+    fn moving_an_iterable_before_same_name_loop_shadow_is_preserved() {
+        let module = parse(
+            "module iterable_shadow_move\nfn f(values: List<String>) -> Int\n  for values in values\n    len(values)\n  len(values)\n",
+        )
+        .unwrap();
+        assert!(crate::sema::check(&module).is_ok());
+        let errors = infer(&module).expect_err(
+            "the iterable is consumed before the loop-local binding shadows the same name",
+        );
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "the outer list must remain moved after iteration, got {errors:?}"
+        );
+    }
+
+    #[test]
     fn moving_a_loop_binding_does_not_move_unrelated_outer_bindings() {
         let module = parse(
             "module loop_binding\nfn f(values: List<String>, value: String) -> String\n  for item in values\n    let consumed = item\n  value\n",
