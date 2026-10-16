@@ -190,6 +190,72 @@ fn main() -> Int
     }
 
     #[test]
+    fn source_integer_overflow_and_zero_divisors_fail_closed() {
+        let sources = [
+            ("add_overflow", "9223372036854775807 + 1"),
+            ("subtract_overflow", "(0 - 9223372036854775807 - 1) - 1"),
+            ("multiply_overflow", "9223372036854775807 * 2"),
+            ("divide_by_zero", "7 / 0"),
+            ("remainder_by_zero", "7 % 0"),
+        ];
+        for (name, expression) in sources {
+            let source = format!(
+                "module numeric_{name}\nfn main() -> Int\n  return {expression}\n"
+            );
+            let compiled = compile_source(&source)
+                .unwrap_or_else(|error| panic!("{name} should compile to checked native code: {error:?}"));
+            let program = native::decode_program(&compiled.artifact)
+                .unwrap_or_else(|error| panic!("{name} artifact should decode: {error:?}"));
+            assert!(
+                matches!(native::run_program(&program, "main", &[]), Err(native::NativeError::Type(_))),
+                "{name} must fail at runtime instead of wrapping or producing a value"
+            );
+        }
+    }
+
+    #[test]
+    fn source_integer_division_and_remainder_truncate_toward_zero() {
+        let cases = [
+            ("negative_division", "(0 - 7) / 3", -2),
+            ("negative_remainder", "(0 - 7) % 3", -1),
+            ("negative_divisor_division", "7 / (0 - 3)", -2),
+            ("negative_divisor_remainder", "7 % (0 - 3)", 1),
+        ];
+        for (name, expression, expected) in cases {
+            let source = format!(
+                "module numeric_{name}\nfn main() -> Int\n  return {expression}\n"
+            );
+            let compiled = compile_source(&source)
+                .unwrap_or_else(|error| panic!("{name} should compile: {error:?}"));
+            let program = native::decode_program(&compiled.artifact)
+                .unwrap_or_else(|error| panic!("{name} artifact should decode: {error:?}"));
+            assert_eq!(
+                native::run_program(&program, "main", &[]).unwrap(),
+                native::NativeValue::Int(expected),
+                "{name} should follow truncation-toward-zero integer semantics"
+            );
+        }
+    }
+
+    #[test]
+    fn source_numeric_artifact_is_deterministic_at_boundaries() {
+        let source = r#"module numeric_boundary_determinism
+fn main() -> Int
+  let negative = 0 - 7
+  return (negative / 3) + (negative % 3)
+"#;
+        let first = compile_source(source).expect("first numeric compilation");
+        let second = compile_source(source).expect("second numeric compilation");
+        assert_eq!(first.artifact, second.artifact);
+        assert_eq!(first.evidence, second.evidence);
+        let program = native::decode_program(&first.artifact).expect("numeric artifact should decode");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).unwrap(),
+            native::NativeValue::Int(-3)
+        );
+    }
+
+    #[test]
     fn source_ai_tensor_constructors_and_ops_compile_and_execute() {
         let source = r#"module ai
 fn main() -> Tensor<F32>
