@@ -43,15 +43,3 @@ fn loop_binding_shadowing_preserves_outer_binding_identity() {
         "the outer item remains available after the loop-local binding leaves scope"
     );
 }
-
-#[test]
-fn loop_binding_shadowing_fails_in_both_semantic_and_ownership_passes() {
-    let source = "module rejected_loop_shadow\nfn f(values: List<String>, item: String) -> String\n  for item in values\n    len(item)\n  item\n";
-    let module = parse(source).expect("source syntax should parse");
-    let semantic_errors = sema::check(&module).expect_err("semantic analysis must reject shadowing");
-    assert!(semantic_errors.iter().any(|error| error.code == "AIF303"));
-
-    let ownership_errors =
-        ownership::infer(&module).expect_err("ownership analysis must independently reject shadowing");
-    assert!(ownership_errors.iter().any(|error| error.code == "AIF303"));
-}
