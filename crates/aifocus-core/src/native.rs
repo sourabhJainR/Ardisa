@@ -1242,6 +1242,8 @@ fn run_function(
                 | NativeInstr::Slice
                 | NativeInstr::Len
                 | NativeInstr::Append(_)
+                | NativeInstr::MakeSome
+                | NativeInstr::MakeNone
                 | NativeInstr::MakeOk
                 | NativeInstr::MakeErr
                 | NativeInstr::Chr
