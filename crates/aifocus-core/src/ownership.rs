@@ -149,14 +149,29 @@ impl LocalBinding {
     }
 
     fn path_state(&self, path: &[PlaceProjection]) -> State {
+        self.joined_path_state(path, false)
+    }
+
+    /// State needed to traverse an aggregate projection to reach a child.
+    /// A moved descendant does not make its parent unusable for disjoint child
+    /// access, but a moved ancestor or a potentially aliasing dynamic path does.
+    fn path_state_for_projection(&self, path: &[PlaceProjection]) -> State {
+        self.joined_path_state(path, true)
+    }
+
+    fn joined_path_state(&self, path: &[PlaceProjection], prefixes_only: bool) -> State {
         let mut result: Option<State> = None;
         for (existing, state) in &self.path_states {
-            if *state != State::Available && paths_may_alias(existing, path) {
-                result = Some(match result {
-                    Some(previous) => join_state(previous, *state),
-                    None => *state,
-                });
+            if *state == State::Available
+                || (prefixes_only && existing.len() > path.len())
+                || !paths_may_alias(existing, path)
+            {
+                continue;
             }
+            result = Some(match result {
+                Some(previous) => join_state(previous, *state),
+                None => *state,
+            });
         }
         result.unwrap_or(State::Available)
     }
@@ -567,7 +582,15 @@ impl Checker {
                 ))
             }
             ExprKind::Index { collection, index } => {
-                let collection_type = self.check_expr(collection, locals, AccessMode::PathBorrow);
+                // Preserve a mutable place borrow through every projection in an
+                // indexed assignment. Downgrading an intermediate projection to a
+                // shared borrow lets nested writes alias reads of the same root.
+                let collection_mode = if mode == AccessMode::PathMutableBorrow {
+                    AccessMode::PathMutableBorrow
+                } else {
+                    AccessMode::PathBorrow
+                };
+                let collection_type = self.check_expr(collection, locals, collection_mode);
                 if self.terminated_exprs.contains(&collection.id) {
                     self.terminated_exprs.insert(expr.id);
                     return collection_type;
@@ -605,7 +628,14 @@ impl Checker {
                             }
                         } else if let Some((name, path)) = place_path(expr) {
                             if let Some(binding) = locals.get(&name) {
-                                let path_state = binding.path_state(&path);
+                                let path_state = if matches!(
+                                    mode,
+                                    AccessMode::PathBorrow | AccessMode::PathMutableBorrow
+                                ) {
+                                    binding.path_state_for_projection(&path)
+                                } else {
+                                    binding.path_state(&path)
+                                };
                                 if path_state != State::Available {
                                     let message = if path_state == State::Moved {
                                         format!("use of moved indexed place '{name}'")
@@ -1651,6 +1681,123 @@ fn f(values: List<Int>) -> Int
         .unwrap();
         assert!(crate::sema::check(&module).is_ok());
         assert!(infer(&module).is_ok());
+    }
+
+
+    #[test]
+    fn nested_index_moves_track_disjoint_leaf_paths() {
+        let module = parse(
+            "module nested_path_siblings\nfn f(values: List<List<String>>) -> String\n  let first = values[0][0]\n  let second = values[0][1]\n  first\n",
+        )
+        .unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "moving [0][0] must not mark the disjoint [0][1] place as moved"
+        );
+    }
+
+    #[test]
+    fn nested_index_assignment_keeps_mutable_borrow_on_root_binding() {
+        let mut module = parse(
+            "module nested_index_alias\nfn f(values: List<List<Int>>) -> Int\n  0\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &mut module.items[0];
+        let span = function.body.stmts[0].span;
+        let name = |id| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Name("values".into()),
+        };
+        let int = |id, value| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Int(value),
+        };
+        let index = |id, collection, subscript| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Index {
+                collection: Box::new(collection),
+                index: Box::new(subscript),
+            },
+        };
+        let target_collection = index(9_300_001, name(9_300_002), int(9_300_003, 0));
+        let aliased_value = index(
+            9_300_004,
+            index(9_300_005, name(9_300_006), int(9_300_007, 0)),
+            int(9_300_008, 1),
+        );
+        function.body.stmts[0].kind = StmtKind::SetIndex {
+            collection: target_collection,
+            index: int(9_300_009, 0),
+            value: aliased_value,
+        };
+        let errors = infer(&module).expect_err(
+            "a nested indexed write must conflict with a read from the same root collection",
+        );
+        assert!(
+            errors.iter().any(|error| error.code == "AIF404"),
+            "expected overlapping mutable/shared borrow diagnostics, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn shadowed_borrow_regions_keep_distinct_binding_identities() {
+        let module = parse(
+            "module shadow_binding_identity\nfn f(value: String) -> String\n  scope\n    let value = \"inner\"\n    let equal = value == value\n  value\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &module.items[0];
+        let parameter_id = BindingId(function.params[0].id);
+        let model = analyze(&module).unwrap();
+        assert!(!model.borrow_regions.is_empty());
+        assert!(
+            model.borrow_regions.iter().all(|region| region.binding_id != parameter_id),
+            "borrow regions for the inner shadow must point at the declaration identity, not the outer parameter"
+        );
+    }
+
+
+
+
+    #[test]
+    fn nested_index_move_preserves_disjoint_path_at_runtime() {
+        let source = "module nested_index_runtime\nfn f(values: List<List<String>>) -> Int\n  let selected = values[0][0]\n  let sibling = values[0][1]\n  len(sibling)\n";
+        let compiled = crate::compile_source(source)
+            .expect("nested disjoint paths should compile through the native pipeline");
+        let program = crate::native::decode_program(&compiled.artifact)
+            .expect("compiled nested-path artifact should decode");
+        let input = crate::NativeValue::List(vec![crate::NativeValue::List(vec![
+            crate::NativeValue::String("first".into()),
+            crate::NativeValue::String("next".into()),
+        ])]);
+        assert_eq!(
+            crate::native::run_program_with_limits(
+                &program,
+                "f",
+                &[input],
+                crate::ExecutionLimits::default(),
+            )
+            .expect("the disjoint nested path remains usable at runtime"),
+            crate::NativeValue::Int(4),
+        );
+    }
+
+
+    #[test]
+    fn moving_a_nested_child_still_blocks_moving_its_parent() {
+        let module = parse(
+            "module nested_parent_after_child_move\nfn f(values: List<List<String>>) -> Int\n  let selected = values[0][0]\n  let parent = values[0]\n  len(parent)\n",
+        )
+        .unwrap();
+        let errors = infer(&module).expect_err(
+            "a partially moved nested collection cannot be moved or read as a whole",
+        );
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "the parent place must remain partially moved, got {errors:?}"
+        );
     }
 
 }
