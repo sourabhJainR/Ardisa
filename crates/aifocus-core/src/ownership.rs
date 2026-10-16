@@ -1898,4 +1898,20 @@ fn f(values: List<Int>) -> Int
     }
 
 
+
+    #[test]
+    fn dynamic_index_borrows_remain_conservative_when_aliasing_is_unknown() {
+        let module = parse(
+            "module dynamic_borrow_alias\nfn f(values: List<List<Int>>, left: Int, right: Int) -> Int\n  set values[left] = values[right]\n  0\n",
+        )
+        .unwrap();
+        let errors = infer(&module).expect_err(
+            "unknown index projections may alias and must not bypass mutable borrow checks",
+        );
+        assert!(
+            errors.iter().any(|error| matches!(error.code.as_str(), "AIF404" | "AIF405")),
+            "expected conservative rejection for dynamic aliasing, got {errors:?}"
+        );
+    }
+
 }
