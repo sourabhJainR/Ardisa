@@ -555,7 +555,7 @@ impl Checker {
                 };
                 let Some(function) = self.functions.get(name).cloned() else {
                     for (index, arg) in args.iter().enumerate() {
-                        let mode = if name == "len" || name == "unwrap" {
+                        let mode = if name == "len" {
                             AccessMode::SharedBorrow
                         } else if name == "push" && index == 0 {
                             AccessMode::MutableBorrow
@@ -692,6 +692,19 @@ fn type_node(kind: TypeKind, expr: &Expr) -> Type {
 mod tests {
     use super::*;
     use crate::parse;
+
+    #[test]
+    fn unwrap_consumes_result_values() {
+        let module = parse(
+            "module unwrap_moves_result\nfn f(value: Result<Int, String>) -> Int\n  let extracted = unwrap(value)\n  unwrap(value)\n",
+        )
+        .unwrap();
+        let errors = infer(&module).expect_err("unwrap must consume its Result argument");
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "reusing a Result after unwrap must be rejected, got {errors:?}"
+        );
+    }
 
     #[test]
     fn string_parameters_are_shared_borrows() {
