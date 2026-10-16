@@ -392,14 +392,16 @@ impl Checker {
                     merge_states(locals, &scoped);
                 }
                 StmtKind::For { name, iterable, body } => {
-                    // Loop bindings have stable declaration identity and live only in
-                    // the loop environment, even when shadowing an existing name.
-                    let previous_binding = locals.get(name).cloned();
+                    // Evaluate the iterable before snapshotting the outer binding:
+                    // the iterable itself may move a binding with the same name as
+                    // the loop variable (for example, \`for values in values\`).
+                    let had_previous_binding = locals.contains_key(name);
                     let iterable_type = self.check_expr(iterable, locals, AccessMode::Move);
                     if self.terminated_exprs.contains(&iterable.id) {
                         reachable = false;
                         continue;
                     }
+                    let previous_binding = had_previous_binding.then(|| locals.get(name).cloned()).flatten();
                     let element_type = iterable_type.and_then(|ty| match ty.kind {
                         TypeKind::List(element) => Some(*element),
                         _ => None,
