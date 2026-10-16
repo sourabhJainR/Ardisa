@@ -1314,6 +1314,30 @@ impl Checker {
                     };
                     return Some(type_node(result_type, expr.span));
                 }
+                if name == "propagate" {
+                    if args.len() != 1 {
+                        self.error("AIF336", "propagate expects one argument", expr.span);
+                        return None;
+                    }
+                    let value_type = self.check_expr(&args[0], locals)?;
+                    match (&value_type.kind, self.current_return_type.as_ref().map(|ty| &ty.kind)) {
+                        (TypeKind::Result(ok, err), Some(TypeKind::Result(_, target_err)))
+                            if same_type(err, target_err) => return Some(ok.as_ref().clone()),
+                        (TypeKind::Generic(name, args), Some(TypeKind::Generic(target_name, target_args)))
+                            if name == "Option" && target_name == "Option" && args.len() == 1 && target_args.len() == 1 =>
+                        {
+                            return Some(args[0].clone());
+                        }
+                        _ => {
+                            self.error(
+                                "AIF337",
+                                "propagate requires Result<T, E> or Option<T> and a compatible Result/Option return type",
+                                args[0].span,
+                            );
+                            return None;
+                        }
+                    }
+                }
                 if name == "unwrap" {
                     if args.len() != 1 {
                         self.error("AIF328", "unwrap expects one argument", expr.span);
