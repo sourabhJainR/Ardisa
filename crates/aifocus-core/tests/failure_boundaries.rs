@@ -15,7 +15,7 @@ fn source_runtime_errors_remain_explicit_native_failures() {
 fn malformed_native_artifact_is_rejected_before_execution() {
     let source = "module malformed_artifact\nfn main() -> Int\n  return 42\n";
     let compiled = compile_source(source).expect("source should compile");
-    let mut artifact = compiled.artifact;
+    let mut artifact = compiled.artifact.into_bytes();
     assert!(!artifact.is_empty());
     artifact[0] ^= 0xff;
     assert!(
