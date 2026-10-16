@@ -1784,4 +1784,20 @@ fn f(values: List<Int>) -> Int
         );
     }
 
+
+    #[test]
+    fn moving_a_nested_child_still_blocks_moving_its_parent() {
+        let module = parse(
+            "module nested_parent_after_child_move\nfn f(values: List<List<String>>) -> Int\n  let selected = values[0][0]\n  let parent = values[0]\n  len(parent)\n",
+        )
+        .unwrap();
+        let errors = infer(&module).expect_err(
+            "a partially moved nested collection cannot be moved or read as a whole",
+        );
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "the parent place must remain partially moved, got {errors:?}"
+        );
+    }
+
 }
