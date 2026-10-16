@@ -567,7 +567,15 @@ impl Checker {
                 ))
             }
             ExprKind::Index { collection, index } => {
-                let collection_type = self.check_expr(collection, locals, AccessMode::PathBorrow);
+                // Preserve a mutable place borrow through every projection in an
+                // indexed assignment. Downgrading an intermediate projection to a
+                // shared borrow lets nested writes alias reads of the same root.
+                let collection_mode = if mode == AccessMode::PathMutableBorrow {
+                    AccessMode::PathMutableBorrow
+                } else {
+                    AccessMode::PathBorrow
+                };
+                let collection_type = self.check_expr(collection, locals, collection_mode);
                 if self.terminated_exprs.contains(&collection.id) {
                     self.terminated_exprs.insert(expr.id);
                     return collection_type;
@@ -1651,6 +1659,50 @@ fn f(values: List<Int>) -> Int
         .unwrap();
         assert!(crate::sema::check(&module).is_ok());
         assert!(infer(&module).is_ok());
+    }
+
+
+    #[test]
+    fn nested_index_moves_track_disjoint_leaf_paths() {
+        let module = parse(
+            "module nested_path_siblings\nfn f(values: List<List<String>>) -> String\n  let first = values[0][0]\n  let second = values[0][1]\n  first\n",
+        )
+        .unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "moving [0][0] must not mark the disjoint [0][1] place as moved"
+        );
+    }
+
+    #[test]
+    fn nested_index_assignment_keeps_mutable_borrow_on_root_binding() {
+        let module = parse(
+            "module nested_index_alias\nfn f(values: List<List<Int>>) -> Int\n  set values[0][0] = values[0][1]\n  0\n",
+        )
+        .unwrap();
+        let errors = infer(&module).expect_err(
+            "a nested indexed write must conflict with a read from the same root collection",
+        );
+        assert!(
+            errors.iter().any(|error| error.code == "AIF404"),
+            "expected overlapping mutable/shared borrow diagnostics, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn shadowed_borrow_regions_keep_distinct_binding_identities() {
+        let module = parse(
+            "module shadow_binding_identity\nfn f(value: String) -> String\n  scope\n    let value = \"inner\"\n    let equal = value == value\n  value\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &module.items[0];
+        let parameter_id = BindingId(function.params[0].id);
+        let model = analyze(&module).unwrap();
+        assert!(!model.borrow_regions.is_empty());
+        assert!(
+            model.borrow_regions.iter().all(|region| region.binding_id != parameter_id),
+            "borrow regions for the inner shadow must point at the declaration identity, not the outer parameter"
+        );
     }
 
 }
