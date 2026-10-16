@@ -97,6 +97,8 @@ pub enum NativeInstr {
     Slice,
     Len,
     Append(String),
+    MakeSome,
+    MakeNone,
     MakeOk,
     Chr,
     ScalarLen,
@@ -232,6 +234,8 @@ pub enum NativeValue {
     ContextWindow { max_segments: usize, max_bytes: usize, max_tokens: usize, segments: Vec<(String, Vec<u8>, usize)>, bytes: usize, tokens: usize },
     String(String),
     List(Vec<NativeValue>),
+    OptionSome(Box<NativeValue>),
+    OptionNone,
     ResultOk(Box<NativeValue>),
     ResultErr(Box<NativeValue>),
     Unit,
@@ -454,7 +458,7 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                 }
                 pending.extend(items.iter().map(|item| (item, depth + 1)));
             }
-            NativeValue::ResultOk(inner) | NativeValue::ResultErr(inner) => {
+            NativeValue::OptionSome(inner) | NativeValue::ResultOk(inner) | NativeValue::ResultErr(inner) => {
                 pending.push((inner, depth + 1));
             }
             _ => {}
@@ -507,7 +511,7 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
                     .ok_or_else(|| NativeError::ResourceLimit("VectorIndex domain byte accounting overflow".into()))?;
             }
             NativeValue::List(items) => pending.extend(items.iter()),
-            NativeValue::ResultOk(inner) | NativeValue::ResultErr(inner) => pending.push(inner),
+            NativeValue::OptionSome(inner) | NativeValue::ResultOk(inner) | NativeValue::ResultErr(inner) => pending.push(inner),
             _ => {}
         }
     }
@@ -833,6 +837,10 @@ fn emit_value(value: &IrValue, code: &mut Vec<NativeInstr>) -> Result<(), Native
                 code.push(NativeInstr::GraphemeAt);
             } else if callee == "chr" && args.len() == 1 {
                 code.push(NativeInstr::Chr);
+            } else if callee == "some" && args.len() == 1 {
+                code.push(NativeInstr::MakeSome);
+            } else if callee == "none" && args.is_empty() {
+                code.push(NativeInstr::MakeNone);
             } else if callee == "ok" && args.len() == 1 {
                 code.push(NativeInstr::MakeOk);
             } else if callee == "err" && args.len() == 1 {
@@ -2065,6 +2073,15 @@ fn run_function(
             NativeInstr::ScalarLen | NativeInstr::ScalarAt | NativeInstr::GraphemeLen | NativeInstr::GraphemeAt => {
                 execute_unicode_instruction(instr, &mut stack, state.limits)?;
             }
+            NativeInstr::MakeSome => {
+                let value = stack
+                    .pop()
+                    .ok_or_else(|| NativeError::InvalidProgram("some value missing".into()))?;
+                let option = NativeValue::OptionSome(Box::new(value));
+                validate_value(&option, state.limits)?;
+                stack.push(option);
+            }
+            NativeInstr::MakeNone => stack.push(NativeValue::OptionNone),
             NativeInstr::MakeOk => {
                 let value = stack
                     .pop()
@@ -2086,11 +2103,14 @@ fn run_function(
                     .pop()
                     .ok_or_else(|| NativeError::InvalidProgram("unwrap value missing".into()))?
                 {
-                    NativeValue::ResultOk(value) => stack.push(*value),
+                    NativeValue::OptionSome(value) | NativeValue::ResultOk(value) => stack.push(*value),
+                    NativeValue::OptionNone => {
+                        return Err(NativeError::Type("unwrap on None".into()));
+                    }
                     NativeValue::ResultErr(_) => {
                         return Err(NativeError::Type("unwrap on Err".into()));
                     }
-                    _ => return Err(NativeError::Type("unwrap requires Result".into())),
+                    _ => return Err(NativeError::Type("unwrap requires Result or Option".into())),
                 }
             }
             NativeInstr::Load(name) => {
@@ -2498,6 +2518,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::PushList(v) => format!("PushList:{v}"),
         NativeInstr::Index => "Index".into(), NativeInstr::Slice => "Slice".into(), NativeInstr::Len => "Len".into(),
         NativeInstr::Append(v) => format!("Append:{}", escape_artifact(v)),
+        NativeInstr::MakeSome => "MakeSome".into(), NativeInstr::MakeNone => "MakeNone".into(),
         NativeInstr::MakeOk => "MakeOk".into(), NativeInstr::Chr => "Chr".into(),
         NativeInstr::ScalarLen => "ScalarLen".into(), NativeInstr::ScalarAt => "ScalarAt".into(),
         NativeInstr::GraphemeLen => "GraphemeLen".into(), NativeInstr::GraphemeAt => "GraphemeAt".into(),
@@ -2576,6 +2597,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "PushUnit"=>NativeInstr::PushUnit,"Index"=>NativeInstr::Index,"Slice"=>NativeInstr::Slice,"Len"=>NativeInstr::Len,
         "PushString"=>NativeInstr::PushString(unescape_artifact(arg)?),
         "PushList"=>NativeInstr::PushList(int(arg)?),"Append"=>NativeInstr::Append(unescape_artifact(arg)?),
+        "MakeSome"=>NativeInstr::MakeSome,"MakeNone"=>NativeInstr::MakeNone,
         "MakeOk"=>NativeInstr::MakeOk,"Chr"=>NativeInstr::Chr,
         "ScalarLen"=>NativeInstr::ScalarLen,"ScalarAt"=>NativeInstr::ScalarAt,
         "GraphemeLen"=>NativeInstr::GraphemeLen,"GraphemeAt"=>NativeInstr::GraphemeAt,
