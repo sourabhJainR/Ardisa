@@ -2051,4 +2051,43 @@ fn f(values: List<Int>) -> Int
         );
     }
 
+
+    #[test]
+    fn nested_partial_move_preserves_disjoint_sibling_path() {
+        let module = parse(
+            "module nested_disjoint_paths\nfn f(values: List<List<String>>) -> String\n  let selected = values[0][0]\n  values[1][0]\n",
+        ).unwrap();
+        assert!(
+            infer(&module).is_ok(),
+            "moving values[0][0] must not invalidate the disjoint values[1][0] path"
+        );
+    }
+
+    #[test]
+    fn nested_repeated_partial_move_is_rejected() {
+        let module = parse(
+            "module nested_repeated_path\nfn f(values: List<List<String>>) -> String\n  let selected = values[0][0]\n  values[0][0]\n",
+        ).unwrap();
+        let errors = infer(&module).expect_err("reusing a moved nested path must fail");
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "the same nested place must remain moved after its first move: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn nested_dynamic_move_conservatively_aliases_concrete_path() {
+        let module = parse(
+            "module nested_dynamic_alias\nfn f(values: List<List<String>>, index: Int) -> String\n  let selected = values[index][0]\n  values[0][0]\n",
+        ).unwrap();
+        let errors = infer(&module).expect_err(
+            "a dynamic outer index may alias a later concrete nested path",
+        );
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "dynamic nested paths must conservatively alias: {errors:?}"
+        );
+    }
+
+
 }
