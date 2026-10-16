@@ -341,6 +341,8 @@ fn display_value(value: &ardisa_core::NativeValue) -> String {
             let rendered = values.iter().map(display_value).collect::<Vec<_>>();
             format!("[{}]", rendered.join(", "))
         }
+        ardisa_core::NativeValue::OptionSome(value) => format!("Some({})", display_value(value)),
+        ardisa_core::NativeValue::OptionNone => "None".into(),
         ardisa_core::NativeValue::ResultOk(value) => format!("Ok({})", display_value(value)),
         ardisa_core::NativeValue::ResultErr(value) => format!("Err({})", display_value(value)),
         ardisa_core::NativeValue::Unit => "()".into(),
@@ -458,6 +460,17 @@ mod tests {
             ardisa_core::NativeValue::Bool(true)
         );
         assert!(parse_value("wat", &ardisa_core::TypeKind::Bool).is_err());
+    }
+
+    #[test]
+    fn renders_option_values_deterministically() {
+        assert_eq!(
+            display_value(&ardisa_core::NativeValue::OptionSome(Box::new(
+                ardisa_core::NativeValue::Int(7)
+            ))),
+            "Some(7)"
+        );
+        assert_eq!(display_value(&ardisa_core::NativeValue::OptionNone), "None");
     }
 
     #[test]

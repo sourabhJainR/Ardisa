@@ -553,6 +553,53 @@ fn main() -> Int
 
 
     #[test]
+    fn option_some_unwrap_survives_source_to_native_round_trip() {
+        let source = r#"module option_some_unwrap
+fn main() -> Option<Int>
+  return some(unwrap(some(42)))
+"#;
+        let compiled = compile_source(source).expect("well-typed Some unwrap compiles");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("Some unwrap executes"),
+            native::NativeValue::OptionSome(Box::new(native::NativeValue::Int(42)))
+        );
+        assert_eq!(
+            native::encode_program(&program),
+            compiled.artifact,
+            "Option artifact round-tripping must remain deterministic"
+        );
+    }
+
+    #[test]
+    fn option_none_is_a_native_value_and_unwrap_none_fails_closed() {
+        let none_source = r#"module option_none
+fn main() -> Option<Int>
+  none()
+"#;
+        let compiled = compile_source(none_source).expect("none infers its payload type from return context");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert_eq!(
+            native::run_program(&program, "main", &[]).expect("None construction executes"),
+            native::NativeValue::OptionNone
+        );
+
+        let unwrap_source = r#"module option_unwrap_none
+fn main() -> Option<Int>
+  return some(unwrap(none()))
+"#;
+        let compiled = compile_source(unwrap_source).expect("Option unwrap compiles");
+        let program = native::decode_program(&compiled.artifact).expect("artifact decodes");
+        assert!(
+            matches!(
+                native::run_program(&program, "main", &[]),
+                Err(native::NativeError::Type(message)) if message == "unwrap on None"
+            ),
+            "None must not silently produce a payload"
+        );
+    }
+
+    #[test]
     fn result_ok_unwrap_survives_source_to_native_round_trip() {
         let source = r#"module result_ok_unwrap
 fn main() -> Result<Int, String>
