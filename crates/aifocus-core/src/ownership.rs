@@ -460,10 +460,16 @@ impl Checker {
                 let blocked_by_partial_move = !matches!(mode, AccessMode::PathBorrow | AccessMode::PathMutableBorrow)
                     && binding.has_moved_paths();
                 if binding.state != State::Available || blocked_by_partial_move {
-                    let moved = binding.state == State::Moved
-                        || binding.path_states.values().any(|state| *state == State::Moved);
-                    let message = if moved {
-                        format!("use of moved or partially moved value '{name}'")
+                    let message = if binding.state == State::Moved {
+                        format!("use of moved value '{name}'")
+                    } else if binding.state == State::MaybeMoved {
+                        format!("use of possibly moved value '{name}'")
+                    } else if blocked_by_partial_move
+                        && binding.path_states.values().any(|state| *state == State::MaybeMoved)
+                    {
+                        format!("use of possibly moved or partially moved value '{name}'")
+                    } else if blocked_by_partial_move {
+                        format!("use of partially moved value '{name}'")
                     } else {
                         format!("use of possibly moved value '{name}'")
                     };
