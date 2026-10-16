@@ -41,6 +41,8 @@ pub struct OwnershipModel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BorrowRegion {
+    /// Stable identity of the declaration, independent of its source-level name.
+    pub binding_id: BindingId,
     pub local: String,
     pub kind: BorrowKind,
     pub span: Span,
@@ -53,7 +55,7 @@ impl BorrowRegion {
     }
 
     pub fn overlaps(&self, other: &Self) -> bool {
-        self.local == other.local
+        self.binding_id == other.binding_id
             && self.span.start < other.span.end
             && other.span.start < self.span.end
     }
@@ -105,6 +107,16 @@ impl OwnershipClass {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BindingId(pub crate::NodeId);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum PlaceProjection {
+    Index(usize),
+    /// An unknown index may alias any element at this depth.
+    DynamicIndex,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Available,
@@ -117,7 +129,50 @@ enum AccessMode {
     Move,
     SharedBorrow,
     MutableBorrow,
+    /// Borrow the aggregate only to access one projection; other moved projections
+    /// remain independently tracked.
+    PathBorrow,
 }
+
+#[derive(Debug, Clone)]
+struct LocalBinding {
+    id: BindingId,
+    ty: Type,
+    state: State,
+    path_states: HashMap<Vec<PlaceProjection>, State>,
+}
+
+impl LocalBinding {
+    fn new(id: BindingId, ty: Type) -> Self {
+        Self { id, ty, state: State::Available, path_states: HashMap::new() }
+    }
+
+    fn path_state(&self, path: &[PlaceProjection]) -> State {
+        let mut prefix = Vec::new();
+        for projection in path {
+            if let Some(state @ (State::Moved | State::MaybeMoved)) = self.path_states.get(&prefix) {
+                return *state;
+            }
+            prefix.push(projection.clone());
+        }
+        self.path_states.get(path).copied().unwrap_or(State::Available)
+    }
+
+    fn has_moved_paths(&self) -> bool {
+        self.path_states.values().any(|state| *state != State::Available)
+    }
+
+    fn set_path_state(&mut self, path: Vec<PlaceProjection>, state: State) {
+        self.path_states.retain(|existing, _| !existing.starts_with(&path) || existing == &path);
+        if state == State::Available {
+            self.path_states.remove(&path);
+        } else {
+            self.path_states.insert(path, state);
+        }
+    }
+}
+
+type Locals = HashMap<String, LocalBinding>;
 
 pub fn infer(module: &Module) -> Result<(), Vec<Diagnostic>> {
     analyze(module).map(|_| ())
@@ -178,12 +233,15 @@ impl Checker {
     fn check_function(&mut self, function: &Function) {
         let mut locals = HashMap::new();
         for param in &function.params {
-            locals.insert(param.name.clone(), (param.ty.clone(), State::Available));
+            locals.insert(
+                param.name.clone(),
+                LocalBinding::new(BindingId(param.id), param.ty.clone()),
+            );
         }
         self.check_block(&function.body, &mut locals);
     }
 
-    fn check_block(&mut self, block: &Block, locals: &mut HashMap<String, (Type, State)>) -> bool {
+    fn check_block(&mut self, block: &Block, locals: &mut Locals) -> bool {
         let mut reachable = true;
         for stmt in &block.stmts {
             if !reachable {
@@ -194,8 +252,9 @@ impl Checker {
                     self.check_expr(value, locals, AccessMode::Move);
                     if self.terminated_exprs.contains(&value.id) {
                         reachable = false;
-                    } else if let Some((_, state)) = locals.get_mut(name) {
-                        *state = State::Available;
+                    } else if let Some(binding) = locals.get_mut(name) {
+                        binding.state = State::Available;
+                        binding.path_states.clear();
                     }
                 }
                 StmtKind::SetIndex {
@@ -203,13 +262,8 @@ impl Checker {
                     index,
                     value,
                 } => {
-                    // The target collection is mutably borrowed for the full
-                    // indexed assignment operation, not only while its name is read.
                     self.check_expr_in_region(
-                        collection,
-                        locals,
-                        AccessMode::MutableBorrow,
-                        stmt.span,
+                        collection, locals, AccessMode::MutableBorrow, stmt.span,
                     );
                     if self.terminated_exprs.contains(&collection.id) {
                         reachable = false;
@@ -223,24 +277,27 @@ impl Checker {
                     self.check_expr(value, locals, AccessMode::Move);
                     if self.terminated_exprs.contains(&value.id) {
                         reachable = false;
+                        continue;
+                    }
+                    if let Some((name, path)) = place_path(collection) {
+                        if let Some(PlaceProjection::Index(index_value)) = path.last() {
+                            let mut restored = path;
+                            restored.pop();
+                            restored.push(PlaceProjection::Index(*index_value));
+                            if let Some(binding) = locals.get_mut(&name) {
+                                binding.set_path_state(restored, State::Available);
+                            }
+                        }
                     }
                 }
                 StmtKind::Let { name, value } => {
-                    let shadows_existing = locals.contains_key(name);
                     let value_type = self.check_expr(value, locals, AccessMode::Move);
-                    if shadows_existing {
-                        self.errors.push(Diagnostic::error(
-                            "AIF406",
-                            format!("shadowing local '{name}' is unsupported until ownership bindings have stable identities"),
-                            Some(stmt.span),
-                        ));
-                    }
                     if self.terminated_exprs.contains(&value.id) {
                         reachable = false;
-                    } else if !shadows_existing {
-                        if let Some(ty) = value_type {
-                            locals.insert(name.clone(), (ty, State::Available));
-                        }
+                    } else if let Some(ty) = value_type {
+                        // The declaration node is a stable identity. Reusing a source
+                        // name creates a new binding, not an alias for the old one.
+                        locals.insert(name.clone(), LocalBinding::new(BindingId(stmt.id), ty));
                     }
                 }
                 StmtKind::Return(value) => {
@@ -287,19 +344,9 @@ impl Checker {
                     merge_states(locals, &scoped);
                 }
                 StmtKind::For { name, iterable, body } => {
-                    // Binding identity is not represented in the current checker.
-                    // Reject shadowing here rather than letting the loop-local name
-                    // overwrite an outer binding in the string-keyed state map.
-                    let shadows_existing = locals.contains_key(name);
-                    if shadows_existing {
-                        self.errors.push(Diagnostic::error(
-                            "AIF303",
-                            format!("loop binding '{name}' shadows an existing local"),
-                            Some(stmt.span),
-                        ));
-                    }
-                    // Iteration consumes an owned List<T>. This aligns static move state
-                    // with the native loop's single evaluation of the iterable.
+                    // Loop bindings have stable declaration identity and live only in
+                    // the loop environment, even when shadowing an existing name.
+                    let previous_binding = locals.get(name).cloned();
                     let iterable_type = self.check_expr(iterable, locals, AccessMode::Move);
                     if self.terminated_exprs.contains(&iterable.id) {
                         reachable = false;
@@ -310,17 +357,15 @@ impl Checker {
                         _ => None,
                     });
                     let mut scoped = locals.clone();
-                    if !shadows_existing {
-                        if let Some(element) = element_type {
-                            scoped.insert(name.clone(), (element, State::Available));
-                        }
+                    if let Some(element) = element_type {
+                        scoped.insert(name.clone(), LocalBinding::new(BindingId(stmt.id), element));
                     }
                     self.scope_depth += 1;
                     self.check_block(body, &mut scoped);
                     self.scope_depth -= 1;
-                    // Merge only pre-existing bindings. A rejected shadow binding is
-                    // never allowed to overwrite an outer local's state.
-                    if !shadows_existing {
+                    if let Some(previous) = previous_binding {
+                        scoped.insert(name.clone(), previous);
+                    } else {
                         scoped.remove(name);
                     }
                     merge_states(locals, &scoped);
@@ -334,7 +379,7 @@ impl Checker {
     fn check_expr_in_region(
         &mut self,
         expr: &Expr,
-        locals: &mut HashMap<String, (Type, State)>,
+        locals: &mut Locals,
         mode: AccessMode,
         span: Span,
     ) -> Option<Type> {
@@ -347,7 +392,7 @@ impl Checker {
     fn check_expr(
         &mut self,
         expr: &Expr,
-        locals: &mut HashMap<String, (Type, State)>,
+        locals: &mut Locals,
         mode: AccessMode,
     ) -> Option<Type> {
         match &expr.kind {
@@ -356,21 +401,26 @@ impl Checker {
             ExprKind::Bool(_) => Some(type_node(TypeKind::Bool, expr)),
             ExprKind::String(_) => Some(type_node(TypeKind::String, expr)),
             ExprKind::Name(name) => {
-                let Some((ty, state)) = locals.get_mut(name) else {
+                let Some(binding) = locals.get_mut(name) else {
                     return None;
                 };
-                if *state != State::Available {
-                    let message = if *state == State::Moved {
-                        format!("use of moved value '{name}'")
+                let blocked_by_partial_move = mode != AccessMode::PathBorrow && binding.has_moved_paths();
+                if binding.state != State::Available || blocked_by_partial_move {
+                    let moved = binding.state == State::Moved
+                        || binding.path_states.values().any(|state| *state == State::Moved);
+                    let message = if moved {
+                        format!("use of moved or partially moved value '{name}'")
                     } else {
                         format!("use of possibly moved value '{name}'")
                     };
                     self.errors.push(Diagnostic::error("AIF400", message, Some(expr.span)));
                     return None;
                 }
+                let ty = &binding.ty;
+                let binding_id = binding.id;
                 let access = if ownership_of(ty) == OwnershipClass::Copy {
                     AccessKind::Copy
-                } else if mode == AccessMode::SharedBorrow {
+                } else if mode == AccessMode::SharedBorrow || mode == AccessMode::PathBorrow {
                     AccessKind::SharedBorrow
                 } else if mode == AccessMode::MutableBorrow {
                     AccessKind::MutableBorrow
@@ -384,7 +434,7 @@ impl Checker {
                     .unwrap_or(expr.span);
                 if access == AccessKind::Move
                     && self.borrow_regions.iter().any(|region| {
-                        region.local == *name
+                        region.binding_id == binding_id
                             && region.span.start < expr.span.end
                             && expr.span.start < region.span.end
                     })
@@ -400,10 +450,11 @@ impl Checker {
                 match access {
                     AccessKind::Move => {
                         self.transitions.push((expr.id, OwnershipTransition::Move));
-                        *state = State::Moved;
+                        binding.state = State::Moved;
                     }
                     AccessKind::SharedBorrow => {
                         self.borrow_regions.push(BorrowRegion {
+                            binding_id,
                             local: name.clone(),
                             kind: BorrowKind::Shared,
                             span: operation_span,
@@ -418,6 +469,7 @@ impl Checker {
                     }
                     AccessKind::MutableBorrow => {
                         self.borrow_regions.push(BorrowRegion {
+                            binding_id,
                             local: name.clone(),
                             kind: BorrowKind::Mutable,
                             span: operation_span,
@@ -655,8 +707,8 @@ fn ownership_of(ty: &Type) -> OwnershipClass {
 }
 
 fn merge_states(
-    outer: &mut HashMap<String, (Type, State)>,
-    inner: &HashMap<String, (Type, State)>,
+    outer: &mut Locals,
+    inner: &Locals,
 ) {
     for (name, (_, state)) in outer.iter_mut() {
         if let Some((_, inner_state)) = inner.get(name) {
@@ -670,8 +722,8 @@ fn join_state(left: State, right: State) -> State {
 }
 
 fn merge_scope_states(
-    outer: &mut HashMap<String, (Type, State)>,
-    inner: &HashMap<String, (Type, State)>,
+    outer: &mut Locals,
+    inner: &Locals,
 ) {
     for (name, (_, state)) in outer.iter_mut() {
         if let Some((_, inner_state)) = inner.get(name) {
