@@ -281,7 +281,7 @@ struct Checker {
 
 impl Checker {
     fn check_function(&mut self, function: &Function) {
-        let mut locals = HashMap::new();
+        let mut locals = Locals::default();
         for param in &function.params {
             locals.insert(
                 param.name.clone(),
