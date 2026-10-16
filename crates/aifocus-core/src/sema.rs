@@ -1669,6 +1669,23 @@ mod ai_routing_semantic_tests {
     }
 
     #[test]
+    fn option_type_requires_one_payload_and_none_requires_return_context() {
+        let invalid_type = crate::parse(
+            "module invalid_option_arity\nfn f(value: Option<Int, String>) -> Int\n  0\n",
+        )
+        .unwrap();
+        let errors = check(&invalid_type).expect_err("Option must have exactly one type argument");
+        assert!(errors.iter().any(|error| error.code == "AIF320"));
+
+        let invalid_none = crate::parse(
+            "module none_without_context\nfn f() -> Int\n  none()\n",
+        )
+        .unwrap();
+        let errors = check(&invalid_none).expect_err("none must not invent an unconstrained payload type");
+        assert!(errors.iter().any(|error| error.code == "AIF335"));
+    }
+
+    #[test]
     fn ok_constructor_infers_error_type_from_declared_result_return() {
         let module = crate::parse(
             "module ok_result_context\nfn f() -> Result<Int, String>\n  ok(42)\n",
