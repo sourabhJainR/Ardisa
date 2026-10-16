@@ -20,7 +20,7 @@ This document describes the currently evidenced Ardisa subset. It is not a state
 
 ## Borrowing and alias checks
 
-- The analyzer records shared and mutable accesses against stable binding identities and checks overlapping operation regions. Mutable access to an indexed place is carried through intermediate projections so a nested write cannot be downgraded to a shared access to the root collection.
+- The analyzer records shared and mutable accesses against stable binding identities and place paths, and checks overlapping operation regions. Static disjoint paths can be accessed independently; dynamic indices conservatively alias any element at that depth. Mutable access to an indexed place is carried through intermediate projections so a nested write cannot be downgraded to a shared access to the root collection.
 - Mutation operations such as indexed assignment and push are analyzed as mutable access to the named collection. Overlapping shared/mutable regions and moves while an operation's borrow is active are rejected.
 - These checks remain a partial safety model. They do not implement a complete CFG-based borrow checker, native reference values, reborrowing, non-lexical lifetimes, interior mutability, raw pointers, pointer provenance, or a lifetime-parameterized API. No Rust-equivalent soundness claim is made.
 - The current language does not expose a complete reference type or reference-returning functions. Reference-like syntax that is not part of the grammar must be rejected; it must not be silently interpreted as a value.

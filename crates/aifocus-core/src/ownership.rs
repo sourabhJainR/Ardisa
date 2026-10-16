@@ -45,6 +45,8 @@ pub struct BorrowRegion {
     pub binding_id: BindingId,
     pub local: String,
     pub kind: BorrowKind,
+    /// Place path accessed within the binding; an empty path borrows the whole value.
+    pub path: Vec<PlaceProjection>,
     pub span: Span,
     pub scope_depth: usize,
 }
@@ -56,6 +58,7 @@ impl BorrowRegion {
 
     pub fn overlaps(&self, other: &Self) -> bool {
         self.binding_id == other.binding_id
+            && paths_may_alias(&self.path, &other.path)
             && self.span.start < other.span.end
             && other.span.start < self.span.end
     }
@@ -111,7 +114,7 @@ impl OwnershipClass {
 pub struct BindingId(pub crate::NodeId);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum PlaceProjection {
+pub enum PlaceProjection {
     Index(usize),
     /// An unknown index may alias any element at this depth.
     DynamicIndex,
@@ -222,6 +225,7 @@ fn index_projection(index: &Expr) -> PlaceProjection {
 fn place_path(expr: &Expr) -> Option<(String, Vec<PlaceProjection>)> {
     match &expr.kind {
         ExprKind::Name(name) => Some((name.clone(), Vec::new())),
+        ExprKind::Group(inner) => place_path(inner),
         ExprKind::Index { collection, index } => {
             let (name, mut path) = place_path(collection)?;
             path.push(index_projection(index));
@@ -263,6 +267,7 @@ pub fn analyze(module: &Module) -> Result<OwnershipModel, Vec<Diagnostic>> {
         scope_depth: 0,
         terminated_exprs: HashSet::new(),
         borrow_context: Vec::new(),
+        place_context: Vec::new(),
     };
 
     for item in &module.items {
@@ -295,6 +300,8 @@ struct Checker {
     terminated_exprs: HashSet<crate::NodeId>,
     /// Extent of the operation evaluating a borrowed expression.
     borrow_context: Vec<Span>,
+    /// Most-specific place currently being evaluated, preserved through nested projections.
+    place_context: Vec<(String, Vec<PlaceProjection>)>,
 }
 
 impl Checker {
@@ -330,9 +337,22 @@ impl Checker {
                     index,
                     value,
                 } => {
+                    // The mutable place is the collection projection plus its target index.
+                    // Carry that full path while analyzing the intermediate collection so
+                    // alias checks can distinguish a sibling path from the actual target.
+                    let has_target_place = if let Some((name, mut path)) = place_path(collection) {
+                        path.push(index_projection(index));
+                        self.place_context.push((name, path));
+                        true
+                    } else {
+                        false
+                    };
                     self.check_expr_in_region(
                         collection, locals, AccessMode::PathMutableBorrow, stmt.span,
                     );
+                    if has_target_place {
+                        self.place_context.pop();
+                    }
                     if self.terminated_exprs.contains(&collection.id) {
                         reachable = false;
                         continue;
@@ -463,6 +483,31 @@ impl Checker {
         locals: &mut Locals,
         mode: AccessMode,
     ) -> Option<Type> {
+        // The outermost projection is the most precise place for this access.
+        // Do not replace it with an intermediate parent projection while recursively
+        // evaluating a chain such as values[0][1].
+        let place = place_path(expr);
+        let should_push_place = match (place.as_ref(), self.place_context.last()) {
+            (Some((root, _)), Some((current_root, _))) if root == current_root => false,
+            (Some(_), _) => true,
+            (None, _) => false,
+        };
+        if should_push_place {
+            self.place_context.push(place.expect("place was checked above"));
+        }
+        let result = self.check_expr_inner(expr, locals, mode);
+        if should_push_place {
+            self.place_context.pop();
+        }
+        result
+    }
+
+    fn check_expr_inner(
+        &mut self,
+        expr: &Expr,
+        locals: &mut Locals,
+        mode: AccessMode,
+    ) -> Option<Type> {
         match &expr.kind {
             ExprKind::Int(_) => Some(type_node(TypeKind::Int, expr)),
             ExprKind::Float(_) => Some(type_node(TypeKind::Named("F32".into()), expr)),
@@ -507,9 +552,16 @@ impl Checker {
                     .last()
                     .copied()
                     .unwrap_or(expr.span);
+                let borrow_path = self
+                    .place_context
+                    .last()
+                    .filter(|(root, _)| root == name)
+                    .map(|(_, path)| path.clone())
+                    .unwrap_or_default();
                 if access == AccessKind::Move
                     && self.borrow_regions.iter().any(|region| {
                         region.binding_id == binding_id
+                            && paths_may_alias(&region.path, &borrow_path)
                             && region.span.start < expr.span.end
                             && expr.span.start < region.span.end
                     })
@@ -532,6 +584,7 @@ impl Checker {
                             binding_id,
                             local: name.clone(),
                             kind: BorrowKind::Shared,
+                            path: borrow_path.clone(),
                             span: operation_span,
                             scope_depth: self.scope_depth,
                         });
@@ -547,6 +600,7 @@ impl Checker {
                             binding_id,
                             local: name.clone(),
                             kind: BorrowKind::Mutable,
+                            path: borrow_path.clone(),
                             span: operation_span,
                             scope_depth: self.scope_depth,
                         });
@@ -991,8 +1045,8 @@ fn reuse(source: String) -> String
         .unwrap();
         let errors = infer(&module).unwrap_err();
         assert!(
-            errors.iter().any(|error| error.code == "AIF404"),
-            "the mutable collection borrow and nested shared read overlap for the whole call"
+            errors.iter().any(|error| matches!(error.code, "AIF404" | "AIF405")),
+            "the mutable collection borrow must conflict with an aliased nested access for the whole call"
         );
     }
 
@@ -1066,6 +1120,7 @@ fn f(value: String) -> String
                 binding_id: BindingId(crate::NodeId(10)),
                 local: "value".into(),
                 kind: BorrowKind::Shared,
+                path: Vec::new(),
                 span,
                 scope_depth: 0,
             },
@@ -1073,6 +1128,7 @@ fn f(value: String) -> String
                 binding_id: BindingId(crate::NodeId(10)),
                 local: "value".into(),
                 kind: BorrowKind::Mutable,
+                path: Vec::new(),
                 span: Span::new(15, 25),
                 scope_depth: 0,
             },
@@ -1569,8 +1625,8 @@ fn f(value: String) -> String
         };
         let errors = infer(&module).unwrap_err();
         assert!(
-            errors.iter().any(|error| error.code == "AIF404"),
-            "the mutable target borrow must overlap reads from the same collection"
+            errors.iter().any(|error| matches!(error.code, "AIF404" | "AIF405")),
+            "the mutable target borrow must conflict with aliased access to the same collection"
         );
     }
 
@@ -1588,8 +1644,8 @@ fn f(values: List<List<Int>>) -> Int
         .unwrap();
         let errors = infer(&module).unwrap_err();
         assert!(
-            errors.iter().any(|error| error.code == "AIF404"),
-            "the mutable borrow must span the entire indexed assignment, including its value"
+            errors.iter().any(|error| matches!(error.code, "AIF404" | "AIF405")),
+            "the mutable borrow must span the indexed assignment and reject an aliased value"
         );
     }
 
@@ -1726,7 +1782,7 @@ fn f(values: List<Int>) -> Int
         let aliased_value = index(
             9_300_004,
             index(9_300_005, name(9_300_006), int(9_300_007, 0)),
-            int(9_300_008, 1),
+            int(9_300_008, 0),
         );
         function.body.stmts[0].kind = StmtKind::SetIndex {
             collection: target_collection,
@@ -1737,8 +1793,8 @@ fn f(values: List<Int>) -> Int
             "a nested indexed write must conflict with a read from the same root collection",
         );
         assert!(
-            errors.iter().any(|error| error.code == "AIF404"),
-            "expected overlapping mutable/shared borrow diagnostics, got {errors:?}"
+            errors.iter().any(|error| matches!(error.code, "AIF404" | "AIF405")),
+            "expected an aliased mutable/shared access diagnostic, got {errors:?}"
         );
     }
 
@@ -1797,6 +1853,81 @@ fn f(values: List<Int>) -> Int
         assert!(
             errors.iter().any(|error| error.code == "AIF400"),
             "the parent place must remain partially moved, got {errors:?}"
+        );
+    }
+
+
+    #[test]
+    fn nested_index_assignment_allows_disjoint_leaf_paths() {
+        let mut module = parse(
+            "module nested_index_disjoint\nfn f(values: List<List<Int>>) -> Int\n  0\n",
+        )
+        .unwrap();
+        let Item::Function(function) = &mut module.items[0];
+        let span = function.body.stmts[0].span;
+        let name = |id| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Name("values".into()),
+        };
+        let int = |id, value| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Int(value),
+        };
+        let index = |id, collection, subscript| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Index {
+                collection: Box::new(collection),
+                index: Box::new(subscript),
+            },
+        };
+        function.body.stmts[0].kind = StmtKind::SetIndex {
+            collection: index(9_310_001, name(9_310_002), int(9_310_003, 0)),
+            index: int(9_310_004, 0),
+            value: index(
+                9_310_005,
+                index(9_310_006, name(9_310_007), int(9_310_008, 0)),
+                int(9_310_009, 1),
+            ),
+        };
+        assert!(
+            infer(&module).is_ok(),
+            "a mutable borrow of [0][0] must not conflict with a read/move of disjoint [0][1]"
+        );
+    }
+
+
+
+    #[test]
+    fn dynamic_index_borrows_remain_conservative_when_aliasing_is_unknown() {
+        let module = parse(
+            "module dynamic_borrow_alias\nfn f(values: List<List<Int>>, left: Int, right: Int) -> Int\n  set values[left] = values[right]\n  0\n",
+        )
+        .unwrap();
+        let errors = infer(&module).expect_err(
+            "unknown index projections may alias and must not bypass mutable borrow checks",
+        );
+        assert!(
+            errors.iter().any(|error| matches!(error.code, "AIF404" | "AIF405")),
+            "expected conservative rejection for dynamic aliasing, got {errors:?}"
+        );
+    }
+
+
+    #[test]
+    fn grouping_does_not_bypass_nested_move_path_tracking() {
+        let module = parse(
+            "module grouped_nested_path\nfn f(values: List<List<String>>) -> String\n  let first = (values[0])[0]\n  let second = values[0][0]\n  first\n",
+        )
+        .unwrap();
+        let errors = infer(&module).expect_err(
+            "grouping an intermediate projection must preserve the same stable place path",
+        );
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "the same nested element cannot be moved twice through grouped syntax, got {errors:?}"
         );
     }
 
