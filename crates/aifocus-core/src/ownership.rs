@@ -149,14 +149,29 @@ impl LocalBinding {
     }
 
     fn path_state(&self, path: &[PlaceProjection]) -> State {
+        self.joined_path_state(path, false)
+    }
+
+    /// State needed to traverse an aggregate projection to reach a child.
+    /// A moved descendant does not make its parent unusable for disjoint child
+    /// access, but a moved ancestor or a potentially aliasing dynamic path does.
+    fn path_state_for_projection(&self, path: &[PlaceProjection]) -> State {
+        self.joined_path_state(path, true)
+    }
+
+    fn joined_path_state(&self, path: &[PlaceProjection], prefixes_only: bool) -> State {
         let mut result: Option<State> = None;
         for (existing, state) in &self.path_states {
-            if *state != State::Available && paths_may_alias(existing, path) {
-                result = Some(match result {
-                    Some(previous) => join_state(previous, *state),
-                    None => *state,
-                });
+            if *state == State::Available
+                || (prefixes_only && existing.len() > path.len())
+                || !paths_may_alias(existing, path)
+            {
+                continue;
             }
+            result = Some(match result {
+                Some(previous) => join_state(previous, *state),
+                None => *state,
+            });
         }
         result.unwrap_or(State::Available)
     }
@@ -613,7 +628,14 @@ impl Checker {
                             }
                         } else if let Some((name, path)) = place_path(expr) {
                             if let Some(binding) = locals.get(&name) {
-                                let path_state = binding.path_state(&path);
+                                let path_state = if matches!(
+                                    mode,
+                                    AccessMode::PathBorrow | AccessMode::PathMutableBorrow
+                                ) {
+                                    binding.path_state_for_projection(&path)
+                                } else {
+                                    binding.path_state(&path)
+                                };
                                 if path_state != State::Available {
                                     let message = if path_state == State::Moved {
                                         format!("use of moved indexed place '{name}'")
@@ -1676,10 +1698,41 @@ fn f(values: List<Int>) -> Int
 
     #[test]
     fn nested_index_assignment_keeps_mutable_borrow_on_root_binding() {
-        let module = parse(
-            "module nested_index_alias\nfn f(values: List<List<Int>>) -> Int\n  set values[0][0] = values[0][1]\n  0\n",
+        let mut module = parse(
+            "module nested_index_alias\nfn f(values: List<List<Int>>) -> Int\n  0\n",
         )
         .unwrap();
+        let Item::Function(function) = &mut module.items[0];
+        let span = function.body.stmts[0].span;
+        let name = |id| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Name("values".into()),
+        };
+        let int = |id, value| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Int(value),
+        };
+        let index = |id, collection, subscript| Expr {
+            id: crate::NodeId(id),
+            span,
+            kind: ExprKind::Index {
+                collection: Box::new(collection),
+                index: Box::new(subscript),
+            },
+        };
+        let target_collection = index(9_300_001, name(9_300_002), int(9_300_003, 0));
+        let aliased_value = index(
+            9_300_004,
+            index(9_300_005, name(9_300_006), int(9_300_007, 0)),
+            int(9_300_008, 1),
+        );
+        function.body.stmts[0].kind = StmtKind::SetIndex {
+            collection: target_collection,
+            index: int(9_300_009, 0),
+            value: aliased_value,
+        };
         let errors = infer(&module).expect_err(
             "a nested indexed write must conflict with a read from the same root collection",
         );
