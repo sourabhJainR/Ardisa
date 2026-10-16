@@ -225,6 +225,7 @@ fn index_projection(index: &Expr) -> PlaceProjection {
 fn place_path(expr: &Expr) -> Option<(String, Vec<PlaceProjection>)> {
     match &expr.kind {
         ExprKind::Name(name) => Some((name.clone(), Vec::new())),
+        ExprKind::Group(inner) => place_path(inner),
         ExprKind::Index { collection, index } => {
             let (name, mut path) = place_path(collection)?;
             path.push(index_projection(index));
@@ -1911,6 +1912,22 @@ fn f(values: List<Int>) -> Int
         assert!(
             errors.iter().any(|error| matches!(error.code, "AIF404" | "AIF405")),
             "expected conservative rejection for dynamic aliasing, got {errors:?}"
+        );
+    }
+
+
+    #[test]
+    fn grouping_does_not_bypass_nested_move_path_tracking() {
+        let module = parse(
+            "module grouped_nested_path\nfn f(values: List<List<String>>) -> String\n  let first = (values[0])[0]\n  let second = values[0][0]\n  first\n",
+        )
+        .unwrap();
+        let errors = infer(&module).expect_err(
+            "grouping an intermediate projection must preserve the same stable place path",
+        );
+        assert!(
+            errors.iter().any(|error| error.code == "AIF400"),
+            "the same nested element cannot be moved twice through grouped syntax, got {errors:?}"
         );
     }
 
