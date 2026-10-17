@@ -263,19 +263,30 @@ impl StructuredScope {
 
     pub fn finish(mut self) -> Result<Vec<ScopeEvent>, String> {
         let names = self.tasks.keys().cloned().collect::<Vec<_>>();
+        let mut first_failure = None;
         for name in names {
-            let (handle, state) = self.tasks.remove(&name).expect("task disappeared");
+            let Some((handle, state)) = self.tasks.remove(&name) else {
+                continue;
+            };
             let lease = self.leases.remove(&name);
             let join_result = handle.join();
             drop(lease);
             if join_result.is_err() {
-                return Err(format!("AIF505: task '{name}' panicked"));
-            }
-            if state == TaskState::Running {
+                self.events.push(ScopeEvent::Failed(name.clone()));
+                if first_failure.is_none() {
+                    first_failure = Some(format!("AIF505: task '{name}' panicked"));
+                }
+                // Signal every remaining running sibling immediately, then keep
+                // draining the scope so all workers are joined and all leases drop.
+                self.cancel_running_siblings();
+            } else if state == TaskState::Running {
                 self.events.push(ScopeEvent::Joined(name));
             }
         }
-        Ok(self.events.clone())
+        match first_failure {
+            Some(error) => Err(error),
+            None => Ok(self.events.clone()),
+        }
     }
 
     pub fn events(&self) -> &[ScopeEvent] {
