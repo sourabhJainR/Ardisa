@@ -75,3 +75,36 @@ fn joined_task_panic_is_reported_and_task_budget_is_released() {
         "joined failed task must release its resource lease"
     );
 }
+
+#[test]
+fn finish_panic_cancels_siblings_and_releases_all_task_budget() {
+    let budget = ResourceBudget::new(ResourceLimits {
+        max_tasks: 2,
+        max_reserved_bytes: 0,
+        max_operations: 0,
+    });
+    let mut scope = StructuredScope::with_budget(budget.clone());
+    scope
+        .spawn("a-broken", |_token| panic!("intentional finish-path worker panic"))
+        .expect("failing task should start within budget");
+    scope
+        .spawn("b-cooperative", |token| {
+            while !token.is_cancelled() {
+                std::thread::yield_now();
+            }
+        })
+        .expect("cooperative sibling should start within budget");
+
+    let error = scope
+        .finish()
+        .expect_err("finish must report the failing task");
+    assert!(
+        error.starts_with("AIF505:"),
+        "finish must return the stable task-failure diagnostic: {error}"
+    );
+    assert_eq!(
+        budget.snapshot().active_tasks,
+        0,
+        "finish failure must cancel and join siblings before releasing every task lease"
+    );
+}
