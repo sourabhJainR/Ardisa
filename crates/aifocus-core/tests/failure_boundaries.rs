@@ -108,3 +108,28 @@ fn finish_panic_cancels_siblings_and_releases_all_task_budget() {
         "finish failure must cancel and join siblings before releasing every task lease"
     );
 }
+
+
+#[test]
+fn finish_discovers_later_named_panic_before_joining_cooperative_sibling() {
+    let budget = ResourceBudget::new(ResourceLimits {
+        max_tasks: 2,
+        max_reserved_bytes: 0,
+        max_operations: 0,
+    });
+    let mut scope = StructuredScope::with_budget(budget.clone());
+    scope
+        .spawn("a-cooperative", |token| {
+            while !token.is_cancelled() {
+                std::thread::yield_now();
+            }
+        })
+        .expect("cooperative sibling should start within budget");
+    scope
+        .spawn("z-broken", |_token| panic!("intentional later-named worker panic"))
+        .expect("failing task should start within budget");
+
+    let error = scope.finish().expect_err("finish must report the worker panic");
+    assert!(error.starts_with("AIF505:"), "unexpected task failure: {error}");
+    assert_eq!(budget.snapshot().active_tasks, 0);
+}
