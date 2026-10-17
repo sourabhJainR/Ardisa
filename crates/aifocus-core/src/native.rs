@@ -389,7 +389,7 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
             NativeValue::ActivationCache { capacity, checkpoint_stride, max_bytes, retained_bytes, entries } => {
                 if *capacity==0 || *capacity>4096 || *checkpoint_stride==0 || *checkpoint_stride>4096 || *max_bytes==0 || *max_bytes>16_777_216 || entries.len()>*capacity { return Err(NativeError::InvalidProgram("invalid ActivationCache limits".into())); }
                 let mut ids=std::collections::BTreeSet::new(); let mut bytes=0usize;
-                for (step,shape,values) in entries { if *step<0 || (*step as usize)%*checkpoint_stride!=0 || !ids.insert(*step) { return Err(NativeError::InvalidProgram("invalid or duplicate ActivationCache checkpoint id".into())); } validate_tensor_parts(shape,values,MAX_TENSOR_ELEMENTS)?; if values.iter().any(|bits|!f32::from_bits(*bits).is_finite()) { return Err(NativeError::Type("ActivationCache values must be finite".into())); } bytes=bytes.checked_add(values.len().checked_mul(4).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?).and_then(|n|n.checked_add(shape.len().checked_mul(std::mem::size_of::<usize>())?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?; }
+                for (step,shape,values) in entries { if *step<0 || (*step as usize)%*checkpoint_stride!=0 || !ids.insert(*step) { return Err(NativeError::InvalidProgram("invalid or duplicate ActivationCache checkpoint id".into())); } validate_tensor_parts(shape,values,MAX_TENSOR_ELEMENTS)?; if values.iter().any(|bits|!f32::from_bits(*bits).is_finite()) { return Err(NativeError::Type("ActivationCache values must be finite".into())); } bytes=bytes.checked_add(values.len().checked_mul(4).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?).and_then(|n|n.checked_add(shape.len().checked_mul(8)?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte count overflow".into()))?; }
                 if bytes!=*retained_bytes || bytes>*max_bytes { return Err(NativeError::InvalidProgram("ActivationCache retained-byte accounting mismatch".into())); }
             }
             NativeValue::TokenizerState { vocabulary, pending, tokens, max_pending, max_tokens, unknown_id } => {
@@ -2645,7 +2645,7 @@ fn store_activation_checkpoint(cache:&mut NativeValue,step:i64,shape:Vec<usize>,
     if step_usize%*checkpoint_stride!=0{return Err(NativeError::Type("ActivationCache checkpoint id must align to checkpoint_stride".into()));}
     if entries.iter().any(|(id,_,_)|*id==step){return Err(NativeError::Type("duplicate ActivationCache checkpoint id".into()));}
     if entries.len()>=*capacity{return Err(NativeError::ResourceLimit("ActivationCache checkpoint capacity exhausted".into()));}
-    let bytes=values.len().checked_mul(4).and_then(|n|n.checked_add(shape.len().checked_mul(std::mem::size_of::<usize>())?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte accounting overflow".into()))?;
+    let bytes=values.len().checked_mul(4).and_then(|n|n.checked_add(shape.len().checked_mul(8)?)).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte accounting overflow".into()))?;
     let new_bytes=retained_bytes.checked_add(bytes).ok_or_else(||NativeError::ResourceLimit("ActivationCache byte accounting overflow".into()))?;
     if new_bytes>*max_bytes{return Err(NativeError::ResourceLimit("ActivationCache retained-byte budget exceeded".into()));}
     entries.push((step,shape,values));entries.sort_by_key(|(id,_,_)|*id);*retained_bytes=new_bytes;Ok(())
@@ -5025,4 +5025,53 @@ mod activation_cache_adversarial_hardening_tests {
         }
     }
 
+}
+
+
+#[cfg(test)]
+mod activation_cache_stable_accounting_tests {
+    use super::*;
+
+    #[test]
+    fn retained_byte_accounting_is_target_independent_and_failed_store_is_atomic() {
+        let mut too_small = NativeValue::ActivationCache {
+            capacity: 2,
+            checkpoint_stride: 1,
+            max_bytes: 23,
+            retained_bytes: 0,
+            entries: Vec::new(),
+        };
+        let before = too_small.clone();
+        let result = store_activation_checkpoint(
+            &mut too_small,
+            0,
+            vec![1, 2],
+            vec![1.0f32.to_bits(), 2.0f32.to_bits()],
+        );
+        assert!(matches!(result, Err(NativeError::ResourceLimit(message)) if message.contains("byte budget")));
+        assert_eq!(too_small, before, "a rejected checkpoint must not mutate cache state");
+
+        let checkpoint = NativeValue::ActivationCache {
+            capacity: 2,
+            checkpoint_stride: 1,
+            max_bytes: 24,
+            retained_bytes: 0,
+            entries: Vec::new(),
+        };
+        let mut cache = checkpoint;
+        store_activation_checkpoint(
+            &mut cache,
+            0,
+            vec![1, 2],
+            vec![1.0f32.to_bits(), 2.0f32.to_bits()],
+        )
+        .expect("two f32 values and two stable 64-bit dimensions cost 24 bytes");
+
+        assert!(matches!(
+            &cache,
+            NativeValue::ActivationCache { retained_bytes: 24, entries, .. } if entries.len() == 1
+        ));
+        validate_value(&cache, ExecutionLimits::default())
+            .expect("validator must use the same target-independent accounting");
+    }
 }
