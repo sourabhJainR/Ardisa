@@ -5150,6 +5150,17 @@ mod tokenizer_feed_atomicity_tests {
     }
 
     #[test]
+    fn tokenizer_feed_is_atomic_when_pending_byte_budget_is_exceeded() {
+        let mut value = state(&["é"], &[0xc3], &[], 0, 4, None);
+        let before = value.clone();
+        assert!(matches!(
+            feed_tokenizer_state(&mut value, Vec::new()),
+            Err(NativeError::ResourceLimit(message)) if message.contains("pending UTF-8 bytes")
+        ));
+        assert_eq!(value, before, "pending-byte budget failure must preserve tokenizer state");
+    }
+
+    #[test]
     fn tokenizer_feed_preserves_incomplete_utf8_suffix_until_next_chunk() {
         let mut value = state(&["é"], &[], &[], 4, 4, None);
         feed_tokenizer_state(&mut value, vec![0xc3]).expect("partial UTF-8 prefix is buffered");
