@@ -1744,12 +1744,8 @@ fn run_function(
             NativeInstr::TokenizerFeed{name} => {
                 let bytes=match stack.pop(){Some(NativeValue::List(values))=>values.into_iter().map(|v|match v{NativeValue::Int(n) if (0..=255).contains(&n)=>Ok(n as u8),_=>Err(NativeError::Type("tokenizer_feed bytes must be Int values in 0..=255".into()))}).collect::<Result<Vec<_>,_>>()?,_=>return Err(NativeError::Type("tokenizer_feed expects List<Int> bytes".into()))};
                 let value=locals.get_mut(name).ok_or_else(||NativeError::Type("TokenizerState binding not found".into()))?;
-                let NativeValue::TokenizerState{vocabulary,pending,tokens,max_pending,max_tokens,unknown_id}=value else{return Err(NativeError::Type("tokenizer_feed requires TokenizerState".into()));};
-                let mut candidate=pending.clone();candidate.extend(bytes);
-                let decoded=match std::str::from_utf8(&candidate){Ok(text)=>(text.len(),text.to_string()),Err(error)=>{if error.error_len().is_some(){return Err(NativeError::Type("tokenizer_feed rejected invalid UTF-8".into()));}(error.valid_up_to(),std::str::from_utf8(&candidate[..error.valid_up_to()]).map_err(|_|NativeError::InvalidProgram("UTF-8 valid-prefix accounting failed".into()))?.to_string())}};
-                let mut emitted=Vec::new();for ch in decoded.1.chars(){let piece=ch.to_string();let id=vocabulary.iter().position(|v|v==&piece).map(|v|v as i64).or(*unknown_id).ok_or_else(||NativeError::Type(format!("TokenizerState unknown vocabulary scalar {:?}",piece)))?;emitted.push(id);}
-                let remain=candidate[decoded.0..].to_vec();if remain.len()>*max_pending{return Err(NativeError::ResourceLimit("TokenizerState pending UTF-8 bytes exceed configured limit".into()));}if tokens.len().checked_add(emitted.len()).is_none_or(|n|n>*max_tokens){return Err(NativeError::ResourceLimit("TokenizerState token output capacity exhausted".into()));}
-                tokens.extend(emitted);*pending=remain;stack.push(NativeValue::Unit);
+                feed_tokenizer_state(value, bytes)?;
+                stack.push(NativeValue::Unit);
             }
             NativeInstr::TokenizerFlush{name} => {
                 let value=locals.get_mut(name).ok_or_else(||NativeError::Type("TokenizerState binding not found".into()))?;
@@ -2634,6 +2630,46 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "Join"=>NativeInstr::Join{name:unescape_artifact(arg)?},"Cancel"=>NativeInstr::Cancel{name:unescape_artifact(arg)?},
         _=>return Err(bad()),
     })
+}
+
+
+/// Apply one byte chunk atomically: all decoding, vocabulary, and budget checks
+/// complete before either pending bytes or emitted tokens are committed.
+fn feed_tokenizer_state(value: &mut NativeValue, bytes: Vec<u8>) -> Result<(), NativeError> {
+    let NativeValue::TokenizerState { vocabulary, pending, tokens, max_pending, max_tokens, unknown_id } = value else {
+        return Err(NativeError::Type("tokenizer_feed requires TokenizerState".into()));
+    };
+    let mut candidate = pending.clone();
+    candidate.extend(bytes);
+    let (valid_len, decoded) = match std::str::from_utf8(&candidate) {
+        Ok(text) => (text.len(), text.to_string()),
+        Err(error) => {
+            if error.error_len().is_some() {
+                return Err(NativeError::Type("tokenizer_feed rejected invalid UTF-8".into()));
+            }
+            let valid_len = error.valid_up_to();
+            let prefix = std::str::from_utf8(&candidate[..valid_len])
+                .map_err(|_| NativeError::InvalidProgram("UTF-8 valid-prefix accounting failed".into()))?;
+            (valid_len, prefix.to_string())
+        }
+    };
+    let mut emitted = Vec::new();
+    for ch in decoded.chars() {
+        let piece = ch.to_string();
+        let id = vocabulary.iter().position(|v| v == &piece).map(|v| v as i64).or(*unknown_id)
+            .ok_or_else(|| NativeError::Type(format!("TokenizerState unknown vocabulary scalar {:?}", piece)))?;
+        emitted.push(id);
+    }
+    let remain = candidate[valid_len..].to_vec();
+    if remain.len() > *max_pending {
+        return Err(NativeError::ResourceLimit("TokenizerState pending UTF-8 bytes exceed configured limit".into()));
+    }
+    if tokens.len().checked_add(emitted.len()).is_none_or(|n| n > *max_tokens) {
+        return Err(NativeError::ResourceLimit("TokenizerState token output capacity exhausted".into()));
+    }
+    tokens.extend(emitted);
+    *pending = remain;
+    Ok(())
 }
 
 
@@ -5073,5 +5109,63 @@ mod activation_cache_stable_accounting_tests {
         ));
         validate_value(&cache, ExecutionLimits::default())
             .expect("validator must use the same target-independent accounting");
+    }
+}
+
+
+#[cfg(test)]
+mod tokenizer_feed_atomicity_tests {
+    use super::*;
+
+    fn state(vocabulary: &[&str], pending: &[u8], tokens: &[i64], max_pending: usize, max_tokens: usize, unknown_id: Option<i64>) -> NativeValue {
+        NativeValue::TokenizerState {
+            vocabulary: vocabulary.iter().map(|v| (*v).to_string()).collect(),
+            pending: pending.to_vec(),
+            tokens: tokens.to_vec(),
+            max_pending,
+            max_tokens,
+            unknown_id,
+        }
+    }
+
+    #[test]
+    fn tokenizer_feed_is_atomic_when_later_scalar_is_unknown() {
+        let mut value = state(&["a"], &[], &[], 4, 8, None);
+        let before = value.clone();
+        assert!(matches!(feed_tokenizer_state(&mut value, b"ab".to_vec()), Err(NativeError::Type(message)) if message.contains("unknown vocabulary")));
+        assert_eq!(value, before, "valid prefix must not be committed when a later scalar is unknown");
+    }
+
+    #[test]
+    fn tokenizer_feed_is_atomic_for_invalid_utf8_and_output_budget() {
+        let mut invalid = state(&["a"], &[], &[], 4, 8, None);
+        let before = invalid.clone();
+        assert!(matches!(feed_tokenizer_state(&mut invalid, vec![b'a', 0xff]), Err(NativeError::Type(message)) if message.contains("invalid UTF-8")));
+        assert_eq!(invalid, before);
+
+        let mut full = state(&["a"], &[], &[0], 4, 1, None);
+        let before = full.clone();
+        assert!(matches!(feed_tokenizer_state(&mut full, b"a".to_vec()), Err(NativeError::ResourceLimit(message)) if message.contains("capacity exhausted")));
+        assert_eq!(full, before);
+    }
+
+    #[test]
+    fn tokenizer_feed_is_atomic_when_pending_byte_budget_is_exceeded() {
+        let mut value = state(&["é"], &[0xc3], &[], 0, 4, None);
+        let before = value.clone();
+        assert!(matches!(
+            feed_tokenizer_state(&mut value, Vec::new()),
+            Err(NativeError::ResourceLimit(message)) if message.contains("pending UTF-8 bytes")
+        ));
+        assert_eq!(value, before, "pending-byte budget failure must preserve tokenizer state");
+    }
+
+    #[test]
+    fn tokenizer_feed_preserves_incomplete_utf8_suffix_until_next_chunk() {
+        let mut value = state(&["é"], &[], &[], 4, 4, None);
+        feed_tokenizer_state(&mut value, vec![0xc3]).expect("partial UTF-8 prefix is buffered");
+        assert!(matches!(&value, NativeValue::TokenizerState { pending, tokens, .. } if pending == &[0xc3] && tokens.is_empty()));
+        feed_tokenizer_state(&mut value, vec![0xa9]).expect("continuation completes the scalar");
+        assert!(matches!(&value, NativeValue::TokenizerState { pending, tokens, .. } if pending.is_empty() && tokens == &[0]));
     }
 }
