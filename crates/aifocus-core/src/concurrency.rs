@@ -166,6 +166,10 @@ impl<T: Send + 'static> TaskHandle<T> {
         self.token.cancelled.store(true, Ordering::Release);
     }
 
+    pub fn is_finished(&self) -> bool {
+        self.join.as_ref().is_some_and(|handle| handle.is_finished())
+    }
+
     pub fn join(mut self) -> thread::Result<T> {
         self.join.take().expect("task already joined").join()
     }
@@ -262,20 +266,39 @@ impl StructuredScope {
     }
 
     pub fn finish(mut self) -> Result<Vec<ScopeEvent>, String> {
-        let names = self.tasks.keys().cloned().collect::<Vec<_>>();
-        for name in names {
-            let (handle, state) = self.tasks.remove(&name).expect("task disappeared");
-            let lease = self.leases.remove(&name);
-            let join_result = handle.join();
-            drop(lease);
-            if join_result.is_err() {
-                return Err(format!("AIF505: task '{name}' panicked"));
+        let mut first_failure = None;
+        while !self.tasks.is_empty() {
+            // Only join completed workers. Joining in name order can otherwise
+            // block on a cooperative sibling before discovering a later panic.
+            let completed = self.tasks.iter()
+                .filter_map(|(name, (handle, _))| handle.is_finished().then_some(name.clone()))
+                .collect::<Vec<_>>();
+            if completed.is_empty() {
+                thread::yield_now();
+                continue;
             }
-            if state == TaskState::Running {
-                self.events.push(ScopeEvent::Joined(name));
+            for name in completed {
+                let Some((handle, state)) = self.tasks.remove(&name) else {
+                    continue;
+                };
+                let lease = self.leases.remove(&name);
+                let join_result = handle.join();
+                drop(lease);
+                if join_result.is_err() {
+                    self.events.push(ScopeEvent::Failed(name.clone()));
+                    if first_failure.is_none() {
+                        first_failure = Some(format!("AIF505: task '{name}' panicked"));
+                    }
+                    self.cancel_running_siblings();
+                } else if state == TaskState::Running {
+                    self.events.push(ScopeEvent::Joined(name));
+                }
             }
         }
-        Ok(self.events.clone())
+        match first_failure {
+            Some(error) => Err(error),
+            None => Ok(self.events.clone()),
+        }
     }
 
     pub fn events(&self) -> &[ScopeEvent] {
