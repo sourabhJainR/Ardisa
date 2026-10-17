@@ -39,6 +39,20 @@ pub enum TypedConstructMember {
 /// not claim runtime values or executable VM instructions are implemented.
 fn validate_ai_type(ty: &Type, checker: &mut Checker) {
     match &ty.kind {
+        TypeKind::Named(name) if matches!(name.as_str(), "Pin" | "NonNull" | "RawPtr" | "SharedRef" | "MutableRef") => {
+            checker.error(
+                "AIF320",
+                format!("native reference/pointer type '{}' is unsupported; reference, raw-pointer, and pinning semantics fail closed", name),
+                ty.span,
+            );
+        }
+        TypeKind::Generic(name, _) if matches!(name.as_str(), "Pin" | "NonNull" | "RawPtr" | "SharedRef" | "MutableRef") => {
+            checker.error(
+                "AIF320",
+                format!("native reference/pointer type constructor '{}' is unsupported; reference, raw-pointer, and pinning semantics fail closed", name),
+                ty.span,
+            );
+        }
         TypeKind::Generic(name, _) if matches!(name.as_str(), "AttentionBlock" | "LoRAAdapter") => {
             checker.error(
                 "AIF451",
