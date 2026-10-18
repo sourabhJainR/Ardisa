@@ -95,3 +95,33 @@ fn nested_reference_like_types_fail_closed_before_native_compilation() {
         );
     }
 }
+
+#[test]
+fn partial_move_of_static_index_preserves_disjoint_sibling_access() {
+    let source = "module disjoint_partial_move\nfn f(values: List<String>) -> String\n  let first = values[0]\n  values[1]\n";
+    let module = parse(source).expect("static index move source should parse");
+    assert!(
+        ownership::infer(&module).is_ok(),
+        "moving one statically known element must not invalidate a disjoint sibling element"
+    );
+}
+
+#[test]
+fn partial_move_rejects_whole_aggregate_reuse() {
+    let source = "module aggregate_after_partial_move\nfn f(values: List<String>) -> List<String>\n  let first = values[0]\n  values\n";
+    let module = parse(source).expect("partial move source should parse");
+    assert!(
+        ownership::infer(&module).is_err(),
+        "using the aggregate after a non-Copy element was moved must be rejected"
+    );
+}
+
+#[test]
+fn dynamic_index_move_conservatively_blocks_potential_aliases() {
+    let source = "module dynamic_partial_move\nfn f(values: List<String>, index: Int) -> String\n  let first = values[index]\n  values[0]\n";
+    let module = parse(source).expect("dynamic index move source should parse");
+    assert!(
+        ownership::infer(&module).is_err(),
+        "a dynamic-index move must conservatively invalidate potentially aliased indexed places"
+    );
+}
