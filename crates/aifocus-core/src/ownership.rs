@@ -2090,4 +2090,61 @@ fn f(values: List<Int>) -> Int
     }
 
 
+
+    #[test]
+    fn borrow_regions_allow_disjoint_static_paths() {
+        let binding_id = BindingId(crate::NodeId(42));
+        let regions = [
+            BorrowRegion {
+                binding_id,
+                local: "items".into(),
+                kind: BorrowKind::Shared,
+                path: vec![PlaceProjection::Index(0)],
+                span: Span::new(10, 30),
+                scope_depth: 0,
+            },
+            BorrowRegion {
+                binding_id,
+                local: "items".into(),
+                kind: BorrowKind::Mutable,
+                path: vec![PlaceProjection::Index(1)],
+                span: Span::new(15, 25),
+                scope_depth: 1,
+            },
+        ];
+        assert!(
+            validate_borrow_regions(&regions).is_ok(),
+            "non-overlapping static paths must not be rejected solely because their source spans overlap"
+        );
+    }
+
+    #[test]
+    fn borrow_regions_reject_dynamic_alias_and_same_path_conflicts() {
+        let binding_id = BindingId(crate::NodeId(43));
+        let region = |kind, path, span| BorrowRegion {
+            binding_id,
+            local: "items".into(),
+            kind,
+            path,
+            span,
+            scope_depth: 0,
+        };
+        let same_path = [
+            region(BorrowKind::Shared, vec![PlaceProjection::Index(0)], Span::new(10, 30)),
+            region(BorrowKind::Mutable, vec![PlaceProjection::Index(0)], Span::new(15, 25)),
+        ];
+        assert_eq!(
+            validate_borrow_regions(&same_path),
+            Err("overlapping borrow regions conflict")
+        );
+        let dynamic_alias = [
+            region(BorrowKind::Shared, vec![PlaceProjection::Index(0)], Span::new(10, 30)),
+            region(BorrowKind::Mutable, vec![PlaceProjection::DynamicIndex], Span::new(15, 25)),
+        ];
+        assert_eq!(
+            validate_borrow_regions(&dynamic_alias),
+            Err("overlapping borrow regions conflict"),
+            "unknown indices must conservatively alias concrete indices"
+        );
+    }
 }
