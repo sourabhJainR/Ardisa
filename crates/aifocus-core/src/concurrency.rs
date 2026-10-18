@@ -415,6 +415,38 @@ fn main()
     }
 
     #[test]
+    fn structured_scope_drop_cancels_joins_and_releases_budget_on_early_exit() {
+        use crate::resource_guard::{ResourceBudget, ResourceLimits};
+
+        let budget = ResourceBudget::new(ResourceLimits {
+            max_tasks: 1,
+            max_reserved_bytes: 0,
+            max_operations: 0,
+        });
+
+        fn return_early(budget: ResourceBudget) {
+            let mut scope = StructuredScope::with_budget(budget);
+            scope
+                .spawn("worker", |token| {
+                    while !token.is_cancelled() {
+                        thread::yield_now();
+                    }
+                })
+                .unwrap();
+            // Returning without finish must still cancel and join the worker via Drop.
+        }
+
+        return_early(budget.clone());
+        assert_eq!(budget.snapshot().active_tasks, 0);
+
+        // The released lease must make the shared task budget reusable.
+        let mut next = StructuredScope::with_budget(budget.clone());
+        next.spawn("next", |_token| {}).unwrap();
+        next.finish().unwrap();
+        assert_eq!(budget.snapshot().active_tasks, 0);
+    }
+
+    #[test]
     fn structured_scope_requires_explicit_terminal_state() {
         let mut scope = StructuredScope::new();
         scope.spawn("worker", |_token| {}).unwrap();
