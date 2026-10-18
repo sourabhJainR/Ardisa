@@ -267,6 +267,7 @@ impl StructuredScope {
 
     pub fn finish(mut self) -> Result<Vec<ScopeEvent>, String> {
         let mut first_failure = None;
+        let mut joined_successfully = Vec::new();
         while !self.tasks.is_empty() {
             // Only join completed workers. Joining in name order can otherwise
             // block on a cooperative sibling before discovering a later panic.
@@ -291,10 +292,14 @@ impl StructuredScope {
                     }
                     self.cancel_running_siblings();
                 } else if state == TaskState::Running {
-                    self.events.push(ScopeEvent::Joined(name));
+                    // Worker completion order is scheduler-dependent. Defer successful
+                    // join events until every worker is drained, then emit them by name.
+                    joined_successfully.push(name);
                 }
             }
         }
+        joined_successfully.sort();
+        self.events.extend(joined_successfully.into_iter().map(ScopeEvent::Joined));
         match first_failure {
             Some(error) => Err(error),
             None => Ok(self.events.clone()),
