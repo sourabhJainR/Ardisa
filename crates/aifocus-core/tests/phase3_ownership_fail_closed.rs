@@ -79,7 +79,7 @@ fn nested_reference_like_types_fail_closed_before_native_compilation() {
         "Option<List<Pin<String>>>",
     ] {
         let source = format!(
-            "module nested_reference_rejected\\nfn identity(value: {ty}) -> Int\\n  0\\n"
+            "module nested_reference_rejected\nfn identity(value: {ty}) -> Int\n  0\n"
         );
         let module = parse(&source)
             .unwrap_or_else(|error| panic!("nested type {ty:?} should parse for semantic rejection: {error:?}"));
