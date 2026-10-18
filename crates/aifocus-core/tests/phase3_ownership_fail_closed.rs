@@ -69,3 +69,29 @@ fn pin_nonnull_and_reference_wrapper_types_fail_closed_semantically() {
         );
     }
 }
+
+
+#[test]
+fn nested_reference_like_types_fail_closed_before_native_compilation() {
+    for ty in [
+        "Result<List<SharedRef<String>>, String>",
+        "List<Result<Int, MutableRef<String>>>",
+        "Option<List<Pin<String>>>",
+    ] {
+        let source = format!(
+            "module nested_reference_rejected\\nfn identity(value: {ty}) -> Int\\n  0\\n"
+        );
+        let module = parse(&source)
+            .unwrap_or_else(|error| panic!("nested type {ty:?} should parse for semantic rejection: {error:?}"));
+        let errors = sema::check(&module)
+            .expect_err("reference-like types must be rejected even when nested in supported wrappers");
+        assert!(
+            errors.iter().any(|error| error.code == "AIF320"),
+            "nested reference-like type {ty:?} must report AIF320: {errors:?}"
+        );
+        assert!(
+            ardisa_core::compile_source(&source).is_err(),
+            "a rejected nested reference-like type must never produce a native artifact"
+        );
+    }
+}
