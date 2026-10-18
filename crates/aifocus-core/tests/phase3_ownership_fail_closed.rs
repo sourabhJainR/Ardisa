@@ -146,3 +146,13 @@ fn move_in_nested_scope_does_not_restore_outer_binding() {
         "leaving a lexical scope must not resurrect an outer binding moved inside it"
     );
 }
+
+#[test]
+fn reinitialization_after_move_restores_binding_availability() {
+    let source = "module reinitialize_after_move\nfn f(value: String) -> String\n  let consumed = value\n  set value = \"replacement\"\n  value\n";
+    let module = parse(source).expect("reinitialization source should parse");
+    assert!(
+        ownership::infer(&module).is_ok(),
+        "a moved binding should become available again after an explicit valid reinitialization"
+    );
+}
