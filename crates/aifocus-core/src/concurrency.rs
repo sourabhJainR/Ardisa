@@ -266,7 +266,7 @@ impl StructuredScope {
     }
 
     pub fn finish(mut self) -> Result<Vec<ScopeEvent>, String> {
-        let mut first_failure = None;
+        let mut failed_tasks = Vec::new();
         let mut joined_successfully = Vec::new();
         while !self.tasks.is_empty() {
             // Only join completed workers. Joining in name order can otherwise
@@ -287,9 +287,7 @@ impl StructuredScope {
                 drop(lease);
                 if join_result.is_err() {
                     self.events.push(ScopeEvent::Failed(name.clone()));
-                    if first_failure.is_none() {
-                        first_failure = Some(format!("AIF505: task '{name}' panicked"));
-                    }
+                    failed_tasks.push(name);
                     self.cancel_running_siblings();
                 } else if state == TaskState::Running {
                     // Worker completion order is scheduler-dependent. Defer successful
@@ -300,8 +298,12 @@ impl StructuredScope {
         }
         joined_successfully.sort();
         self.events.extend(joined_successfully.into_iter().map(ScopeEvent::Joined));
-        match first_failure {
-            Some(error) => Err(error),
+        // Worker completion order is scheduler-dependent. Choose the first
+        // failing task by stable name order so concurrent panics do not change
+        // the externally observed failure diagnostic.
+        failed_tasks.sort();
+        match failed_tasks.into_iter().next() {
+            Some(name) => Err(format!("AIF505: task '{name}' panicked")),
             None => Ok(self.events.clone()),
         }
     }
