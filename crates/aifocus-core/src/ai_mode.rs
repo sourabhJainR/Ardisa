@@ -111,6 +111,89 @@ pub enum PolicyViolation {
     MissingSignature,
 }
 
+/// Runtime state machine for an explicitly declared Phase transition graph.
+///
+/// This is a runtime API only: source-level `phase` declarations are still
+/// rejected by the executable compiler until they are encoded in ARDISA-EXEC-V1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseMachine {
+    current: String,
+    transitions: BTreeSet<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PhaseMachineError {
+    EmptyState,
+    EmptyTransitions,
+    SelfTransition(String),
+    DuplicateTransition { from: String, to: String },
+    InitialStateUnknown(String),
+    InvalidTransition { from: String, to: String },
+}
+
+impl PhaseMachine {
+    /// Build a machine from an initial state and a finite set of allowed edges.
+    /// Validation is completed before a machine is returned.
+    pub fn new(
+        initial: impl Into<String>,
+        transitions: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<Self, PhaseMachineError> {
+        let initial = initial.into();
+        if initial.trim().is_empty() {
+            return Err(PhaseMachineError::EmptyState);
+        }
+
+        let mut edges = BTreeSet::new();
+        let mut states = BTreeSet::new();
+        for (from, to) in transitions {
+            if from.trim().is_empty() || to.trim().is_empty() {
+                return Err(PhaseMachineError::EmptyState);
+            }
+            if from == to {
+                return Err(PhaseMachineError::SelfTransition(from));
+            }
+            if !edges.insert((from.clone(), to.clone())) {
+                return Err(PhaseMachineError::DuplicateTransition { from, to });
+            }
+            states.insert(from);
+            states.insert(to);
+        }
+
+        if edges.is_empty() {
+            return Err(PhaseMachineError::EmptyTransitions);
+        }
+        if !states.contains(&initial) {
+            return Err(PhaseMachineError::InitialStateUnknown(initial));
+        }
+
+        Ok(Self { current: initial, transitions: edges })
+    }
+
+    pub fn current(&self) -> &str {
+        &self.current
+    }
+
+    pub fn can_transition_to(&self, next: &str) -> bool {
+        self.transitions.contains(&(self.current.clone(), next.to_string()))
+    }
+
+    /// Apply only a declared outgoing edge. On rejection, current state is
+    /// unchanged, so failed transitions cannot partially mutate the machine.
+    pub fn transition(&mut self, next: &str) -> Result<(), PhaseMachineError> {
+        if next.trim().is_empty() {
+            return Err(PhaseMachineError::EmptyState);
+        }
+        if !self.can_transition_to(next) {
+            return Err(PhaseMachineError::InvalidTransition {
+                from: self.current.clone(),
+                to: next.to_string(),
+            });
+        }
+        self.current = next.to_string();
+        Ok(())
+    }
+}
+
 impl AiModePolicy {
     pub fn validate_proofs(
         &self,
@@ -241,5 +324,59 @@ mod tests {
         let mut policy = policy();
         policy.trace.required = false;
         assert!(policy.validate_trace(false, false).is_ok());
+    }
+
+    #[test]
+    fn phase_machine_accepts_only_declared_edges() {
+        let mut machine = PhaseMachine::new(
+            "draft",
+            vec![
+                ("draft".to_string(), "review".to_string()),
+                ("review".to_string(), "release".to_string()),
+            ],
+        ).expect("valid graph");
+
+        assert!(machine.can_transition_to("review"));
+        machine.transition("review").expect("declared edge");
+        assert_eq!(machine.current(), "review");
+
+        assert_eq!(
+            machine.transition("release"),
+            Ok(()),
+            "review -> release is declared"
+        );
+        assert_eq!(machine.current(), "release");
+        assert_eq!(
+            machine.transition("draft"),
+            Err(PhaseMachineError::InvalidTransition {
+                from: "release".to_string(),
+                to: "draft".to_string(),
+            })
+        );
+        assert_eq!(machine.current(), "release", "rejected transitions must not mutate state");
+    }
+
+    #[test]
+    fn phase_machine_rejects_invalid_graphs_before_runtime() {
+        assert_eq!(
+            PhaseMachine::new("", vec![("a".to_string(), "b".to_string())]),
+            Err(PhaseMachineError::EmptyState)
+        );
+        assert_eq!(
+            PhaseMachine::new("a", Vec::new()),
+            Err(PhaseMachineError::EmptyTransitions)
+        );
+        assert_eq!(
+            PhaseMachine::new("a", vec![("a".to_string(), "a".to_string())]),
+            Err(PhaseMachineError::SelfTransition("a".to_string()))
+        );
+        assert_eq!(
+            PhaseMachine::new("a", vec![("a".to_string(), "b".to_string()), ("a".to_string(), "b".to_string())]),
+            Err(PhaseMachineError::DuplicateTransition { from: "a".to_string(), to: "b".to_string() })
+        );
+        assert_eq!(
+            PhaseMachine::new("unknown", vec![("a".to_string(), "b".to_string())]),
+            Err(PhaseMachineError::InitialStateUnknown("unknown".to_string()))
+        );
     }
 }
