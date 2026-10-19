@@ -847,13 +847,8 @@ impl Checker {
                 // String arguments as implicit shared borrows lets callers reuse an owned
                 // value after transferring it to a callee. Copy types remain Copy in Name
                 // checking, while owned values must move at the call boundary.
-                for (arg_index, arg) in args.iter().enumerate() {
-                    let mode = if function.params.get(arg_index).is_some() {
-                        AccessMode::Move
-                    } else {
-                        AccessMode::Move
-                    };
-                    self.check_expr_in_region(arg, locals, mode, expr.span);
+                for arg in args {
+                    self.check_expr_in_region(arg, locals, AccessMode::Move, expr.span);
                     if self.terminated_exprs.contains(&arg.id) {
                         self.terminated_exprs.insert(expr.id);
                         return function.return_type;
