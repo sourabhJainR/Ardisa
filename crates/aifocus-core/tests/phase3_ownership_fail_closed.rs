@@ -156,3 +156,26 @@ fn reinitialization_after_move_restores_binding_availability() {
         "a moved binding should become available again after an explicit valid reinitialization"
     );
 }
+
+#[test]
+fn reinitialization_on_all_reachable_branches_restores_availability() {
+    let source = "module branch_reinitialize_all\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  if flag\n    set value = \"left\"\n  else\n    set value = \"right\"\n  value\n";
+    let module = parse(source).expect("branch reinitialization source should parse");
+    assert!(
+        ownership::infer(&module).is_ok(),
+        "reinitializing the moved binding on every reachable branch must restore availability after the join"
+    );
+}
+
+#[test]
+fn reinitialization_on_only_one_branch_remains_maybe_moved() {
+    let source = "module branch_reinitialize_partial\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  if flag\n    set value = \"replacement\"\n  value\n";
+    let module = parse(source).expect("partial branch reinitialization source should parse");
+    let errors = ownership::infer(&module)
+        .expect_err("the implicit else path retains the moved state");
+    assert!(
+        errors.iter().any(|error| error.code == "AIF400"),
+        "a binding reinitialized on only one reachable branch must remain maybe-moved: {errors:?}"
+    );
+}
+
