@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Fail closed unless evidence proves native Stage 0 -> 3 compiler self-hosting.
 
-A host-compiler rebuild of a probe can demonstrate deterministic artifact
-encoding, but it is not evidence that the Ardisa compiler compiles itself.
+Host-CLI replay evidence is checked for byte/hash consistency but never promoted
+to compiler self-hosting. A self-hosting claim requires a separate native-only
+stage lineage and independent corpus evidence.
 """
+import hashlib
 import pathlib
 import sys
 
@@ -37,8 +39,53 @@ def read_evidence():
     return result, []
 
 
+def _artifact_path(value):
+    if not value:
+        return None
+    root = ROOT.resolve()
+    path = (root / value).resolve()
+    if path != root and root not in path.parents:
+        return None
+    return path
+
+
+def validate_probe_reproducibility(data):
+    """Validate probe output hashes without confusing replay with self-hosting."""
+    keys = ("probe_stage2", "probe_stage3", "probe_stage2_sha256", "probe_stage3_sha256")
+    present = [key in data for key in keys]
+    if not any(present):
+        if data.get("probe_stage2_stage3_byte_identical", "").lower() == "true":
+            return ["probe byte-identity claim is missing artifact paths and SHA-256 values"]
+        return []
+    missing = [key for key in keys if not data.get(key)]
+    if missing:
+        return ["probe reproducibility evidence missing: " + ", ".join(missing)]
+    if data.get("probe_replay_mode") != "host_compiler_deterministic_rebuild":
+        return ["probe replay mode is missing or unrecognized"]
+    paths = [_artifact_path(data["probe_stage2"]), _artifact_path(data["probe_stage3"])]
+    if any(path is None for path in paths):
+        return ["probe artifact paths must remain inside the checked-out workspace"]
+    errors = []
+    for key, path in zip(("probe_stage2_sha256", "probe_stage3_sha256"), paths):
+        if not path.is_file():
+            errors.append(f"probe artifact is missing: {path.relative_to(ROOT)}")
+            continue
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != data[key].lower():
+            errors.append(f"{key} does not match the downloaded artifact bytes")
+    if all(path.is_file() for path in paths):
+        if paths[0].read_bytes() != paths[1].read_bytes():
+            errors.append("probe Stage 2 and Stage 3 artifacts are not byte-identical")
+        if data.get("probe_stage2_stage3_byte_identical", "").lower() != "true":
+            errors.append("probe byte identity must be explicitly recorded")
+    return errors
+
+
 def validate():
     data, errors = read_evidence()
+    if errors:
+        return errors
+    errors.extend(validate_probe_reproducibility(data))
     if errors:
         return errors
     ready = data.get("self_hosting_ready", "false").lower() == "true"
