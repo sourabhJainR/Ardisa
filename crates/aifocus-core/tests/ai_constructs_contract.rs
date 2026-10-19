@@ -1,0 +1,43 @@
+use ardisa_core::{parse, pipeline::compile_source, sema, typed_ir};
+
+#[test]
+fn valid_ai_constructs_reach_typed_metadata_but_not_executable_codegen() {
+    let source = "module ai_contract\ntrace Audit\n  signature: hmac-sha256\ncell State\n  invariant: non-empty\nvault IO\n  capabilities: read write\n  denies: delete\nproof Review\n  requires: tests-pass\n  ensures: reviewed\n  on_unknown: reject\n  required: true\nphase Delivery\n  draft -> review\n  review -> release\nfn main() -> Int\n  0\n";
+    let module = parse(source).expect("construct syntax should parse");
+    let constructs = sema::analyze_constructs(&module)
+        .expect("well-formed declarations should produce typed semantic metadata");
+    assert_eq!(constructs.len(), 5);
+    assert_eq!(typed_ir::lower_constructs(&module).expect("construct metadata should lower").len(), 5);
+
+    let error = compile_source(source)
+        .expect_err("construct declarations must not be silently ignored by executable codegen");
+    let diagnostics = format!("{error:?}");
+    assert!(diagnostics.contains("AIF610"), "executable path must remain fail-closed until runtime semantics exist: {diagnostics}");
+}
+
+#[test]
+fn malformed_ai_constructs_have_stable_semantic_diagnostics() {
+    let cases = [
+        ("module duplicate_construct\ntrace Audit\n  signature: hmac\ntrace Audit\n  signature: hmac\n", "AIF611"),
+        ("module missing_signature\ntrace Audit\n  ignored: value\n", "AIF617"),
+        ("module invalid_proof\nproof Review\n  requires: tests-pass\n  ensures: reviewed\n  on_unknown: accept\n  required: true\n", "AIF618"),
+        ("module empty_phase\nphase Delivery\n  draft -> draft\n", "AIF615"),
+        ("module duplicate_transition\nphase Delivery\n  draft -> review\n  draft -> review\n", "AIF616"),
+    ];
+    for (source, code) in cases {
+        let module = parse(source).expect("malformed declarations should still parse for semantic diagnostics");
+        let errors = sema::analyze_constructs(&module).expect_err("invalid declaration must fail semantic validation");
+        assert!(errors.iter().any(|error| error.code == code), "expected {code}, got {errors:?}");
+    }
+}
+
+#[test]
+fn typed_construct_encoding_is_deterministic_and_versioned() {
+    let source = "module deterministic_construct\ntrace Audit\n  signature: hmac-sha256\nfn main() -> Int\n  0\n";
+    let module = parse(source).expect("source should parse");
+    let constructs = typed_ir::lower_constructs(&module).expect("typed metadata should lower");
+    let first = typed_ir::encode_construct_metadata(&constructs).expect("metadata should encode");
+    let second = typed_ir::encode_construct_metadata(&constructs).expect("metadata should encode twice");
+    assert_eq!(first, second);
+    assert!(first.starts_with("ARDISA-CONSTRUCT-META-V1\n"));
+}
