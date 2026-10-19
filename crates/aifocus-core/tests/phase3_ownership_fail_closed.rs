@@ -180,6 +180,29 @@ fn reinitialization_on_only_one_branch_remains_maybe_moved() {
 }
 
 
+
+#[test]
+fn owned_string_argument_moves_at_user_function_call_boundary() {
+    let source = "module owned_call_argument\nfn consume(value: String) -> Int\n  len(value)\nfn caller() -> String\n  let value = \"original\"\n  consume(value)\n  value\n";
+    let module = parse(source).expect("owned call argument source should parse");
+    let errors = ownership::infer(&module)
+        .expect_err("passing an owned String by value must move it at the call boundary");
+    assert!(
+        errors.iter().any(|error| error.code == "AIF400"),
+        "the caller must not reuse an owned String after passing it by value: {errors:?}"
+    );
+}
+
+#[test]
+fn copy_scalar_argument_remains_available_after_user_function_call() {
+    let source = "module copy_call_argument\nfn identity(value: Int) -> Int\n  value\nfn caller() -> Int\n  let value = 7\n  identity(value)\n  value\n";
+    let module = parse(source).expect("Copy argument source should parse");
+    assert!(
+        ownership::infer(&module).is_ok(),
+        "Copy scalar arguments must remain available after a by-value call"
+    );
+}
+
 #[test]
 fn returning_branch_does_not_poison_reachable_reinitialization_join() {
     let source = "module return_branch_join\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  if flag\n    return \"early\"\n  else\n    set value = \"restored\"\n  value\n";
