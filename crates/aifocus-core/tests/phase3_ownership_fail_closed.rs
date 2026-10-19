@@ -179,3 +179,25 @@ fn reinitialization_on_only_one_branch_remains_maybe_moved() {
     );
 }
 
+
+#[test]
+fn returning_branch_does_not_poison_reachable_reinitialization_join() {
+    let source = "module return_branch_join\nfn f(flag: Bool, value: String) -> String\n  let consumed = value\n  if flag\n    return \"early\"\n  else\n    set value = \"restored\"\n  value\n";
+    let module = parse(source).expect("early-return branch source should parse");
+    assert!(
+        ownership::infer(&module).is_ok(),
+        "the returning branch must not make the surviving, reinitialized branch appear maybe-moved"
+    );
+}
+
+#[test]
+fn returning_branch_does_not_hide_move_on_surviving_path() {
+    let source = "module return_branch_move\nfn f(flag: Bool, value: String) -> String\n  if flag\n    return \"early\"\n  else\n    let consumed = value\n  value\n";
+    let module = parse(source).expect("surviving-path move source should parse");
+    let errors = ownership::infer(&module)
+        .expect_err("the non-returning path moves value and reaches the final use");
+    assert!(
+        errors.iter().any(|error| error.code == "AIF400"),
+        "the reachable moved path must still be rejected after the other branch returns: {errors:?}"
+    );
+}
