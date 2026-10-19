@@ -224,10 +224,11 @@
           "crates/aifocus-core/tests/failure_boundaries.rs"
         ],
         "adversarial_tests": [
-          "crates/aifocus-core/tests/failure_boundaries.rs"
+          "crates/aifocus-core/tests/failure_boundaries.rs",
+          "docs/FAILURE_BOUNDARY_CONTRACT.md"
         ]
       },
-      "limitations": "The implemented subset returns explicit NativeError values, rejects malformed ARDISA-EXEC-V1 artifacts, and captures host worker panics at join as AIF505. Rust panic payloads, unwind/abort profiles, user-defined Drop glue, panic safety, foreign ABI unwinding, and deterministic cleanup of user-defined resources remain unsupported or unproven; see docs/language/failure-boundary-contract.md.",
+      "limitations": "The implemented subset returns explicit NativeError values, rejects malformed ARDISA-EXEC-V1 artifacts, and captures host worker panics at join as AIF505. Rust panic payloads, unwind/abort profiles, user-defined Drop glue, panic safety, foreign ABI unwinding, and deterministic cleanup of user-defined resources remain unsupported or unproven; see docs/FAILURE_BOUNDARY_CONTRACT.md.",
       "tracking": "https://github.com/sourabhJainR/Ardisa/issues/172"
     },
     {
@@ -263,11 +264,74 @@
           "crates/aifocus-core/src/sema.rs"
         ],
         "adversarial_tests": [
-          "crates/aifocus-core/tests/phase3_ownership_fail_closed.rs"
+          "crates/aifocus-core/tests/phase3_ownership_fail_closed.rs",
+          "crates/aifocus-core/tests/failure_boundaries.rs"
         ]
       },
-      "limitations": "No native reference or pointer form is supported. &T, &mut T and *T syntax fail parsing; Pin, NonNull, RawPtr, SharedRef and MutableRef type spellings fail semantic validation with AIF320. Stable ownership binding/place analysis does not prove reference lifetimes, provenance, reborrowing, pinning or Rust aliasing soundness; see docs/language/reference-contract.md and issue #158.",
+      "limitations": "No native reference or pointer form is supported. &T, &mut T and *T syntax fail parsing; Pin, NonNull, RawPtr, SharedRef and MutableRef type spellings fail semantic validation with AIF320. Stable ownership binding/place analysis does not prove reference lifetimes, provenance, reborrowing, pinning or Rust aliasing soundness; see docs/NATIVE_REFERENCE_AND_ALIASING.md and issue #158.",
       "tracking": "https://github.com/sourabhJainR/Ardisa/issues/177"
+    },
+    {
+      "id": "ai-native-source-constructs",
+      "label": "Trace, Cell, Vault, Proof, Phase and AI-native source-level types",
+      "status": "partial",
+      "evidence": {
+        "source_syntax": [
+          "crates/aifocus-core/src/ast.rs",
+          "crates/aifocus-core/src/lib.rs"
+        ],
+        "semantic_checks": [
+          "crates/aifocus-core/src/sema.rs"
+        ],
+        "typed_ir": [
+          "crates/aifocus-core/src/typed_ir.rs"
+        ],
+        "native_encoding": [
+          "crates/aifocus-core/src/typed_ir.rs"
+        ],
+        "runtime_behavior": [
+          "crates/aifocus-core/src/pipeline.rs"
+        ],
+        "positive_tests": [
+          "crates/aifocus-core/tests/ai_constructs_contract.rs"
+        ],
+        "adversarial_tests": [
+          "crates/aifocus-core/tests/ai_constructs_contract.rs"
+        ],
+        "differential_holdout": [
+          ".github/workflows/ci.yml"
+        ]
+      },
+      "limitations": "Phase-A source/AST parsing, structural semantic validation, typed metadata lowering, and deterministic non-executable metadata encoding exist. compile_source still rejects declarations with AIF610 because the metadata is not encoded as ARDISA-EXEC-V1 executable behavior and no runtime enforcement exists for Trace signing/redaction, Cell invariants, Vault effect boundaries, Proof lifecycle, or Phase transition operations. The Rust AI runtime APIs are not general source-language support. Do not promote until per-feature source-to-runtime execution, mutation, differential/holdout, and bootstrap evidence exists.",
+      "tracking": "https://github.com/sourabhJainR/Ardisa/issues/132"
+    },
+    {
+      "id": "native-self-hosting-stage-0-to-3",
+      "label": "Native Ardisa compiler self-hosting and reproducibility",
+      "status": "partial",
+      "evidence": {
+        "source_syntax": [
+          "bootstrap/compiler.ardisa"
+        ],
+        "native_encoding": [
+          "bootstrap/native_codegen.ardisa"
+        ],
+        "runtime_behavior": [
+          "bootstrap/verify_self_hosting.sh"
+        ],
+        "positive_tests": [
+          "tests/test_self_hosting_evidence.py"
+        ],
+        "adversarial_tests": [
+          "scripts/validate_self_hosting_evidence.py",
+          "tests/test_self_hosting_evidence.py"
+        ],
+        "differential_holdout": [
+          ".github/workflows/ci.yml"
+        ]
+      },
+      "limitations": "The current bootstrap script compiles the same probe repeatedly through the host CLI and checks deterministic Stage-2/Stage-3 output. This is host-compiler replay, not proof that Stage 0 compiled Stage 1, Stage 1 compiled Stage 2, and Stage 2 compiled Stage 3. The evidence validator deliberately keeps self_hosting_ready=false until native-only Stage 0→3 artifacts, byte identity, independent positive/negative/differential/holdout corpora, and forbidden-fallback evidence are supplied.",
+      "tracking": "https://github.com/sourabhJainR/Ardisa/issues/176"
     }
   ]
 }
