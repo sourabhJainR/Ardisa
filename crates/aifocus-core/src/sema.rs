@@ -343,6 +343,38 @@ fn validate_construct_declarations(module: &Module, checker: &mut Checker) {
             }
         }
 
+        // Vault capabilities are declarative allow/deny sets. Validate the
+        // sets now so ambiguous policy cannot be mistaken for enforcement later.
+        // This is compile-time structural validation only; no OS sandbox is implied.
+        if declaration.kind == ConstructKind::Vault {
+            let mut allowed_capabilities = HashSet::new();
+            let mut denied_capabilities = HashSet::new();
+            for member in &declaration.members {
+                let ConstructMember::Clause { name, value, span } = member else { continue; };
+                let target = match name.as_str() {
+                    "capabilities" => &mut allowed_capabilities,
+                    "denies" => &mut denied_capabilities,
+                    _ => continue,
+                };
+                for capability in value.split(|ch: char| ch.is_whitespace() || ch == ',').filter(|part| !part.is_empty()) {
+                    if !target.insert(capability.to_string()) {
+                        checker.error(
+                            "AIF619",
+                            format!("duplicate capability '{}' in Vault '{}' clause '{}'", capability, declaration.name, name),
+                            *span,
+                        );
+                    }
+                }
+            }
+            for capability in allowed_capabilities.intersection(&denied_capabilities) {
+                checker.error(
+                    "AIF619",
+                    format!("Vault '{}' both allows and denies capability '{}'", declaration.name, capability),
+                    declaration.span,
+                );
+            }
+        }
+
         let required_members: &[&str] = match declaration.kind {
             ConstructKind::Trace => &["signature"],
             ConstructKind::Cell => &["invariant"],
