@@ -293,3 +293,22 @@ fn native_artifact_mutation_corpus_rejects_corrupted_framing() {
         );
     }
 }
+
+
+#[test]
+fn simultaneous_task_panics_choose_a_stable_failure_by_name() {
+    let budget = ResourceBudget::new(ResourceLimits {
+        max_tasks: 2,
+        max_reserved_bytes: 0,
+        max_operations: 0,
+    });
+    let mut scope = StructuredScope::with_budget(budget.clone());
+    scope.spawn("zeta-failure", |_token| panic!("zeta failure"))
+        .expect("zeta task should start");
+    scope.spawn("alpha-failure", |_token| panic!("alpha failure"))
+        .expect("alpha task should start");
+
+    let error = scope.finish().expect_err("worker failures must propagate");
+    assert_eq!(error, "AIF505: task 'alpha-failure' panicked");
+    assert_eq!(budget.snapshot().active_tasks, 0);
+}
