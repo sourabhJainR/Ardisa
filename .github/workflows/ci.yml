@@ -71,4 +71,13 @@ jobs:
       - run: |
           test -f bootstrap/compiler.ardisa
           grep -q 'ARDISA-EXEC-V1' bootstrap/native_codegen.ardisa
-          echo "Bootstrap source and native artifact contract present; compiler self-hosting remains fail-closed."
+          echo "Bootstrap source and native artifact contract present."
+      - name: Download bootstrap probe evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: ardisa-bootstrap-evidence
+          path: bootstrap/evidence
+      - name: Test self-hosting evidence promotion rules
+        run: python3 -m unittest tests/test_self_hosting_evidence.py
+      - name: Validate native Stage 0-to-3 evidence without promoting host replay
+        run: python3 scripts/validate_self_hosting_evidence.py
