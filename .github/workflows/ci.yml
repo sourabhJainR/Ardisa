@@ -46,7 +46,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ardisa-bootstrap-evidence
-          path: bootstrap/evidence/
+          path: |
+            bootstrap/evidence/
+            target/bootstrap-probe-stage2.aexe
+            target/bootstrap-probe-stage3.aexe
           if-no-files-found: ignore
 
   generated:
@@ -76,7 +79,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ardisa-bootstrap-evidence
-          path: bootstrap/evidence
+          path: .
       - name: Test self-hosting evidence promotion rules
         run: python3 -m unittest tests/test_self_hosting_evidence.py
       - name: Validate native Stage 0-to-3 evidence without promoting host replay
