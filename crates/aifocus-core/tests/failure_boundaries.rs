@@ -133,3 +133,64 @@ fn finish_discovers_later_named_panic_before_joining_cooperative_sibling() {
     assert!(error.starts_with("AIF505:"), "unexpected task failure: {error}");
     assert_eq!(budget.snapshot().active_tasks, 0);
 }
+
+
+#[test]
+fn malformed_jump_target_is_rejected_before_execution() {
+    use std::collections::BTreeMap;
+
+    let program = native::NativeProgram {
+        functions: BTreeMap::from([(
+            "main".to_string(),
+            native::NativeFunction {
+                params: Vec::new(),
+                code: vec![
+                    native::NativeInstr::PushInt(99),
+                    native::NativeInstr::Jump(usize::MAX),
+                    native::NativeInstr::Return,
+                ],
+            },
+        )]),
+    };
+
+    let error = native::ValidatedNativeProgram::try_new(program)
+        .expect_err("out-of-range control flow must be rejected before VM execution");
+    assert!(
+        matches!(error, native::NativeError::InvalidProgram(_)),
+        "malformed control flow should have a stable invalid-program category: {error:?}"
+    );
+}
+
+#[test]
+fn instruction_budget_failure_is_deterministic_across_fresh_runs() {
+    use std::collections::BTreeMap;
+
+    let program = native::NativeProgram {
+        functions: BTreeMap::from([(
+            "main".to_string(),
+            native::NativeFunction {
+                params: Vec::new(),
+                code: vec![
+                    native::NativeInstr::PushInt(1),
+                    native::NativeInstr::PushInt(2),
+                    native::NativeInstr::Add,
+                    native::NativeInstr::Return,
+                ],
+            },
+        )]),
+    };
+    let limits = native::ExecutionLimits {
+        max_instructions: 2,
+        ..native::ExecutionLimits::default()
+    };
+
+    let first = native::run_program_with_limits(&program, "main", &[], limits)
+        .expect_err("instruction exhaustion must fail explicitly");
+    let second = native::run_program_with_limits(&program, "main", &[], limits)
+        .expect_err("a fresh execution must enforce the same limit");
+    assert_eq!(first, second, "resource-limit failure must be deterministic");
+    assert!(
+        matches!(first, native::NativeError::ResourceLimit(_)),
+        "instruction exhaustion must remain an explicit resource failure: {first:?}"
+    );
+}
