@@ -255,7 +255,8 @@ fn validate_construct_declarations(module: &Module, checker: &mut Checker) {
         let mut transitions = HashSet::new();
         for member in &declaration.members {
             match member {
-                ConstructMember::Field { name, span, .. } => {
+                ConstructMember::Field { name, ty, span } => {
+                    validate_ai_type(ty, checker);
                     if declaration.kind == ConstructKind::Phase {
                         checker.error(
                             "AIF612",
