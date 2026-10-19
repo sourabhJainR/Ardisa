@@ -222,3 +222,93 @@ fn decoded_artifact_with_invalid_jump_is_rejected_before_any_instruction_runs() 
         "invalid artifact control flow must fail as InvalidProgram: {error:?}"
     );
 }
+
+
+#[test]
+fn repeated_worker_failures_have_stable_boundary_and_cleanup() {
+    // Repeat with fresh scopes to ensure the boundary reports a deterministic
+    // error category and releases task leases on every path.
+    for _ in 0..3 {
+        let budget = ResourceBudget::new(ResourceLimits {
+            max_tasks: 1,
+            max_reserved_bytes: 0,
+            max_operations: 0,
+        });
+        let mut scope = StructuredScope::with_budget(budget.clone());
+        scope
+            .spawn("deterministic-failure", |_token| {
+                panic!("repeatable boundary failure");
+            })
+            .expect("task should start within budget");
+        let error = scope.finish().expect_err("worker panic must propagate as a task error");
+        assert_eq!(error, "AIF505: task 'deterministic-failure' panicked");
+        assert_eq!(budget.snapshot().active_tasks, 0);
+    }
+}
+
+#[test]
+fn cancelled_task_is_joined_before_scope_failure_returns() {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+    let budget = ResourceBudget::new(ResourceLimits {
+        max_tasks: 2,
+        max_reserved_bytes: 0,
+        max_operations: 0,
+    });
+    let sibling_exited = Arc::new(AtomicBool::new(false));
+    let mut scope = StructuredScope::with_budget(budget.clone());
+    let exited = Arc::clone(&sibling_exited);
+    scope.spawn("cooperative", move |token| {
+        while !token.is_cancelled() {
+            std::thread::yield_now();
+        }
+        exited.store(true, Ordering::Release);
+    }).expect("cooperative task should start");
+    scope.spawn("failure", |_token| panic!("force sibling cancellation"))
+        .expect("failing task should start");
+
+    let error = scope.finish().expect_err("scope should propagate worker failure");
+    assert!(error.starts_with("AIF505:"), "unexpected error boundary: {error}");
+    assert!(sibling_exited.load(Ordering::Acquire), "scope returned before sibling cleanup completed");
+    assert_eq!(budget.snapshot().active_tasks, 0, "all task leases must be released");
+}
+
+
+#[test]
+fn native_artifact_mutation_corpus_rejects_corrupted_framing() {
+    let source = "module mutation_boundary\nfn main() -> Int\n  return 42\n";
+    let compiled = compile_source(source).expect("source should compile");
+    let original = compiled.artifact;
+    let mutations: Vec<(&str, String)> = vec![
+        ("magic", format!("X{}", &original[1..])),
+        ("version", original.replacen("ARDISA-EXEC-V1", "ARDISA-EXEC-V9", 1)),
+        ("function marker", original.replacen("FN|", "XX|", 1)),
+        ("terminator", original.replacen("END\n", "BAD\n", 1)),
+        ("trailing garbage", format!("{original}not-an-instruction\n")),
+    ];
+    for (label, mutated) in mutations {
+        assert!(
+            native::decode_program(&mutated).is_err(),
+            "mutated artifact ({label}) must be rejected before execution"
+        );
+    }
+}
+
+
+#[test]
+fn simultaneous_task_panics_choose_a_stable_failure_by_name() {
+    let budget = ResourceBudget::new(ResourceLimits {
+        max_tasks: 2,
+        max_reserved_bytes: 0,
+        max_operations: 0,
+    });
+    let mut scope = StructuredScope::with_budget(budget.clone());
+    scope.spawn("zeta-failure", |_token| panic!("zeta failure"))
+        .expect("zeta task should start");
+    scope.spawn("alpha-failure", |_token| panic!("alpha failure"))
+        .expect("alpha task should start");
+
+    let error = scope.finish().expect_err("worker failures must propagate");
+    assert_eq!(error, "AIF505: task 'alpha-failure' panicked");
+    assert_eq!(budget.snapshot().active_tasks, 0);
+}
