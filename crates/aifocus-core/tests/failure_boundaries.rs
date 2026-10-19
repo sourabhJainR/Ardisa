@@ -222,3 +222,31 @@ fn decoded_artifact_with_invalid_jump_is_rejected_before_any_instruction_runs() 
         "invalid artifact control flow must fail as InvalidProgram: {error:?}"
     );
 }
+
+
+#[test]
+fn native_reference_pointer_and_pinning_types_fail_closed_at_semantic_boundary() {
+    // These names are intentionally rejected until Ardisa has a complete
+    // source-to-runtime model for lifetime regions, aliasing, provenance,
+    // nullability, alignment, dereference validation, and native encoding.
+    for ty in [
+        "SharedRef<Int>",
+        "MutableRef<Int>",
+        "RawPtr<Int>",
+        "NonNull<Int>",
+        "Pin<Int>",
+    ] {
+        let source = format!("module unsupported_pointer\nfn accept(value: {ty}) -> Int\n  0\n");
+        let error = compile_source(&source)
+            .expect_err("unsupported pointer/reference types must not silently compile");
+        let diagnostics = format!("{error:?}");
+        assert!(
+            diagnostics.contains("AIF320") || diagnostics.contains("AIF"),
+            "unsupported type {ty} must fail at semantic validation, got: {diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("unsupported") || diagnostics.contains("not supported"),
+            "unsupported type {ty} should have an explicit diagnostic, got: {diagnostics}"
+        );
+    }
+}
