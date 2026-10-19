@@ -2351,8 +2351,15 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
             )));
         }
         for param in &function.params { add_bytes(param)?; }
-        for instr in &function.code {
+        for (instruction_index, instr) in function.code.iter().enumerate() {
             match instr {
+                NativeInstr::Jump(target) | NativeInstr::JumpIfFalse(target)
+                    if *target >= function.code.len() =>
+                {
+                    return Err(NativeError::InvalidProgram(format!(
+                        "jump target {target} is outside function '{name}' at instruction {instruction_index}"
+                    )));
+                }
                 NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
                 NativeInstr::PushTensor { shape, values } => { validate_tensor_parts(shape, values, MAX_TENSOR_ELEMENTS)?; }
                 NativeInstr::PushQuantizedTensor { shape, scale_bits, values, .. } => { validate_quantized_tensor_parts(shape, *scale_bits, values, MAX_TENSOR_ELEMENTS)?; }
