@@ -272,3 +272,24 @@ fn cancelled_task_is_joined_before_scope_failure_returns() {
     assert!(sibling_exited.load(Ordering::Acquire), "scope returned before sibling cleanup completed");
     assert_eq!(budget.snapshot().active_tasks, 0, "all task leases must be released");
 }
+
+
+#[test]
+fn native_artifact_mutation_corpus_rejects_corrupted_framing() {
+    let source = "module mutation_boundary\nfn main() -> Int\n  return 42\n";
+    let compiled = compile_source(source).expect("source should compile");
+    let original = compiled.artifact;
+    let mutations: Vec<(&str, String)> = vec![
+        ("magic", format!("X{}", &original[1..])),
+        ("version", original.replacen("ARDISA-EXEC-V1", "ARDISA-EXEC-V9", 1)),
+        ("function marker", original.replacen("FN|", "XX|", 1)),
+        ("terminator", original.replacen("END\n", "BAD\n", 1)),
+        ("trailing garbage", format!("{original}not-an-instruction\n")),
+    ];
+    for (label, mutated) in mutations {
+        assert!(
+            native::decode_program(&mutated).is_err(),
+            "mutated artifact ({label}) must be rejected before execution"
+        );
+    }
+}
