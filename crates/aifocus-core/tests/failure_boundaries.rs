@@ -194,3 +194,33 @@ fn instruction_budget_failure_is_deterministic_across_fresh_runs() {
         "instruction exhaustion must remain an explicit resource failure: {first:?}"
     );
 }
+
+
+#[test]
+fn decoded_artifact_with_invalid_jump_is_rejected_before_any_instruction_runs() {
+    use std::collections::BTreeMap;
+
+    let malformed = native::NativeProgram {
+        functions: BTreeMap::from([(
+            "main".to_string(),
+            native::NativeFunction {
+                params: Vec::new(),
+                code: vec![
+                    native::NativeInstr::PushInt(99),
+                    native::NativeInstr::Jump(usize::MAX),
+                    native::NativeInstr::Return,
+                ],
+            },
+        )]),
+    };
+
+    let artifact = native::encode_program(&malformed);
+    let decoded = native::decode_program(&artifact)
+        .expect("well-framed artifact should decode before verifier validation");
+    let error = native::run_program(&decoded, "main", &[])
+        .expect_err("execution must reject invalid control flow before running code");
+    assert!(
+        matches!(&error, native::NativeError::InvalidProgram(_)),
+        "invalid artifact control flow must fail as InvalidProgram: {error:?}"
+    );
+}
