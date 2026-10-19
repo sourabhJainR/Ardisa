@@ -215,10 +215,8 @@ fn decoded_artifact_with_invalid_jump_is_rejected_before_any_instruction_runs() 
     };
 
     let artifact = native::encode_program(&malformed);
-    let decoded = native::decode_program(&artifact)
-        .expect("well-framed artifact should decode before verifier validation");
-    let error = native::run_program(&decoded, "main", &[])
-        .expect_err("execution must reject invalid control flow before running code");
+    let error = native::decode_program(&artifact)
+        .expect_err("decoder must reject malformed control flow before execution");
     assert!(
         matches!(&error, native::NativeError::InvalidProgram(_)),
         "invalid artifact control flow must fail as InvalidProgram: {error:?}"
