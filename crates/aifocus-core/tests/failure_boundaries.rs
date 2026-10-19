@@ -156,7 +156,7 @@ fn malformed_jump_target_is_rejected_before_execution() {
     let error = native::ValidatedNativeProgram::try_new(program)
         .expect_err("out-of-range control flow must be rejected before VM execution");
     assert!(
-        matches!(error, native::NativeError::InvalidProgram(_)),
+        matches!(&error, native::NativeError::InvalidProgram(_)),
         "malformed control flow should have a stable invalid-program category: {error:?}"
     );
 }
@@ -190,7 +190,7 @@ fn instruction_budget_failure_is_deterministic_across_fresh_runs() {
         .expect_err("a fresh execution must enforce the same limit");
     assert_eq!(first, second, "resource-limit failure must be deterministic");
     assert!(
-        matches!(first, native::NativeError::ResourceLimit(_)),
+        matches!(&first, native::NativeError::ResourceLimit(_)),
         "instruction exhaustion must remain an explicit resource failure: {first:?}"
     );
 }
