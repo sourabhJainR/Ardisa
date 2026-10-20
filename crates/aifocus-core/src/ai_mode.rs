@@ -479,8 +479,7 @@ fn canonical_trace_payload(sequence: u64, event: &TraceEventInput, previous_sign
         event.subject_sha256.to_ascii_lowercase(),
         event.outcome,
         event.provider_id.as_deref().unwrap_or("-"),
-        event.session_sha256.as_deref().unwrap_or("-").to_ascii_lowercase(),
-        "redacted"
+        event.session_sha256.as_deref().unwrap_or("-").to_ascii_lowercase()
     )
 }
 
