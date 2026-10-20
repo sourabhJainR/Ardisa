@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
+    ai_mode::Capability,
     ast::{BinaryOp, Block, ConstructKind, ConstructMember, Expr, ExprKind, Function, Item, Module, StmtKind, Type, TypeKind},
     source::{Diagnostic, Span},
 };
@@ -238,6 +239,20 @@ pub fn analyze(module: &Module) -> Result<SemanticModel, Vec<Diagnostic>> {
 
 /// Validate the declaration structure we can currently prove, while retaining
 /// AIF610 until declarations are carried through typed IR and native execution.
+fn source_capability(name: &str) -> Option<Capability> {
+    match name {
+        "clock" => Some(Capability::Clock),
+        "random" => Some(Capability::Random),
+        "filesystem_read" => Some(Capability::FilesystemRead),
+        "filesystem_write" => Some(Capability::FilesystemWrite),
+        "network" => Some(Capability::Network),
+        "process" => Some(Capability::Process),
+        "secrets" => Some(Capability::Secrets),
+        "unsafe_interop" => Some(Capability::UnsafeInterop),
+        _ => None,
+    }
+}
+
 fn validate_construct_declarations(module: &Module, checker: &mut Checker) {
     use std::collections::HashSet;
 
@@ -358,6 +373,14 @@ fn validate_construct_declarations(module: &Module, checker: &mut Checker) {
                     _ => continue,
                 };
                 for capability in value.split(|ch: char| ch.is_whitespace() || ch == ',').filter(|part| !part.is_empty()) {
+                    if source_capability(capability).is_none() {
+                        checker.error(
+                            "AIF620",
+                            format!("unknown Vault capability '{}' in '{}' clause of '{}'; use a declared capability name", capability, name, declaration.name),
+                            *span,
+                        );
+                        continue;
+                    }
                     if !target.insert(capability.to_string()) {
                         checker.error(
                             "AIF619",
@@ -1642,7 +1665,7 @@ mod tests {
     #[test]
     fn construct_analysis_produces_typed_metadata_but_normal_analysis_fails_closed() {
         let module = parse(
-            "module constructs\ntrace Evidence\n  signature: sha256\ncell State\n  value: Int\n  invariant: valid\nvault NoNetwork\n  denies: network\n  capabilities: filesystem\nproof P\n  requires: valid\n  ensures: true\n  on_unknown: reject\n  required: true\nphase Lifecycle\n  Ready -> Done\n",
+            "module constructs\ntrace Evidence\n  signature: sha256\ncell State\n  value: Int\n  invariant: valid\nvault NoNetwork\n  denies: network\n  capabilities: filesystem_read\nproof P\n  requires: valid\n  ensures: true\n  on_unknown: reject\n  required: true\nphase Lifecycle\n  Ready -> Done\n",
         ).unwrap();
 
         let constructs = analyze_constructs(&module).unwrap();
