@@ -441,8 +441,8 @@ impl TraceLedger {
     /// all validate. This does not itself establish key trust.
     pub fn verify_chain<V: TraceVerifier>(
         &self,
+        policy: &TracePolicy,
         verifier: &V,
-        require_signature: bool,
     ) -> Result<(), TraceError> {
         let mut expected_previous_signature: &[u8] = &[];
         for (index, receipt) in self.receipts.iter().enumerate() {
@@ -461,6 +461,11 @@ impl TraceLedger {
             validate_trace_token(&receipt.actor, "actor")?;
             validate_trace_token(&receipt.outcome, "outcome")?;
             validate_trace_digest(&receipt.subject_sha256, "subject_sha256")?;
+            if !policy.include_ai_metadata
+                && (receipt.provider_id.is_some() || receipt.session_sha256.is_some())
+            {
+                return Err(TraceError::MetadataNotAllowed);
+            }
             if let Some(provider) = &receipt.provider_id {
                 validate_trace_token(provider, "provider_id")?;
             }
@@ -468,7 +473,7 @@ impl TraceLedger {
                 validate_trace_digest(digest, "session_sha256")?;
             }
             if receipt.signature.len() > MAX_TRACE_SIGNATURE_BYTES
-                || (require_signature && receipt.signature.is_empty())
+                || (policy.require_signature && receipt.signature.is_empty())
             {
                 return Err(TraceError::InvalidSignatureLength);
             }
@@ -900,23 +905,23 @@ mod trace_ledger_tests {
         let mut second_event = event();
         second_event.outcome = "failed".into();
         ledger.record(&policy(false, true), second_event, Some(&TestSigner)).unwrap();
-        assert_eq!(ledger.verify_chain(&TestSigner, true), Ok(()));
+        assert_eq!(ledger.verify_chain(&policy(false, true), &TestSigner), Ok(()));
 
         let mut tampered = ledger.clone();
         tampered.receipts[0].outcome = "forged".into();
-        assert_eq!(tampered.verify_chain(&TestSigner, true), Err(TraceError::InvalidSignature));
+        assert_eq!(tampered.verify_chain(&policy(false, true), &TestSigner), Err(TraceError::InvalidSignature));
 
         let mut broken_link = ledger.clone();
         broken_link.receipts[1].previous_signature[0] ^= 0xFF;
         assert_eq!(
-            broken_link.verify_chain(&TestSigner, true),
+            broken_link.verify_chain(&policy(false, true), &TestSigner),
             Err(TraceError::InvalidPreviousSignature { sequence: 1 })
         );
 
         let mut reordered = ledger.clone();
         reordered.receipts[1].sequence = 7;
         assert_eq!(
-            reordered.verify_chain(&TestSigner, true),
+            reordered.verify_chain(&policy(false, true), &TestSigner),
             Err(TraceError::InvalidSequence { expected: 1, actual: 7 })
         );
     }
@@ -926,7 +931,7 @@ mod trace_ledger_tests {
         let mut ledger = TraceLedger::new();
         ledger.record(&policy(false, true), event(), Some(&TestSigner)).unwrap();
         ledger.receipts[0].signature.clear();
-        assert_eq!(ledger.verify_chain(&TestSigner, true), Err(TraceError::InvalidSignatureLength));
+        assert_eq!(ledger.verify_chain(&policy(false, true), &TestSigner), Err(TraceError::InvalidSignatureLength));
 
         struct UnavailableVerifier;
         impl TraceVerifier for UnavailableVerifier {
@@ -937,7 +942,7 @@ mod trace_ledger_tests {
         let mut ledger = TraceLedger::new();
         ledger.record(&policy(false, true), event(), Some(&TestSigner)).unwrap();
         assert_eq!(
-            ledger.verify_chain(&UnavailableVerifier, true),
+            ledger.verify_chain(&policy(false, true), &UnavailableVerifier),
             Err(TraceError::SignatureVerificationFailed("key service unavailable".into()))
         );
     }
