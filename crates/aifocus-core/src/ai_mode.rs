@@ -88,6 +88,36 @@ impl VaultPolicy {
     }
 }
 
+/// A capability gate for host runtime operations routed through Ardisa's Vault policy.
+///
+/// This only enforces operations that are explicitly routed through this API.
+/// It is not an OS sandbox, and the host integration must declare the capabilities
+/// actually required by the operation.
+pub struct VaultRuntime {
+    policy: VaultPolicy,
+}
+
+impl VaultRuntime {
+    pub fn new(policy: VaultPolicy) -> Self {
+        Self { policy }
+    }
+
+    pub fn policy(&self) -> &VaultPolicy {
+        &self.policy
+    }
+
+    /// Authorize the complete declared effect set before invoking the operation.
+    /// If any capability is denied, the closure is never called.
+    pub fn execute<T>(
+        &self,
+        required: impl IntoIterator<Item = Capability>,
+        operation: impl FnOnce() -> T,
+    ) -> Result<T, PolicyViolation> {
+        self.policy.validate_effects(required)?;
+        Ok(operation())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProofPolicy {
     pub required: BTreeSet<ProofRequirement>,
@@ -503,6 +533,38 @@ mod tests {
                 on_unknown: UnknownProofPolicy::Reject,
             },
         }
+    }
+
+    #[test]
+    fn vault_runtime_denies_before_running_the_operation() {
+        use std::cell::Cell as Flag;
+
+        let runtime = VaultRuntime::new(VaultPolicy::deny_all());
+        let called = Flag::new(false);
+        let result = runtime.execute([Capability::Network], || called.set(true));
+        assert!(matches!(result, Err(PolicyViolation::UndeclaredCapabilities(_))));
+        assert!(!called.get(), "denied operations must not execute");
+    }
+
+    #[test]
+    fn vault_runtime_authorizes_all_capabilities_before_running() {
+        let mut allowed = BTreeSet::new();
+        allowed.insert(Capability::FilesystemRead);
+        allowed.insert(Capability::Network);
+        let runtime = VaultRuntime::new(VaultPolicy { allowed_capabilities: allowed });
+        let result = runtime.execute(
+            [Capability::FilesystemRead, Capability::Network],
+            || 42,
+        );
+        assert_eq!(result, Ok(42));
+
+        let called = std::cell::Cell::new(false);
+        let result = runtime.execute(
+            [Capability::FilesystemRead, Capability::Secrets],
+            || called.set(true),
+        );
+        assert!(matches!(result, Err(PolicyViolation::UndeclaredCapabilities(_))));
+        assert!(!called.get(), "a partially authorized effect set must not execute");
     }
 
     #[test]
