@@ -1,3 +1,4 @@
+use std::any::Any;
 use unicode_segmentation::UnicodeSegmentation;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{
@@ -245,10 +246,22 @@ pub enum NativeValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeError {
     Unsupported(String),
+    /// A child task unwound across the host thread boundary. This is distinct
+    /// from unsupported language functionality and does not imply language-level unwind support.
+    TaskPanicked(String),
     Cancelled(String),
     InvalidProgram(String),
     Type(String),
     ResourceLimit(String),
+}
+
+/// Normalize a child-thread join result without conflating host panics with
+/// unsupported language features.
+fn normalize_task_join(
+    name: &str,
+    joined: Result<Result<NativeValue, NativeError>, Box<dyn Any + Send + 'static>>,
+) -> Result<NativeValue, NativeError> {
+    joined.map_err(|_| NativeError::TaskPanicked(format!("task '{name}' panicked")))? 
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1277,8 +1290,8 @@ fn run_function(
                         .join
                         .take()
                         .expect("task already joined")
-                        .join()
-                        .map_err(|_| NativeError::Unsupported(format!("task '{name}' panicked")))?;
+                        .join();
+                    let result = normalize_task_join(&name, result);
                     if let Err(error) = result {
                         if matches!(error, NativeError::Cancelled(_)) {
                             continue;
@@ -1340,8 +1353,8 @@ fn run_function(
                     .join
                     .take()
                     .expect("task already joined")
-                    .join()
-                    .map_err(|_| NativeError::Unsupported(format!("task '{name}' panicked")))?;
+                    .join();
+                let result = normalize_task_join(&name, result);
                 match result {
                     Ok(_) => stack.push(NativeValue::Unit),
                     Err(NativeError::Cancelled(_)) => stack.push(NativeValue::Unit),
@@ -5174,5 +5187,34 @@ mod tokenizer_feed_atomicity_tests {
         assert!(matches!(&value, NativeValue::TokenizerState { pending, tokens, .. } if pending == &[0xc3] && tokens.is_empty()));
         feed_tokenizer_state(&mut value, vec![0xa9]).expect("continuation completes the scalar");
         assert!(matches!(&value, NativeValue::TokenizerState { pending, tokens, .. } if pending.is_empty() && tokens == &[0]));
+    }
+}
+
+
+#[cfg(test)]
+mod task_panic_classification_tests {
+    use super::*;
+
+    #[test]
+    fn host_thread_panic_is_not_misreported_as_unsupported_language_feature() {
+        let panic = std::panic::catch_unwind(|| panic!("synthetic worker panic"))
+            .expect_err("fixture must produce a host panic");
+        let result = normalize_task_join("worker-a", Err(panic));
+        assert_eq!(
+            result,
+            Err(NativeError::TaskPanicked("task 'worker-a' panicked".into()))
+        );
+    }
+
+    #[test]
+    fn successful_task_join_preserves_runtime_result() {
+        assert_eq!(
+            normalize_task_join("worker-a", Ok(Ok(NativeValue::Int(7)))),
+            Ok(NativeValue::Int(7))
+        );
+        assert_eq!(
+            normalize_task_join("worker-a", Ok(Err(NativeError::Cancelled("requested".into())))),
+            Err(NativeError::Cancelled("requested".into()))
+        );
     }
 }
