@@ -937,8 +937,10 @@ mod trace_ledger_tests {
             empty.verify_chain(&policy(false, true), &TestSigner),
             Err(TraceError::MissingRequiredTrace)
         );
+        let mut optional_policy = policy(false, false);
+        optional_policy.required = false;
         assert_eq!(
-            empty.verify_chain(&policy(false, false), &TestSigner),
+            empty.verify_chain(&optional_policy, &TestSigner),
             Ok(())
         );
     }
