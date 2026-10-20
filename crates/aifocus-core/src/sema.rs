@@ -1665,7 +1665,7 @@ mod tests {
     #[test]
     fn construct_analysis_produces_typed_metadata_but_normal_analysis_fails_closed() {
         let module = parse(
-            "module constructs\ntrace Evidence\n  signature: sha256\ncell State\n  value: Int\n  invariant: valid\nvault NoNetwork\n  denies: network\n  capabilities: filesystem\nproof P\n  requires: valid\n  ensures: true\n  on_unknown: reject\n  required: true\nphase Lifecycle\n  Ready -> Done\n",
+            "module constructs\ntrace Evidence\n  signature: sha256\ncell State\n  value: Int\n  invariant: valid\nvault NoNetwork\n  denies: network\n  capabilities: filesystem_read\nproof P\n  requires: valid\n  ensures: true\n  on_unknown: reject\n  required: true\nphase Lifecycle\n  Ready -> Done\n",
         ).unwrap();
 
         let constructs = analyze_constructs(&module).unwrap();
