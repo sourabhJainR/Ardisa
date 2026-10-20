@@ -39,7 +39,7 @@ pub mod sema;
 pub mod source;
 pub mod token;
 
-pub use ai_mode::{AiModePolicy, Capability, CellInvariantError, InvariantCell, PhaseMachine, PhaseMachineError, PhaseTransition, PolicyViolation, ProofPolicy, ProofRequirement, ProofStatus, TracePolicy, UnknownProofPolicy, VaultPolicy, MAX_PHASE_HISTORY, MAX_PHASE_STATES, MAX_PHASE_TRANSITIONS};
+pub use ai_mode::{AiModePolicy, Capability, CellInvariantError, InvariantCell, PhaseMachine, PhaseMachineError, PhaseTransition, PolicyViolation, ProofPolicy, ProofRequirement, ProofStatus, TraceEventInput, TraceError, TraceLedger, TracePolicy, TraceReceipt, TraceSigner, UnknownProofPolicy, VaultPolicy, MAX_PHASE_HISTORY, MAX_PHASE_STATES, MAX_PHASE_TRANSITIONS, MAX_TRACE_RECEIPTS, MAX_TRACE_TOKEN_BYTES, MAX_TRACE_SIGNATURE_BYTES};
 pub use ai_types::{Alternative, Guaranteed, GraphConflictPolicy, GraphTensor, GraphTensorEdge, GraphTensorNode, Probabilistic};
 pub use ai_routing::{route_top_k, AiRoutingError, DomainVector, ExpertWeight, VectorHit, VectorIndex};
 pub use ai_mcts::{MctsError, MctsNode, MctsTree};
