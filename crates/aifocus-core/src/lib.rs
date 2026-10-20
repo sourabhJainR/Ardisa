@@ -32,6 +32,7 @@ pub mod native;
 pub mod ownership;
 pub mod optimizer;
 pub mod pipeline;
+pub mod phase_runtime;
 pub mod typed_ir;
 pub mod protocol;
 pub mod resource_guard;
@@ -67,6 +68,7 @@ pub use interop::{
 pub use ir::{IrFunction, IrModule, IrOp, IrValue};
 pub use optimizer::optimize;
 pub use pipeline::{compile_source, CompiledArtifact, PipelineError, PipelineEvidence, PipelineTiming};
+pub use phase_runtime::{PhaseError, PhaseMachine, PhaseTransition, MAX_PHASE_HISTORY, MAX_PHASE_STATES, MAX_PHASE_TRANSITIONS};
 pub use typed_ir::{TypedBasicBlock, TypedIrFunction, TypedIrModule, TypedIrOp, TypedTerminator, TypedValue, TypedValueKind};
 pub use kv_cache::{CacheFullPolicy, KvCache, KvCacheError, KvEntry};
 pub use learning::{
