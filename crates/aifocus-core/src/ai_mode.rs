@@ -385,6 +385,7 @@ pub enum TraceError {
     InvalidToken(&'static str),
     InvalidDigest(&'static str),
     MetadataNotAllowed,
+    MissingRequiredTrace,
     LedgerLimitExceeded,
     InvalidSignatureLength,
     InvalidSequence { expected: u64, actual: u64 },
@@ -444,6 +445,9 @@ impl TraceLedger {
         policy: &TracePolicy,
         verifier: &V,
     ) -> Result<(), TraceError> {
+        if policy.required && self.receipts.is_empty() {
+            return Err(TraceError::MissingRequiredTrace);
+        }
         let mut expected_previous_signature: &[u8] = &[];
         for (index, receipt) in self.receipts.iter().enumerate() {
             let expected_sequence = index as u64;
@@ -923,6 +927,19 @@ mod trace_ledger_tests {
         assert_eq!(
             reordered.verify_chain(&policy(false, true), &TestSigner),
             Err(TraceError::InvalidSequence { expected: 1, actual: 7 })
+        );
+    }
+
+    #[test]
+    fn trace_chain_verification_enforces_required_presence() {
+        let empty = TraceLedger::new();
+        assert_eq!(
+            empty.verify_chain(&policy(false, true), &TestSigner),
+            Err(TraceError::MissingRequiredTrace)
+        );
+        assert_eq!(
+            empty.verify_chain(&policy(false, false), &TestSigner),
+            Ok(())
         );
     }
 
