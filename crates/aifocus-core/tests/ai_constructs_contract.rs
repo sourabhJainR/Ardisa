@@ -41,3 +41,36 @@ fn typed_construct_encoding_is_deterministic_and_versioned() {
     assert_eq!(first, second);
     assert!(first.starts_with("ARDISA-CONSTRUCT-META-V1\n"));
 }
+
+
+#[test]
+fn vault_capability_sets_reject_duplicates_and_allow_deny_conflicts() {
+    let cases = [
+        (
+            "module vault_conflict\nvault IO\n  capabilities: read write\n  denies: write\n",
+            "an effect cannot be both allowed and denied",
+        ),
+        (
+            "module vault_duplicate\nvault IO\n  capabilities: read read\n  denies: delete\n",
+            "a capability must not be duplicated within a policy clause",
+        ),
+    ];
+    for (source, reason) in cases {
+        let module = parse(source).expect("vault policy fixture should parse");
+        let errors = sema::analyze_constructs(&module)
+            .expect_err("ambiguous Vault policy must fail semantic validation");
+        assert!(
+            errors.iter().any(|error| error.code == "AIF619"),
+            "{reason}; expected AIF619, got {errors:?}"
+        );
+    }
+
+    let valid = "module vault_disjoint\nvault IO\n  capabilities: filesystem_read network_connect\n  denies: filesystem_delete\n";
+    let module = parse(valid).expect("disjoint vault policy should parse");
+    sema::analyze_constructs(&module)
+        .expect("disjoint allow/deny sets should pass structural validation");
+    assert!(
+        compile_source(valid).is_err(),
+        "structural validation must not imply runtime enforcement or bypass AIF610"
+    );
+}
