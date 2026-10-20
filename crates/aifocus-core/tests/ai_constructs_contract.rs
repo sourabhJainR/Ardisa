@@ -47,11 +47,11 @@ fn typed_construct_encoding_is_deterministic_and_versioned() {
 fn vault_capability_sets_reject_duplicates_and_allow_deny_conflicts() {
     let cases = [
         (
-            "module vault_conflict\\nvault IO\\n  capabilities: read write\\n  denies: write\\n",
+            "module vault_conflict\nvault IO\n  capabilities: read write\n  denies: write\n",
             "an effect cannot be both allowed and denied",
         ),
         (
-            "module vault_duplicate\\nvault IO\\n  capabilities: read read\\n  denies: delete\\n",
+            "module vault_duplicate\nvault IO\n  capabilities: read read\n  denies: delete\n",
             "a capability must not be duplicated within a policy clause",
         ),
     ];
@@ -65,7 +65,7 @@ fn vault_capability_sets_reject_duplicates_and_allow_deny_conflicts() {
         );
     }
 
-    let valid = "module vault_disjoint\\nvault IO\\n  capabilities: filesystem.read network.connect\\n  denies: filesystem.delete\\n";
+    let valid = "module vault_disjoint\nvault IO\n  capabilities: filesystem.read network.connect\n  denies: filesystem.delete\n";
     let module = parse(valid).expect("disjoint vault policy should parse");
     sema::analyze_constructs(&module)
         .expect("disjoint allow/deny sets should pass structural validation");
