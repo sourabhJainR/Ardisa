@@ -78,7 +78,7 @@ fn vault_capability_sets_reject_duplicates_and_allow_deny_conflicts() {
 
 #[test]
 fn vault_capability_names_must_match_runtime_capability_vocabulary() {
-    let source = "module vault_unknown\\nvault IO\\n  capabilities: filesystem_read unknown_capability\\n  denies: filesystem_write\\n";
+    let source = "module vault_unknown\nvault IO\n  capabilities: filesystem_read unknown_capability\n  denies: filesystem_write\n";
     let module = parse(source).expect("unknown capability fixture should parse");
     let errors = sema::analyze_constructs(&module)
         .expect_err("unknown capability names must fail closed");
