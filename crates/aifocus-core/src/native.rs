@@ -245,6 +245,9 @@ pub enum NativeValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeError {
     Unsupported(String),
+    /// A child task unwound across the host thread boundary. This is distinct
+    /// from unsupported language functionality and does not imply language-level unwind support.
+    TaskPanicked(String),
     Cancelled(String),
     InvalidProgram(String),
     Type(String),
@@ -1278,7 +1281,7 @@ fn run_function(
                         .take()
                         .expect("task already joined")
                         .join()
-                        .map_err(|_| NativeError::Unsupported(format!("task '{name}' panicked")))?;
+                        .map_err(|_| NativeError::TaskPanicked(format!("task '{name}' panicked")))?;
                     if let Err(error) = result {
                         if matches!(error, NativeError::Cancelled(_)) {
                             continue;
@@ -1341,7 +1344,7 @@ fn run_function(
                     .take()
                     .expect("task already joined")
                     .join()
-                    .map_err(|_| NativeError::Unsupported(format!("task '{name}' panicked")))?;
+                    .map_err(|_| NativeError::TaskPanicked(format!("task '{name}' panicked")))?;
                 match result {
                     Ok(_) => stack.push(NativeValue::Unit),
                     Err(NativeError::Cancelled(_)) => stack.push(NativeValue::Unit),
