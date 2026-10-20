@@ -8,7 +8,7 @@ This contract distinguishes language-level behavior from host Rust behavior. A R
 
 | Boundary | Current behavior | Guarantee | Explicitly not guaranteed |
 |---|---|---|---|
-| Function/native VM | Checked runtime failures are returned as `NativeError`; malformed programs are rejected by artifact decoding and native-program validation before dispatch | Stable error category for covered malformed control flow, invalid operations and resource limits | General catchable Ardisa panic, stack unwinding, panic payloads, rollback of arbitrary prior mutations |
+| Function/native VM | Checked runtime failures are returned as `NativeError`; malformed programs are rejected before dispatch; public native execution entrypoints contain host Rust unwinds as `NativeError::HostPanicked` | Stable error category for covered malformed control flow, invalid operations and resource limits; host panic does not unwind through the public native execution API | General catchable Ardisa panic, language-level stack unwinding, panic payloads, process abort containment, allocator abort containment, rollback of arbitrary prior mutations |
 | Structured task | Worker panic is translated to `AIF505`; `finish` cancels cooperative siblings, joins workers, releases task leases, and selects the externally reported panic by stable task-name order | Cleanup/join of tasks that cooperate with cancellation; deterministic reported error for tested simultaneous failures | Forced termination of a non-cooperative worker, language-level unwind, destructor guarantees |
 | Resource budget | Failed and joined tasks release task leases; instruction budget exhaustion returns an explicit resource-limit error | Bounded operations where the relevant budget is enforced | Universal memory/time bounds for every allocation or host call |
 | Native artifact | Decoder rejects invalid magic/records, unterminated functions, malformed control flow and invalid jump targets | Invalid serialized programs are rejected before VM execution | Cryptographic authenticity of artifacts or trust in an external signer |
@@ -47,3 +47,8 @@ Those jobs validate the current implemented subset; they do not prove Rust panic
 - Coordinate destructor and partial-move cleanup semantics with #158 before promising cleanup of language-owned values.
 - Add source-to-runtime tests for the selected failure syntax and any ABI boundary, including mutation and partial-state behavior.
 - Update the capability evidence manifest only after those behaviors are implemented and independently tested.
+
+
+## Host panic containment (partial)
+
+Public native execution entrypoints use a narrow `catch_unwind` boundary and translate a host Rust unwind into `NativeError::HostPanicked`. This is defensive containment, not an Ardisa-language panic feature. It does not catch process aborts, allocator aborts, panics in detached host code, or guarantee rollback of side effects that occurred before the panic. Structured child-task panics continue to use the distinct `TaskPanicked` category. The capability matrix must remain partial until adversarial boundary tests cover every externally reachable execution path and ownership/drop semantics are established.
