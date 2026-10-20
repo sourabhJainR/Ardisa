@@ -374,6 +374,12 @@ pub trait TraceSigner {
     fn sign(&self, canonical_payload: &[u8]) -> Result<Vec<u8>, String>;
 }
 
+/// Verification is deliberately separate from signing: callers must supply a
+/// verifier backed by trusted public keys or an authenticated key service.
+pub trait TraceVerifier {
+    fn verify(&self, canonical_payload: &[u8], signature: &[u8]) -> Result<bool, String>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TraceError {
     InvalidToken(&'static str),
@@ -381,6 +387,10 @@ pub enum TraceError {
     MetadataNotAllowed,
     LedgerLimitExceeded,
     InvalidSignatureLength,
+    InvalidSequence { expected: u64, actual: u64 },
+    InvalidPreviousSignature { sequence: u64 },
+    InvalidSignature,
+    SignatureVerificationFailed(String),
     SigningFailed(String),
 }
 
@@ -423,6 +433,68 @@ impl TraceLedger {
 
     pub fn receipts(&self) -> &[TraceReceipt] {
         &self.receipts
+    }
+
+    /// Verify the full append-only receipt chain against a trusted verifier.
+    /// A ledger is accepted only when sequence numbers, predecessor links,
+    /// canonical payload signatures, field constraints, and signature bounds
+    /// all validate. This does not itself establish key trust.
+    pub fn verify_chain<V: TraceVerifier>(
+        &self,
+        verifier: &V,
+        require_signature: bool,
+    ) -> Result<(), TraceError> {
+        let mut expected_previous_signature: &[u8] = &[];
+        for (index, receipt) in self.receipts.iter().enumerate() {
+            let expected_sequence = index as u64;
+            if receipt.sequence != expected_sequence {
+                return Err(TraceError::InvalidSequence {
+                    expected: expected_sequence,
+                    actual: receipt.sequence,
+                });
+            }
+            if receipt.previous_signature.as_slice() != expected_previous_signature {
+                return Err(TraceError::InvalidPreviousSignature { sequence: receipt.sequence });
+            }
+
+            validate_trace_token(&receipt.event_kind, "event_kind")?;
+            validate_trace_token(&receipt.actor, "actor")?;
+            validate_trace_token(&receipt.outcome, "outcome")?;
+            validate_trace_digest(&receipt.subject_sha256, "subject_sha256")?;
+            if let Some(provider) = &receipt.provider_id {
+                validate_trace_token(provider, "provider_id")?;
+            }
+            if let Some(digest) = &receipt.session_sha256 {
+                validate_trace_digest(digest, "session_sha256")?;
+            }
+            if receipt.signature.len() > MAX_TRACE_SIGNATURE_BYTES
+                || (require_signature && receipt.signature.is_empty())
+            {
+                return Err(TraceError::InvalidSignatureLength);
+            }
+
+            let event = TraceEventInput {
+                event_kind: receipt.event_kind.clone(),
+                actor: receipt.actor.clone(),
+                subject_sha256: receipt.subject_sha256.clone(),
+                outcome: receipt.outcome.clone(),
+                provider_id: receipt.provider_id.clone(),
+                session_sha256: receipt.session_sha256.clone(),
+            };
+            let payload = canonical_trace_payload(
+                receipt.sequence,
+                &event,
+                &receipt.previous_signature,
+            );
+            let valid = verifier
+                .verify(payload.as_bytes(), &receipt.signature)
+                .map_err(TraceError::SignatureVerificationFailed)?;
+            if !valid {
+                return Err(TraceError::InvalidSignature);
+            }
+            expected_previous_signature = &receipt.signature;
+        }
+        Ok(())
     }
 
     /// Sign before committing. Validation or signer failure leaves the ledger
@@ -744,6 +816,12 @@ mod trace_ledger_tests {
         }
     }
 
+    impl TraceVerifier for TestSigner {
+        fn verify(&self, payload: &[u8], signature: &[u8]) -> Result<bool, String> {
+            Ok(self.sign(payload)?.as_slice() == signature)
+        }
+    }
+
     fn policy(include_ai_metadata: bool, require_signature: bool) -> TracePolicy {
         TracePolicy { required: true, include_ai_metadata, require_signature }
     }
@@ -813,6 +891,55 @@ mod trace_ledger_tests {
         assert_eq!(ledger.record(&policy(false, true), event(), Some(&OversizedSigner)).unwrap_err(),
             TraceError::InvalidSignatureLength);
         assert!(ledger.receipts().is_empty());
+    }
+
+    #[test]
+    fn trace_chain_verifies_all_signatures_and_rejects_tampering() {
+        let mut ledger = TraceLedger::new();
+        ledger.record(&policy(false, true), event(), Some(&TestSigner)).unwrap();
+        let mut second_event = event();
+        second_event.outcome = "failed".into();
+        ledger.record(&policy(false, true), second_event, Some(&TestSigner)).unwrap();
+        assert_eq!(ledger.verify_chain(&TestSigner, true), Ok(()));
+
+        let mut tampered = ledger.clone();
+        tampered.receipts[0].outcome = "forged".into();
+        assert_eq!(tampered.verify_chain(&TestSigner, true), Err(TraceError::InvalidSignature));
+
+        let mut broken_link = ledger.clone();
+        broken_link.receipts[1].previous_signature[0] ^= 0xFF;
+        assert_eq!(
+            broken_link.verify_chain(&TestSigner, true),
+            Err(TraceError::InvalidPreviousSignature { sequence: 1 })
+        );
+
+        let mut reordered = ledger.clone();
+        reordered.receipts[1].sequence = 7;
+        assert_eq!(
+            reordered.verify_chain(&TestSigner, true),
+            Err(TraceError::InvalidSequence { expected: 1, actual: 7 })
+        );
+    }
+
+    #[test]
+    fn trace_chain_fails_closed_on_missing_signature_or_verifier_error() {
+        let mut ledger = TraceLedger::new();
+        ledger.record(&policy(false, true), event(), Some(&TestSigner)).unwrap();
+        ledger.receipts[0].signature.clear();
+        assert_eq!(ledger.verify_chain(&TestSigner, true), Err(TraceError::InvalidSignatureLength));
+
+        struct UnavailableVerifier;
+        impl TraceVerifier for UnavailableVerifier {
+            fn verify(&self, _: &[u8], _: &[u8]) -> Result<bool, String> {
+                Err("key service unavailable".into())
+            }
+        }
+        let mut ledger = TraceLedger::new();
+        ledger.record(&policy(false, true), event(), Some(&TestSigner)).unwrap();
+        assert_eq!(
+            ledger.verify_chain(&UnavailableVerifier, true),
+            Err(TraceError::SignatureVerificationFailed("key service unavailable".into()))
+        );
     }
 
     #[test]
