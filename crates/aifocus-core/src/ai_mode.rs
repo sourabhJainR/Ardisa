@@ -194,6 +194,64 @@ impl PhaseMachine {
     }
 }
 
+/// A runtime value whose invariant is checked before every committed update.
+///
+/// This generic API is not yet wired to source-level `cell` declarations or
+/// native bytecode. It provides transactional invariant enforcement for callers
+/// that explicitly supply a predicate; it is not a sandbox or formal proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellInvariantError {
+    InitialValueRejected,
+    InvariantViolation,
+}
+
+pub struct InvariantCell<T, F>
+where
+    F: Fn(&T) -> bool,
+{
+    value: T,
+    invariant: F,
+}
+
+impl<T, F> InvariantCell<T, F>
+where
+    F: Fn(&T) -> bool,
+{
+    /// Construct only when the initial value satisfies the invariant.
+    pub fn new(value: T, invariant: F) -> Result<Self, CellInvariantError> {
+        if !invariant(&value) {
+            return Err(CellInvariantError::InitialValueRejected);
+        }
+        Ok(Self { value, invariant })
+    }
+
+    pub fn get(&self) -> &T {
+        &self.value
+    }
+
+    /// Validate before commit; rejected values leave the previous value intact.
+    pub fn set(&mut self, next: T) -> Result<(), CellInvariantError> {
+        if !(self.invariant)(&next) {
+            return Err(CellInvariantError::InvariantViolation);
+        }
+        self.value = next;
+        Ok(())
+    }
+
+    /// Apply a candidate update to a clone and commit only if it remains valid.
+    pub fn try_update(
+        &mut self,
+        update: impl FnOnce(&mut T),
+    ) -> Result<(), CellInvariantError>
+    where
+        T: Clone,
+    {
+        let mut candidate = self.value.clone();
+        update(&mut candidate);
+        self.set(candidate)
+    }
+}
+
 impl AiModePolicy {
     pub fn validate_proofs(
         &self,
@@ -377,6 +435,43 @@ mod tests {
         assert_eq!(
             PhaseMachine::new("unknown", vec![("a".to_string(), "b".to_string())]),
             Err(PhaseMachineError::InitialStateUnknown("unknown".to_string()))
+        );
+    }
+}
+#[cfg(test)]
+mod invariant_cell_tests {
+    use super::*;
+
+    #[test]
+    fn invariant_cell_rejects_invalid_initial_value_and_update() {
+        let initial = InvariantCell::new(3_i64, |value| *value >= 0)
+            .expect("non-negative initial value should satisfy invariant");
+        assert_eq!(*initial.get(), 3);
+        assert_eq!(
+            InvariantCell::new(-1_i64, |value| *value >= 0).err(),
+            Some(CellInvariantError::InitialValueRejected)
+        );
+
+        let mut cell = initial;
+        assert_eq!(cell.set(-5), Err(CellInvariantError::InvariantViolation));
+        assert_eq!(*cell.get(), 3, "rejected update must preserve previous state");
+    }
+
+    #[test]
+    fn invariant_cell_update_is_transactional() {
+        let mut cell = InvariantCell::new(vec![1, 2], |values: &Vec<i32>| values.len() <= 3)
+            .expect("initial vector is within bound");
+        cell.try_update(|values| values.push(3)).expect("within-bound update");
+        assert_eq!(cell.get(), &vec![1, 2, 3]);
+
+        assert_eq!(
+            cell.try_update(|values| values.push(4)),
+            Err(CellInvariantError::InvariantViolation)
+        );
+        assert_eq!(
+            cell.get(),
+            &vec![1, 2, 3],
+            "failed candidate update must not leak partial mutation"
         );
     }
 }
