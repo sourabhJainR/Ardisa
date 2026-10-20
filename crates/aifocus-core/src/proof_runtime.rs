@@ -12,6 +12,13 @@ use crate::ai_mode::{
 pub const MAX_PROOF_RECEIPTS: usize = 16_384;
 pub const MAX_PROOF_EVIDENCE_DIGEST_BYTES: usize = 64;
 
+/// Caller-supplied digest verifier. Production implementations should compute
+/// SHA-256 over the exact evidence bytes and compare in constant time where
+/// appropriate. The ledger does not ship a cryptographic implementation.
+pub trait ProofDigestVerifier {
+    fn verify_sha256(&self, evidence: &[u8], expected_sha256: &str) -> Result<bool, String>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProofReceipt {
     pub sequence: u64,
@@ -26,6 +33,8 @@ pub enum ProofLedgerError {
     ReceiptLimitExceeded,
     InvalidEvidenceDigest,
     EvidenceDigestRequired(ProofRequirement),
+    EvidenceDigestMismatch,
+    EvidenceVerificationFailed(String),
     InvalidStatusTransition {
         requirement: ProofRequirement,
         from: ProofStatus,
@@ -76,13 +85,30 @@ impl ProofLedger {
         status: ProofStatus,
         evidence_digest: Option<&str>,
     ) -> Result<&ProofReceipt, ProofLedgerError> {
+        self.validate_record(requirement, status, evidence_digest)?;
+        let receipt = ProofReceipt {
+            sequence: self.receipts.len() as u64,
+            requirement,
+            status,
+            evidence_digest: evidence_digest.map(str::to_owned),
+        };
+        self.latest.insert(requirement, status);
+        self.receipts.push(receipt);
+        Ok(self.receipts.last().expect("receipt was just appended"))
+    }
+
+    fn validate_record(
+        &self,
+        requirement: ProofRequirement,
+        status: ProofStatus,
+        evidence_digest: Option<&str>,
+    ) -> Result<(), ProofLedgerError> {
         if self.sealed {
             return Err(ProofLedgerError::AlreadySealed);
         }
         if self.receipts.len() >= MAX_PROOF_RECEIPTS {
             return Err(ProofLedgerError::ReceiptLimitExceeded);
         }
-
         if let Some(digest) = evidence_digest {
             if digest.len() != MAX_PROOF_EVIDENCE_DIGEST_BYTES
                 || !digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -95,7 +121,6 @@ impl ProofLedger {
         {
             return Err(ProofLedgerError::EvidenceDigestRequired(requirement));
         }
-
         if let Some(previous) = self.latest.get(&requirement).copied() {
             let allowed = matches!(
                 (previous, status),
@@ -110,16 +135,28 @@ impl ProofLedger {
                 });
             }
         }
+        Ok(())
+    }
 
-        let receipt = ProofReceipt {
-            sequence: self.receipts.len() as u64,
-            requirement,
-            status,
-            evidence_digest: evidence_digest.map(str::to_owned),
-        };
-        self.latest.insert(requirement, status);
-        self.receipts.push(receipt);
-        Ok(self.receipts.last().expect("receipt was just appended"))
+    /// Verify the digest against the exact evidence bytes before recording a
+    /// Proved/RuntimeChecked receipt. This confirms byte integrity only; the
+    /// verifier/caller remains responsible for the semantic truth of the claim.
+    pub fn record_verified<V: ProofDigestVerifier>(
+        &mut self,
+        requirement: ProofRequirement,
+        status: ProofStatus,
+        evidence: &[u8],
+        expected_sha256: &str,
+        verifier: &V,
+    ) -> Result<&ProofReceipt, ProofLedgerError> {
+        self.validate_record(requirement, status, Some(expected_sha256))?;
+        let valid = verifier
+            .verify_sha256(evidence, expected_sha256)
+            .map_err(ProofLedgerError::EvidenceVerificationFailed)?;
+        if !valid {
+            return Err(ProofLedgerError::EvidenceDigestMismatch);
+        }
+        self.record(requirement, status, Some(expected_sha256))
     }
 
     /// Seal only if every required proof satisfies the configured policy.
@@ -218,6 +255,67 @@ mod tests {
         assert!(ledger.is_sealed());
         assert_eq!(ledger.record(ProofRequirement::Bounds, ProofStatus::Unknown, None), Err(ProofLedgerError::AlreadySealed));
         assert_eq!(ledger.seal(&policy()), Err(ProofLedgerError::AlreadySealed));
+    }
+
+    #[test]
+    fn verified_record_checks_evidence_bytes_before_commit() {
+        struct FixtureVerifier;
+        impl ProofDigestVerifier for FixtureVerifier {
+            fn verify_sha256(&self, evidence: &[u8], expected_sha256: &str) -> Result<bool, String> {
+                let expected = match evidence {
+                    b"approved-evidence" => DIGEST_A,
+                    b"other-evidence" => DIGEST_B,
+                    _ => return Ok(false),
+                };
+                Ok(expected == expected_sha256)
+            }
+        }
+
+        let mut ledger = ProofLedger::new();
+        let receipt = ledger.record_verified(
+            ProofRequirement::TypeSafety,
+            ProofStatus::Proved,
+            b"approved-evidence",
+            DIGEST_A,
+            &FixtureVerifier,
+        ).unwrap();
+        assert_eq!(receipt.evidence_digest.as_deref(), Some(DIGEST_A));
+
+        let before = ledger.clone();
+        assert_eq!(
+            ledger.record_verified(
+                ProofRequirement::EffectPolicy,
+                ProofStatus::Proved,
+                b"other-evidence",
+                DIGEST_A,
+                &FixtureVerifier,
+            ),
+            Err(ProofLedgerError::EvidenceDigestMismatch)
+        );
+        assert_eq!(ledger, before, "digest mismatch must not append or mutate a receipt");
+    }
+
+    #[test]
+    fn verified_record_propagates_verifier_outage_without_mutation() {
+        struct UnavailableVerifier;
+        impl ProofDigestVerifier for UnavailableVerifier {
+            fn verify_sha256(&self, _: &[u8], _: &str) -> Result<bool, String> {
+                Err("digest service unavailable".into())
+            }
+        }
+
+        let mut ledger = ProofLedger::new();
+        assert_eq!(
+            ledger.record_verified(
+                ProofRequirement::TypeSafety,
+                ProofStatus::Proved,
+                b"evidence",
+                DIGEST_A,
+                &UnavailableVerifier,
+            ),
+            Err(ProofLedgerError::EvidenceVerificationFailed("digest service unavailable".into()))
+        );
+        assert!(ledger.receipts().is_empty());
     }
 
     #[test]
