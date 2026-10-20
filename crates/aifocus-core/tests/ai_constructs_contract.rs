@@ -2,7 +2,7 @@ use ardisa_core::{parse, pipeline::compile_source, sema, typed_ir};
 
 #[test]
 fn valid_ai_constructs_reach_typed_metadata_but_not_executable_codegen() {
-    let source = "module ai_contract\ntrace Audit\n  signature: hmac-sha256\ncell State\n  invariant: non-empty\nvault IO\n  capabilities: read write\n  denies: delete\nproof Review\n  requires: tests-pass\n  ensures: reviewed\n  on_unknown: reject\n  required: true\nphase Delivery\n  draft -> review\n  review -> release\nfn main() -> Int\n  0\n";
+    let source = "module ai_contract\ntrace Audit\n  signature: hmac-sha256\ncell State\n  invariant: non-empty\nvault IO\n  capabilities: filesystem_read filesystem_write\n  denies: filesystem_write\nproof Review\n  requires: tests-pass\n  ensures: reviewed\n  on_unknown: reject\n  required: true\nphase Delivery\n  draft -> review\n  review -> release\nfn main() -> Int\n  0\n";
     let module = parse(source).expect("construct syntax should parse");
     let constructs = sema::analyze_constructs(&module)
         .expect("well-formed declarations should produce typed semantic metadata");
@@ -47,11 +47,11 @@ fn typed_construct_encoding_is_deterministic_and_versioned() {
 fn vault_capability_sets_reject_duplicates_and_allow_deny_conflicts() {
     let cases = [
         (
-            "module vault_conflict\nvault IO\n  capabilities: read write\n  denies: write\n",
+            "module vault_conflict\nvault IO\n  capabilities: read write\n  denies: filesystem_write\n",
             "an effect cannot be both allowed and denied",
         ),
         (
-            "module vault_duplicate\nvault IO\n  capabilities: read read\n  denies: delete\n",
+            "module vault_duplicate\nvault IO\n  capabilities: filesystem_read filesystem_read\n  denies: delete\n",
             "a capability must not be duplicated within a policy clause",
         ),
     ];
@@ -65,12 +65,25 @@ fn vault_capability_sets_reject_duplicates_and_allow_deny_conflicts() {
         );
     }
 
-    let valid = "module vault_disjoint\nvault IO\n  capabilities: filesystem_read network_connect\n  denies: filesystem_delete\n";
+    let valid = "module vault_disjoint\nvault IO\n  capabilities: filesystem_read network\n  denies: filesystem_write\n";
     let module = parse(valid).expect("disjoint vault policy should parse");
     sema::analyze_constructs(&module)
         .expect("disjoint allow/deny sets should pass structural validation");
     assert!(
         compile_source(valid).is_err(),
         "structural validation must not imply runtime enforcement or bypass AIF610"
+    );
+}
+
+
+#[test]
+fn vault_capability_names_must_match_runtime_capability_vocabulary() {
+    let source = "module vault_unknown\\nvault IO\\n  capabilities: filesystem_read unknown_capability\\n  denies: filesystem_write\\n";
+    let module = parse(source).expect("unknown capability fixture should parse");
+    let errors = sema::analyze_constructs(&module)
+        .expect_err("unknown capability names must fail closed");
+    assert!(
+        errors.iter().any(|error| error.code == "AIF620"),
+        "expected AIF620 for unsupported capability name, got {errors:?}"
     );
 }
