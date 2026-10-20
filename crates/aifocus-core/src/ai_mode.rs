@@ -629,3 +629,95 @@ mod invariant_cell_tests {
         );
     }
 }
+
+
+#[cfg(test)]
+mod trace_ledger_tests {
+    use super::*;
+
+    struct TestSigner;
+
+    impl TraceSigner for TestSigner {
+        fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
+            // Deterministic test double only; deliberately not a cryptographic signature.
+            Ok(vec![payload.iter().fold(0_u8, |acc, byte| acc.wrapping_add(*byte)), 0xA5])
+        }
+    }
+
+    fn policy(include_ai_metadata: bool, require_signature: bool) -> TracePolicy {
+        TracePolicy { required: true, include_ai_metadata, require_signature }
+    }
+
+    fn event() -> TraceEventInput {
+        TraceEventInput {
+            event_kind: "compile".into(),
+            actor: "compiler.v1".into(),
+            subject_sha256: "a".repeat(64),
+            outcome: "success".into(),
+            provider_id: None,
+            session_sha256: None,
+        }
+    }
+
+    #[test]
+    fn signed_receipts_are_ordered_and_link_to_previous_signature() {
+        let mut ledger = TraceLedger::new();
+        let first_signature = ledger.record(&policy(false, true), event(), Some(&TestSigner))
+            .unwrap().signature.clone();
+        let second = ledger.record(&policy(false, true), event(), Some(&TestSigner)).unwrap();
+        assert_eq!(ledger.receipts().len(), 2);
+        assert_eq!(ledger.receipts()[0].sequence, 0);
+        assert_eq!(second.sequence, 1);
+        assert_eq!(second.previous_signature, first_signature);
+    }
+
+    #[test]
+    fn failed_validation_or_signing_does_not_mutate_ledger() {
+        let mut ledger = TraceLedger::new();
+        let mut invalid = event();
+        invalid.subject_sha256 = "not-a-digest".into();
+        assert_eq!(ledger.record(&policy(false, true), invalid, Some(&TestSigner)).unwrap_err(),
+            TraceError::InvalidDigest("subject_sha256"));
+        assert!(ledger.receipts().is_empty());
+        assert!(matches!(ledger.record::<TestSigner>(&policy(false, true), event(), None),
+            Err(TraceError::SigningFailed(_))));
+        assert!(ledger.receipts().is_empty());
+    }
+
+    #[test]
+    fn raw_or_unapproved_ai_metadata_is_not_accepted() {
+        let mut input = event();
+        input.provider_id = Some("model-v1".into());
+        input.session_sha256 = Some("b".repeat(64));
+        let mut ledger = TraceLedger::new();
+        assert_eq!(ledger.record(&policy(false, true), input.clone(), Some(&TestSigner)).unwrap_err(),
+            TraceError::MetadataNotAllowed);
+        assert!(ledger.receipts().is_empty());
+        assert!(ledger.record(&policy(true, true), input, Some(&TestSigner)).is_ok());
+    }
+
+    #[test]
+    fn malformed_tokens_and_oversized_signatures_fail_closed() {
+        let mut ledger = TraceLedger::new();
+        let mut invalid = event();
+        invalid.actor = "raw actor with spaces".into();
+        assert_eq!(ledger.record(&policy(false, true), invalid, Some(&TestSigner)).unwrap_err(),
+            TraceError::InvalidToken("actor"));
+
+        struct OversizedSigner;
+        impl TraceSigner for OversizedSigner {
+            fn sign(&self, _: &[u8]) -> Result<Vec<u8>, String> {
+                Ok(vec![0_u8; MAX_TRACE_SIGNATURE_BYTES + 1])
+            }
+        }
+        assert_eq!(ledger.record(&policy(false, true), event(), Some(&OversizedSigner)).unwrap_err(),
+            TraceError::InvalidSignatureLength);
+        assert!(ledger.receipts().is_empty());
+    }
+
+    #[test]
+    fn trace_capacity_is_explicit_and_bounded() {
+        assert_eq!(MAX_TRACE_RECEIPTS, 4096);
+        assert!(MAX_TRACE_TOKEN_BYTES > 0 && MAX_TRACE_SIGNATURE_BYTES > 0);
+    }
+}
