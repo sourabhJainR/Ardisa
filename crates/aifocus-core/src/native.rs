@@ -5238,3 +5238,28 @@ mod task_panic_classification_tests {
         );
     }
 }
+
+
+#[cfg(test)]
+mod host_panic_boundary_tests {
+    use super::{NativeError, catch_host_panic};
+
+    #[test]
+    fn host_panic_is_translated_to_explicit_native_error() {
+        let result: Result<(), NativeError> =
+            catch_host_panic(|| panic!("injected host panic at execution boundary"));
+        assert_eq!(
+            result,
+            Err(NativeError::HostPanicked(
+                "host panic contained at native execution boundary".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn ordinary_native_errors_are_not_reclassified_as_panics() {
+        let result: Result<(), NativeError> =
+            catch_host_panic(|| Err(NativeError::Type("invalid value".into())));
+        assert_eq!(result, Err(NativeError::Type("invalid value".into())));
+    }
+}
