@@ -2,7 +2,7 @@ use ardisa_core::{parse, pipeline::compile_source, sema, typed_ir};
 
 #[test]
 fn valid_ai_constructs_reach_typed_metadata_but_not_executable_codegen() {
-    let source = "module ai_contract\ntrace Audit\n  signature: hmac-sha256\ncell State\n  invariant: non-empty\nvault IO\n  capabilities: filesystem_read filesystem_write\n  denies: filesystem_write\nproof Review\n  requires: tests-pass\n  ensures: reviewed\n  on_unknown: reject\n  required: true\nphase Delivery\n  draft -> review\n  review -> release\nfn main() -> Int\n  0\n";
+    let source = "module ai_contract\ntrace Audit\n  signature: hmac-sha256\ncell State\n  invariant: non-empty\nvault IO\n  capabilities: filesystem_read filesystem_write\n  denies: network\nproof Review\n  requires: tests-pass\n  ensures: reviewed\n  on_unknown: reject\n  required: true\nphase Delivery\n  draft -> review\n  review -> release\nfn main() -> Int\n  0\n";
     let module = parse(source).expect("construct syntax should parse");
     let constructs = sema::analyze_constructs(&module)
         .expect("well-formed declarations should produce typed semantic metadata");
@@ -47,11 +47,11 @@ fn typed_construct_encoding_is_deterministic_and_versioned() {
 fn vault_capability_sets_reject_duplicates_and_allow_deny_conflicts() {
     let cases = [
         (
-            "module vault_conflict\nvault IO\n  capabilities: read write\n  denies: filesystem_write\n",
+            "module vault_conflict\nvault IO\n  capabilities: filesystem_read filesystem_write\n  denies: filesystem_write\n",
             "an effect cannot be both allowed and denied",
         ),
         (
-            "module vault_duplicate\nvault IO\n  capabilities: filesystem_read filesystem_read\n  denies: delete\n",
+            "module vault_duplicate\nvault IO\n  capabilities: filesystem_read filesystem_read\n  denies: network\n",
             "a capability must not be duplicated within a policy clause",
         ),
     ];
