@@ -703,7 +703,7 @@ mod trace_ledger_tests {
         let mut ledger = TraceLedger::new();
         let first_signature = ledger.record(&policy(false, true), event(), Some(&TestSigner))
             .unwrap().signature.clone();
-        let second = ledger.record(&policy(false, true), event(), Some(&TestSigner)).unwrap();
+        let second = ledger.record(&policy(false, true), event(), Some(&TestSigner)).unwrap().clone();
         assert_eq!(ledger.receipts().len(), 2);
         assert_eq!(ledger.receipts()[0].sequence, 0);
         assert_eq!(second.sequence, 1);
