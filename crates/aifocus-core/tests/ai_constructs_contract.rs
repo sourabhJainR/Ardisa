@@ -65,7 +65,7 @@ fn vault_capability_sets_reject_duplicates_and_allow_deny_conflicts() {
         );
     }
 
-    let valid = "module vault_disjoint\nvault IO\n  capabilities: filesystem.read network.connect\n  denies: filesystem.delete\n";
+    let valid = "module vault_disjoint\nvault IO\n  capabilities: filesystem_read network_connect\n  denies: filesystem_delete\n";
     let module = parse(valid).expect("disjoint vault policy should parse");
     sema::analyze_constructs(&module)
         .expect("disjoint allow/deny sets should pass structural validation");
