@@ -115,10 +115,22 @@ pub enum PolicyViolation {
 ///
 /// This is a runtime API only: source-level `phase` declarations are still
 /// rejected by the executable compiler until they are encoded in ARDISA-EXEC-V1.
+pub const MAX_PHASE_STATES: usize = 4096;
+pub const MAX_PHASE_TRANSITIONS: usize = 16_384;
+pub const MAX_PHASE_HISTORY: usize = 16_384;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseTransition {
+    pub from: String,
+    pub to: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhaseMachine {
     current: String,
     transitions: BTreeSet<(String, String)>,
+    states: BTreeSet<String>,
+    history: Vec<PhaseTransition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +141,9 @@ pub enum PhaseMachineError {
     DuplicateTransition { from: String, to: String },
     InitialStateUnknown(String),
     InvalidTransition { from: String, to: String },
+    TooManyStates,
+    TooManyTransitions,
+    HistoryLimitExceeded,
 }
 
 impl PhaseMachine {
@@ -157,6 +172,12 @@ impl PhaseMachine {
             }
             states.insert(from);
             states.insert(to);
+            if edges.len() > MAX_PHASE_TRANSITIONS {
+                return Err(PhaseMachineError::TooManyTransitions);
+            }
+            if states.len() > MAX_PHASE_STATES {
+                return Err(PhaseMachineError::TooManyStates);
+            }
         }
 
         if edges.is_empty() {
@@ -166,7 +187,7 @@ impl PhaseMachine {
             return Err(PhaseMachineError::InitialStateUnknown(initial));
         }
 
-        Ok(Self { current: initial, transitions: edges })
+        Ok(Self { current: initial, transitions: edges, states, history: Vec::new() })
     }
 
     pub fn current(&self) -> &str {
@@ -189,8 +210,21 @@ impl PhaseMachine {
                 to: next.to_string(),
             });
         }
+        if self.history.len() >= MAX_PHASE_HISTORY {
+            return Err(PhaseMachineError::HistoryLimitExceeded);
+        }
+        let from = self.current.clone();
+        self.history.push(PhaseTransition { from, to: next.to_string() });
         self.current = next.to_string();
         Ok(())
+    }
+
+    pub fn is_declared(&self, state: &str) -> bool {
+        self.states.contains(state)
+    }
+
+    pub fn history(&self) -> &[PhaseTransition] {
+        &self.history
     }
 }
 
@@ -404,6 +438,10 @@ mod tests {
             "review -> release is declared"
         );
         assert_eq!(machine.current(), "release");
+        assert_eq!(machine.history(), &[
+            PhaseTransition { from: "draft".into(), to: "review".into() },
+            PhaseTransition { from: "review".into(), to: "release".into() },
+        ]);
         assert_eq!(
             machine.transition("draft"),
             Err(PhaseMachineError::InvalidTransition {
@@ -412,6 +450,9 @@ mod tests {
             })
         );
         assert_eq!(machine.current(), "release", "rejected transitions must not mutate state");
+        assert_eq!(machine.history().len(), 2, "rejected transitions must not append history");
+        assert!(machine.is_declared("review"));
+        assert!(!machine.is_declared("unknown"));
     }
 
     #[test]
