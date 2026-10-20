@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use unicode_segmentation::UnicodeSegmentation;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{
@@ -249,10 +250,25 @@ pub enum NativeError {
     /// A child task unwound across the host thread boundary. This is distinct
     /// from unsupported language functionality and does not imply language-level unwind support.
     TaskPanicked(String),
+    /// A host-language panic was contained at the public native execution boundary.
+    /// This is not an Ardisa-level catchable panic or unwind guarantee.
+    HostPanicked(String),
     Cancelled(String),
     InvalidProgram(String),
     Type(String),
     ResourceLimit(String),
+}
+
+
+/// Contain host Rust unwinds at public native execution boundaries. This does
+/// not catch process aborts, allocation aborts, or panics in detached host code.
+fn catch_host_panic<T>(operation: impl FnOnce() -> Result<T, NativeError>) -> Result<T, NativeError> {
+    match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(result) => result,
+        Err(_) => Err(NativeError::HostPanicked(
+            "host panic contained at native execution boundary".into(),
+        )),
+    }
 }
 
 /// Normalize a child-thread join result without conflating host panics with
@@ -1063,8 +1079,10 @@ pub fn run_shared_program_with_limits(
     args: &[NativeValue],
     limits: ExecutionLimits,
 ) -> Result<NativeValue, NativeError> {
-    let validated = ValidatedNativeProgram::try_from_shared(program)?;
-    run_validated_program_with_limits(&validated, entry, args, limits)
+    catch_host_panic(|| {
+        let validated = ValidatedNativeProgram::try_from_shared(program)?;
+        run_validated_program_with_limits(&validated, entry, args, limits)
+    })
 }
 
 /// Execute a previously validated immutable program without revalidating its
@@ -1076,15 +1094,17 @@ pub fn run_validated_program_with_limits(
     args: &[NativeValue],
     limits: ExecutionLimits,
 ) -> Result<NativeValue, NativeError> {
-    validate_input_values(args, limits)?;
-    let function = program.program.functions.get(entry)
-        .ok_or_else(|| NativeError::InvalidProgram(format!("unknown function '{entry}'")))?;
-    let state = Arc::new(ExecutionState {
-        limits,
-        instructions: AtomicUsize::new(0),
-        active_tasks: AtomicUsize::new(0),
-    });
-    run_function(&program.program, function, args, None, state, 0)
+    catch_host_panic(|| {
+        validate_input_values(args, limits)?;
+        let function = program.program.functions.get(entry)
+            .ok_or_else(|| NativeError::InvalidProgram(format!("unknown function '{entry}'")))?;
+        let state = Arc::new(ExecutionState {
+            limits,
+            instructions: AtomicUsize::new(0),
+            active_tasks: AtomicUsize::new(0),
+        });
+        run_function(&program.program, function, args, None, state, 0)
+    })
 }
 
 fn run_unicode_builtin(
@@ -5216,5 +5236,30 @@ mod task_panic_classification_tests {
             normalize_task_join("worker-a", Ok(Err(NativeError::Cancelled("requested".into())))),
             Err(NativeError::Cancelled("requested".into()))
         );
+    }
+}
+
+
+#[cfg(test)]
+mod host_panic_boundary_tests {
+    use super::{NativeError, catch_host_panic};
+
+    #[test]
+    fn host_panic_is_translated_to_explicit_native_error() {
+        let result: Result<(), NativeError> =
+            catch_host_panic(|| panic!("injected host panic at execution boundary"));
+        assert_eq!(
+            result,
+            Err(NativeError::HostPanicked(
+                "host panic contained at native execution boundary".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn ordinary_native_errors_are_not_reclassified_as_panics() {
+        let result: Result<(), NativeError> =
+            catch_host_panic(|| Err(NativeError::Type("invalid value".into())));
+        assert_eq!(result, Err(NativeError::Type("invalid value".into())));
     }
 }
