@@ -1291,7 +1291,7 @@ fn run_function(
                         .take()
                         .expect("task already joined")
                         .join();
-                    let result = normalize_task_join(&name, result)?;
+                    let result = normalize_task_join(&name, result);
                     if let Err(error) = result {
                         if matches!(error, NativeError::Cancelled(_)) {
                             continue;
@@ -1354,7 +1354,7 @@ fn run_function(
                     .take()
                     .expect("task already joined")
                     .join();
-                let result = normalize_task_join(&name, result)?;
+                let result = normalize_task_join(&name, result);
                 match result {
                     Ok(_) => stack.push(NativeValue::Unit),
                     Err(NativeError::Cancelled(_)) => stack.push(NativeValue::Unit),
