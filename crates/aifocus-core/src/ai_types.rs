@@ -472,7 +472,6 @@ mod bounded_ai_tape_tests {
     }
 
     #[test]
-    #[test]
     fn activation_cache_rejects_budget_and_out_of_order_steps_without_partial_write() {
         let mut cache = ActivationCache::new(1, 3, 2).unwrap();
         cache.record(1, &[1.0, 2.0]).unwrap();
