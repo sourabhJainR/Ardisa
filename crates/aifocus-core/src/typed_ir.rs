@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn construct_metadata_rejects_duplicate_names_across_kinds() {
         let module = crate::parse(
-            "module constructs\\ncell Shared\\n  value: Int\\n  invariant: valid\\n",
+            "module constructs\ncell Shared\n  value: Int\n  invariant: valid\n",
         ).unwrap();
         let mut constructs = lower_constructs(&module).unwrap();
         let mut duplicate = constructs[0].clone();
