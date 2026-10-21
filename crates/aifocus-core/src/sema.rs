@@ -1663,6 +1663,31 @@ mod tests {
     }
 
     #[test]
+    fn native_reference_pointer_and_pinning_types_fail_closed() {
+        for name in ["Pin", "NonNull", "RawPtr", "SharedRef", "MutableRef"] {
+            for ty in [name.to_string(), format!("{name}<Int>")] {
+                let source = format!(
+                    "module unsupported_reference\\nfn read(value: {ty}) -> Int\\n  0\\n"
+                );
+                let module = parse(&source).unwrap_or_else(|error| {
+                    panic!("fixture for unsupported type {ty} must parse: {error:?}")
+                });
+                let errors = check(&module).expect_err(
+                    "reference, raw-pointer, and pinning types must remain fail-closed",
+                );
+                assert!(
+                    errors.iter().any(|error| {
+                        error.code == "AIF320"
+                            && error.message.contains("reference/pointer type")
+                            && error.message.contains(name)
+                    }),
+                    "expected explicit AIF320 diagnostic for {ty}, got {errors:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn construct_analysis_produces_typed_metadata_but_normal_analysis_fails_closed() {
         let module = parse(
             "module constructs\ntrace Evidence\n  signature: sha256\ncell State\n  value: Int\n  invariant: valid\nvault NoNetwork\n  denies: network\n  capabilities: filesystem_read\nproof P\n  requires: valid\n  ensures: true\n  on_unknown: reject\n  required: true\nphase Lifecycle\n  Ready -> Done\n",
