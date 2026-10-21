@@ -127,6 +127,8 @@ pub enum NativeInstr {
     GreaterEqual,
     JumpIfFalse(usize),
     Jump(usize),
+    /// Return only when the value satisfies the declared result type in V2 artifacts.
+    ReturnTyped(String),
     Return,
     Pop,
     Call {
@@ -592,6 +594,69 @@ pub fn compile(module: &IrModule) -> Result<Vec<NativeInstr>, NativeError> {
     compile_function(function)
 }
 
+
+fn native_type_tag(ty: &TypeKind) -> String {
+    match ty {
+        TypeKind::Int => "Int".into(),
+        TypeKind::Bool => "Bool".into(),
+        TypeKind::String => "String".into(),
+        TypeKind::Unit => "Unit".into(),
+        TypeKind::List(element) => format!("List<{}>", native_type_tag(&element.kind)),
+        TypeKind::Result(ok, err) => format!("Result<{},{}>", native_type_tag(&ok.kind), native_type_tag(&err.kind)),
+        TypeKind::Named(name) => name.clone(),
+        TypeKind::Generic(name, args) => format!("{}<{}>", name, args.iter().map(|arg| native_type_tag(&arg.kind)).collect::<Vec<_>>().join(",")),
+    }
+}
+
+fn split_type_args(value: &str) -> Option<(&str, Vec<&str>)> {
+    let open = value.find('<')?;
+    if !value.ends_with('>') { return None; }
+    let name = &value[..open];
+    let body = &value[open + 1..value.len() - 1];
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, ch) in body.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => { args.push(&body[start..index]); start = index + 1; }
+            _ => {}
+        }
+    }
+    if !body.is_empty() { args.push(&body[start..]); }
+    Some((name, args))
+}
+
+fn native_value_matches_type_tag(value: &NativeValue, expected: &str) -> bool {
+    if expected == "Any" { return true; }
+    if let Some((name, args)) = split_type_args(expected) {
+        return match (name, args.as_slice(), value) {
+            ("List", [element], NativeValue::List(items)) => items.iter().all(|item| native_value_matches_type_tag(item, element)),
+            ("Result", [ok, _err], NativeValue::ResultOk(item)) => native_value_matches_type_tag(item, ok),
+            ("Result", [_ok, err], NativeValue::ResultErr(item)) => native_value_matches_type_tag(item, err),
+            ("Option", [inner], NativeValue::OptionSome(item)) => native_value_matches_type_tag(item, inner),
+            ("Option", [_], NativeValue::OptionNone) => true,
+            ("Tensor", _, NativeValue::Tensor { .. }) => true,
+            ("Embedding", _, NativeValue::Embedding { .. }) => true,
+            ("QuantizedTensor", _, NativeValue::QuantizedTensor { .. }) => true,
+            ("Result", _, _) | ("Option", _, _) | ("List", _, _) => false,
+            _ => native_value_matches_type_tag(value, name),
+        };
+    }
+    match (expected, value) {
+        ("Int", NativeValue::Int(_)) | ("Bool", NativeValue::Bool(_)) | ("String", NativeValue::String(_)) | ("Unit", NativeValue::Unit) => true,
+        ("Probability", NativeValue::Probability(_)) | ("Tensor", NativeValue::Tensor { .. }) | ("QuantizedTensor", NativeValue::QuantizedTensor { .. }) |
+        ("Embedding", NativeValue::Embedding { .. }) | ("AttentionBlock", NativeValue::AttentionBlock { .. }) |
+        ("LoRAAdapter", NativeValue::LoRAAdapter { .. }) | ("MoERouter", NativeValue::MoERouter { .. }) |
+        ("VectorIndex", NativeValue::VectorIndex { .. }) | ("KvCache", NativeValue::KvCache { .. }) |
+        ("ContextWindow", NativeValue::ContextWindow { .. }) | ("MctsTree", NativeValue::MctsTree { .. }) |
+        ("GradientTape", NativeValue::GradientTape { .. }) | ("ActivationCache", NativeValue::ActivationCache { .. }) |
+        ("TokenizerState", NativeValue::TokenizerState { .. }) => true,
+        _ => false,
+    }
+}
+
 pub fn compile_program(module: &IrModule) -> Result<NativeProgram, NativeError> {
     let mut functions = BTreeMap::new();
     for function in &module.functions {
@@ -630,8 +695,14 @@ pub fn compile_function(function: &IrFunction) -> Result<Vec<NativeInstr>, Nativ
             emit_op(op, &mut code)?;
         }
     }
-    if !matches!(code.last(), Some(NativeInstr::Return)) {
-        code.push(NativeInstr::Return);
+    let expected = function.return_type.as_ref().map(native_type_tag).unwrap_or_else(|| "Unit".to_string());
+    for instr in &mut code {
+        if matches!(instr, NativeInstr::Return) {
+            *instr = NativeInstr::ReturnTyped(expected.clone());
+        }
+    }
+    if !matches!(code.last(), Some(NativeInstr::Return | NativeInstr::ReturnTyped(_))) {
+        code.push(NativeInstr::ReturnTyped(expected));
     }
     Ok(code)
 }
@@ -2275,6 +2346,13 @@ fn run_function(
                 }
             }
             NativeInstr::Jump(target) => pc = *target,
+            NativeInstr::ReturnTyped(expected) => {
+                let value = stack.pop().unwrap_or(NativeValue::Unit);
+                if !native_value_matches_type_tag(&value, expected) {
+                    return Err(NativeError::Type(format!("function return value does not match declared type {expected}")));
+                }
+                return Ok(value);
+            }
             NativeInstr::Return => return Ok(stack.pop().unwrap_or(NativeValue::Unit)),
             NativeInstr::Pop => {
                 stack
@@ -2427,7 +2505,8 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
 ///
 /// The format is deliberately textual and line-oriented so an existing
 /// Ardisa VM can consume a compiler artifact without invoking the Rust compiler.
-pub const ARTIFACT_MAGIC: &str = "ARDISA-EXEC-V1";
+pub const ARTIFACT_MAGIC_V1: &str = "ARDISA-EXEC-V1";
+pub const ARTIFACT_MAGIC: &str = "ARDISA-EXEC-V2";
 
 pub fn encode_program(program: &NativeProgram) -> String {
     let mut out = String::from(ARTIFACT_MAGIC);
@@ -2442,7 +2521,11 @@ pub fn encode_program(program: &NativeProgram) -> String {
         out.push('\n');
         for instr in &function.code {
             out.push_str("I|");
-            out.push_str(&encode_instr(instr));
+            let encoded = match instr {
+                NativeInstr::Return => "ReturnTyped:Any".to_string(),
+                other => encode_instr(other),
+            };
+            out.push_str(&encoded);
             out.push('\n');
         }
         out.push_str("END\n");
@@ -2457,7 +2540,9 @@ pub fn decode_program(input: &str) -> Result<NativeProgram, NativeError> {
         )));
     }
     let mut lines = input.lines();
-    if lines.next() != Some(ARTIFACT_MAGIC) {
+    let magic = lines.next();
+    let legacy_v1 = magic == Some(ARTIFACT_MAGIC_V1);
+    if !legacy_v1 && magic != Some(ARTIFACT_MAGIC) {
         return Err(NativeError::InvalidProgram("invalid Ardisa executable magic".into()));
     }
     let mut functions = BTreeMap::new();
@@ -2594,6 +2679,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::ScopeStart => "ScopeStart".into(), NativeInstr::ScopeEnd => "ScopeEnd".into(),
         NativeInstr::Spawn { name, callee, argc } => format!("Spawn:{},{},{}", escape_artifact(name), escape_artifact(callee), argc),
         NativeInstr::Join { name } => format!("Join:{}", escape_artifact(name)),
+        NativeInstr::ReturnTyped(expected) => format!("ReturnTyped:{}", escape_artifact(expected)),
         NativeInstr::Cancel { name } => format!("Cancel:{}", escape_artifact(name)),
     }
 }
@@ -2667,7 +2753,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "Call"=>{let mut x=arg.split(','); NativeInstr::Call{callee:unescape_artifact(x.next().ok_or_else(bad)?)?,argc:int(x.next().ok_or_else(bad)?)?}},
         "ScopeStart"=>NativeInstr::ScopeStart,"ScopeEnd"=>NativeInstr::ScopeEnd,
         "Spawn"=>{let mut x=arg.split(','); NativeInstr::Spawn{name:unescape_artifact(x.next().ok_or_else(bad)?)?,callee:unescape_artifact(x.next().ok_or_else(bad)?)?,argc:int(x.next().ok_or_else(bad)?)?}},
-        "Join"=>NativeInstr::Join{name:unescape_artifact(arg)?},"Cancel"=>NativeInstr::Cancel{name:unescape_artifact(arg)?},
+        "Join"=>NativeInstr::Join{name:unescape_artifact(arg)?},"ReturnTyped"=>NativeInstr::ReturnTyped(unescape_artifact(arg)?),"Cancel"=>NativeInstr::Cancel{name:unescape_artifact(arg)?},
         _=>return Err(bad()),
     })
 }
