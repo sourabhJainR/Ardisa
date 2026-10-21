@@ -650,7 +650,7 @@ fn native_value_matches_type_tag(value: &NativeValue, expected: &str) -> bool {
         ("Embedding", NativeValue::Embedding { .. }) | ("AttentionBlock", NativeValue::AttentionBlock { .. }) |
         ("LoRAAdapter", NativeValue::LoRAAdapter { .. }) | ("MoERouter", NativeValue::MoERouter { .. }) |
         ("VectorIndex", NativeValue::VectorIndex { .. }) | ("KvCache", NativeValue::KvCache { .. }) |
-        ("ContextWindow", NativeValue::ContextWindow { .. }) | ("MctsTree", NativeValue::MctsTree { .. }) |
+        ("ContextWindow", NativeValue::ContextWindow { .. }) |
         ("GradientTape", NativeValue::GradientTape { .. }) | ("ActivationCache", NativeValue::ActivationCache { .. }) |
         ("TokenizerState", NativeValue::TokenizerState { .. }) => true,
         _ => false,
@@ -758,7 +758,7 @@ fn emit_op(op: &IrOp, code: &mut Vec<NativeInstr>) -> Result<(), NativeError> {
             if let Some(value) = value {
                 emit_value(value, code)?;
             } else {
-                code.push(NativeInstr::PushInt(0));
+                code.push(NativeInstr::PushUnit);
             }
             code.push(NativeInstr::Return);
         }
@@ -2541,8 +2541,7 @@ pub fn decode_program(input: &str) -> Result<NativeProgram, NativeError> {
     }
     let mut lines = input.lines();
     let magic = lines.next();
-    let legacy_v1 = magic == Some(ARTIFACT_MAGIC_V1);
-    if !legacy_v1 && magic != Some(ARTIFACT_MAGIC) {
+    if magic != Some(ARTIFACT_MAGIC_V1) && magic != Some(ARTIFACT_MAGIC) {
         return Err(NativeError::InvalidProgram("invalid Ardisa executable magic".into()));
     }
     let mut functions = BTreeMap::new();
@@ -5364,5 +5363,44 @@ mod host_panic_boundary_tests {
         let result: Result<(), NativeError> =
             catch_host_panic(|| Err(NativeError::Type("invalid value".into())));
         assert_eq!(result, Err(NativeError::Type("invalid value".into())));
+    }
+}
+
+
+#[cfg(test)]
+mod typed_artifact_v2_tests {
+    use super::*;
+
+    #[test]
+    fn v2_artifact_enforces_declared_return_type_after_decode() {
+        let program = NativeProgram {
+            functions: [("main".to_string(), NativeFunction {
+                params: vec![],
+                code: vec![NativeInstr::PushBool(false), NativeInstr::ReturnTyped("Int".into())],
+            })].into_iter().collect(),
+        };
+        let artifact = encode_program(&program);
+        assert!(artifact.starts_with("ARDISA-EXEC-V2\\n"));
+        let decoded = decode_program(&artifact).expect("V2 artifact should decode");
+        assert!(matches!(run_program(&decoded, "main", &[]), Err(NativeError::Type(message)) if message.contains("declared type Int")));
+        assert_eq!(encode_program(&decoded), artifact, "V2 encoding must be deterministic");
+    }
+
+    #[test]
+    fn decoder_remains_compatible_with_v1_artifacts() {
+        let legacy = "ARDISA-EXEC-V1\\nFN|main|0|\\nI|PushInt:42\\nI|Return\\nEND\\n";
+        let decoded = decode_program(legacy).expect("existing V1 artifact must remain readable");
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(42));
+    }
+
+    #[test]
+    fn compiled_functions_embed_their_declared_result_type() {
+        let source = "module typed_return\\nfn main() -> Int\\n  42\\n";
+        let module = crate::parse(source).expect("source parses");
+        crate::sema::check(&module).expect("source type-checks");
+        let program = compile_program(&crate::ir::lower(&module)).expect("native compilation succeeds");
+        assert!(program.functions["main"].code.iter().any(|instr| matches!(instr, NativeInstr::ReturnTyped(ty) if ty == "Int")));
+        let decoded = decode_program(&encode_program(&program)).expect("compiled artifact decodes");
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(42));
     }
 }
