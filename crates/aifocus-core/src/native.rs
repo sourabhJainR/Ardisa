@@ -1175,6 +1175,58 @@ fn execute_unicode_instruction(
     Ok(())
 }
 
+fn runtime_value_matches_type(value: &NativeValue, ty: &TypeKind) -> bool {
+    match ty {
+        TypeKind::Int => matches!(value, NativeValue::Int(_)),
+        TypeKind::Bool => matches!(value, NativeValue::Bool(_)),
+        TypeKind::String => matches!(value, NativeValue::String(_)),
+        TypeKind::Unit => matches!(value, NativeValue::Unit),
+        TypeKind::List(element) => match value {
+            NativeValue::List(values) => values.iter().all(|item| runtime_value_matches_type(item, &element.kind)),
+            _ => false,
+        },
+        TypeKind::Result(ok, err) => match value {
+            NativeValue::ResultOk(inner) => runtime_value_matches_type(inner, &ok.kind),
+            NativeValue::ResultErr(inner) => runtime_value_matches_type(inner, &err.kind),
+            _ => false,
+        },
+        TypeKind::Named(name) => match name.as_str() {
+            "F32" | "Float" => matches!(value, NativeValue::Float(_)),
+            "Probability" | "PFloat" => matches!(value, NativeValue::Probability(_)),
+            "Tensor" => matches!(value, NativeValue::Tensor { .. }),
+            "QuantizedTensor" => matches!(value, NativeValue::QuantizedTensor { .. }),
+            "Embedding" => matches!(value, NativeValue::Embedding { .. }),
+            "AttentionBlock" => matches!(value, NativeValue::AttentionBlock { .. }),
+            "LoRAAdapter" => matches!(value, NativeValue::LoRAAdapter { .. }),
+            "MoERouter" => matches!(value, NativeValue::MoERouter { .. }),
+            "VectorIndex" => matches!(value, NativeValue::VectorIndex { .. }),
+            "KvCache" => matches!(value, NativeValue::KvCache { .. }),
+            "ContextWindow" => matches!(value, NativeValue::ContextWindow { .. }),
+            "GradientTape" => matches!(value, NativeValue::GradientTape { .. }),
+            "ActivationCache" => matches!(value, NativeValue::ActivationCache { .. }),
+            "TokenizerState" => matches!(value, NativeValue::TokenizerState { .. }),
+            _ => false,
+        },
+        TypeKind::Generic(name, args) => match (name.as_str(), args.as_slice(), value) {
+            ("Option", [inner], NativeValue::OptionSome(value)) => runtime_value_matches_type(value, &inner.kind),
+            ("Option", [_], NativeValue::OptionNone) => true,
+            ("Tensor", [_], NativeValue::Tensor { .. }) => true,
+            _ => false,
+        },
+    }
+}
+
+fn validate_runtime_return(value: NativeValue, expected: Option<&TypeKind>) -> Result<NativeValue, NativeError> {
+    match expected {
+        Some(ty) if runtime_value_matches_type(&value, ty) => Ok(value),
+        Some(ty) => Err(NativeError::Type(format!(
+            "function return value does not match declared type {}", ty.display_name()
+        ))),
+        None if matches!(value, NativeValue::Unit) => Ok(value),
+        None => Err(NativeError::Type("function without a declared return type returned a value".into())),
+    }
+}
+
 fn run_function(
     program: &Arc<NativeProgram>,
     function: &NativeFunction,
@@ -2139,8 +2191,12 @@ fn run_function(
                     .ok_or_else(|| NativeError::InvalidProgram("propagate value missing".into()))?
                 {
                     NativeValue::ResultOk(value) | NativeValue::OptionSome(value) => stack.push(*value),
-                    NativeValue::ResultErr(value) => return Ok(NativeValue::ResultErr(value)),
-                    NativeValue::OptionNone => return Ok(NativeValue::OptionNone),
+                    NativeValue::ResultErr(value) => {
+                        return validate_runtime_return(NativeValue::ResultErr(value), function.return_type.as_ref());
+                    }
+                    NativeValue::OptionNone => {
+                        return validate_runtime_return(NativeValue::OptionNone, function.return_type.as_ref());
+                    }
                     _ => return Err(NativeError::Type("propagate requires Result or Option".into())),
                 }
             }
@@ -2275,7 +2331,10 @@ fn run_function(
                 }
             }
             NativeInstr::Jump(target) => pc = *target,
-            NativeInstr::Return => return Ok(stack.pop().unwrap_or(NativeValue::Unit)),
+            NativeInstr::Return => {
+                let value = stack.pop().unwrap_or(NativeValue::Unit);
+                return validate_runtime_return(value, function.return_type.as_ref());
+            }
             NativeInstr::Pop => {
                 stack
                     .pop()
