@@ -5216,13 +5216,30 @@ mod task_panic_classification_tests {
     use super::*;
 
     #[test]
-    fn host_thread_panic_is_not_misreported_as_unsupported_language_feature() {
-        let panic = std::panic::catch_unwind(|| panic!("synthetic worker panic"))
-            .expect_err("fixture must produce a host panic");
-        let result = normalize_task_join("worker-a", Err(panic));
+    fn actual_child_thread_panic_is_normalized_at_join_boundary() {
+        let joined = std::thread::spawn(|| -> Result<NativeValue, NativeError> {
+            panic!("synthetic worker panic");
+        })
+        .join();
+
+        let result = normalize_task_join("worker-a", joined);
         assert_eq!(
             result,
             Err(NativeError::TaskPanicked("task 'worker-a' panicked".into()))
+        );
+    }
+
+    #[test]
+    fn actual_child_thread_runtime_error_is_preserved_at_join_boundary() {
+        let joined = std::thread::spawn(|| {
+            Err(NativeError::Cancelled("requested".into()))
+        })
+        .join()
+        .expect("ordinary runtime errors must not panic the worker");
+
+        assert_eq!(
+            normalize_task_join("worker-a", Ok(joined)),
+            Err(NativeError::Cancelled("requested".into()))
         );
     }
 
