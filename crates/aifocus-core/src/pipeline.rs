@@ -775,12 +775,12 @@ fn main() -> Int
 "#;
 
         let errors = match compile_source(source) {
-            Err(PipelineError::Semantic(errors)) => errors,
+            Err(PipelineError::CompilerContract(errors)) => errors,
             other => panic!("AI Mode declarations must not be ignored by native codegen: {other:?}"),
         };
         for name in ["Evidence", "State", "NoNetwork", "P", "Lifecycle"] {
             assert!(
-                errors.iter().any(|error| error.code == "AIF610" && error.message.contains(name)),
+                errors.iter().any(|error| error.contains("AIF610") && error.contains(name)),
                 "missing fail-closed AIF610 diagnostic for {name}: {errors:?}"
             );
         }
