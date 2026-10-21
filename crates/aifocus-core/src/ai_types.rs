@@ -449,7 +449,8 @@ mod bounded_ai_tape_tests {
     fn activation_cache_retains_only_stride_checkpoints_with_fixed_shape() {
         let mut cache = ActivationCache::new(2, 4, 8).unwrap();
         assert!(!cache.record(1, &[1.0, 2.0]).unwrap());
-        assert!(cache.record(2, &[3.0, 4.0]).unwrap());
+        assert!(!cache.record(2, &[3.0, 4.0]).unwrap());
+        assert!(cache.record(3, &[5.0, 6.0]).unwrap());
         assert!(!cache.record(3, &[5.0, 6.0]).unwrap());
         assert!(cache.record(4, &[7.0, 8.0]).unwrap());
         assert_eq!(cache.checkpoint_steps(), vec![2, 4]);
