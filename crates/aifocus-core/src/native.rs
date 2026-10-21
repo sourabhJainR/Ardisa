@@ -4305,6 +4305,29 @@ mod attention_lora_source_tests {
     }
 
     #[test]
+    fn native_runtime_rejects_return_values_that_violate_declared_type() {
+        let source = "module return_contract\nfn main() -> Int\n  42\n";
+        let mut program = compile_source(source);
+        program.functions.get_mut("main").expect("main exists").return_type = Some(TypeKind::Bool);
+        assert!(
+            matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("declared type Bool")),
+            "malformed native return must fail closed"
+        );
+    }
+
+    #[test]
+    fn native_runtime_validates_early_return_from_result_propagation() {
+        let source = "module propagate_contract\nfn main() -> Option<Int>\n  propagate(none())\n";
+        let mut program = compile_source(source);
+        program.functions.get_mut("main").expect("main exists").return_type =
+            Some(TypeKind::Result(Box::new(crate::ast::Type { kind: TypeKind::Int, span: crate::source::Span { start: 0, end: 0 } }, Box::new(crate::ast::Type { kind: TypeKind::String, span: crate::source::Span { start: 0, end: 0 } })));
+        assert!(
+            matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("declared type")),
+            "propagation must not bypass the enclosing function's return contract"
+        );
+    }
+
+    #[test]
     fn attention_block_is_deterministic_through_ardisa_exec_v1() {
         let source = r#"module attention_fixture
 fn main() -> Tensor<F32>
