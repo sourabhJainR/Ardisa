@@ -647,7 +647,10 @@ fn native_value_matches_type_tag(value: &NativeValue, expected: &str) -> bool {
     }
     match (expected, value) {
         ("Int", NativeValue::Int(_)) | ("Bool", NativeValue::Bool(_)) | ("String", NativeValue::String(_)) | ("Unit", NativeValue::Unit) | ("F32", NativeValue::Float(_)) => true,
-        ("VectorHit", NativeValue::List(parts)) => matches!(parts.as_slice(), [NativeValue::Int(_), NativeValue::Float(_)]),
+        // Routing and vector-search records currently use a deterministic two-field
+        // runtime ABI: (index/id: Int, score/weight: F32). Keep the aliases
+        // explicit so typed returns validate the actual runtime representation.
+        ("VectorHit" | "ExpertWeight", NativeValue::List(parts)) => matches!(parts.as_slice(), [NativeValue::Int(_), NativeValue::Float(_)]),
         ("Probability", NativeValue::Probability(_)) | ("Tensor", NativeValue::Tensor { .. }) | ("QuantizedTensor", NativeValue::QuantizedTensor { .. }) |
         ("Embedding", NativeValue::Embedding { .. }) | ("AttentionBlock", NativeValue::AttentionBlock { .. }) |
         ("LoRAAdapter", NativeValue::LoRAAdapter { .. }) | ("MoERouter", NativeValue::MoERouter { .. }) |
