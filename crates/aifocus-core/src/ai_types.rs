@@ -272,21 +272,21 @@ impl GradientTape {
         for index in (0..self.nodes.len()).rev() {
             let gradient = gradients[index];
             let node = &self.nodes[index];
-            match node.op {
+            match &node.op {
                 GradientOp::Input | GradientOp::Constant => {}
                 GradientOp::Add(left, right) => {
-                    gradients[left] += gradient;
-                    gradients[right] += gradient;
+                    gradients[*left] += gradient;
+                    gradients[*right] += gradient;
                 }
                 GradientOp::Multiply(left, right) => {
-                    gradients[left] += gradient * self.nodes[right].value;
-                    gradients[right] += gradient * self.nodes[left].value;
+                    gradients[*left] += gradient * self.nodes[*right].value;
+                    gradients[*right] += gradient * self.nodes[*left].value;
                 }
-                GradientOp::Negate(input) => gradients[input] -= gradient,
+                GradientOp::Negate(input) => gradients[*input] -= gradient,
             }
-            if !gradient.is_finite() || gradients.iter().any(|value| !value.is_finite()) {
-                return Err(RuntimeError::new("AIT012", "gradient computation produced a non-finite value"));
-            }
+        }
+        if gradients.iter().any(|value| !value.is_finite()) {
+            return Err(RuntimeError::new("AIT012", "gradient computation produced a non-finite value"));
         }
         for (node, gradient) in self.nodes.iter_mut().zip(gradients) {
             node.gradient = gradient;
