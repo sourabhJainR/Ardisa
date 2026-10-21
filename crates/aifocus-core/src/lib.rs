@@ -39,6 +39,7 @@ pub mod resource_guard;
 pub mod sema;
 pub mod source;
 pub mod token;
+pub mod tokenizer_state;
 
 pub use proof_runtime::{ProofDigestVerifier, ProofLedger, ProofLedgerError, ProofReceipt, MAX_PROOF_EVIDENCE_DIGEST_BYTES, MAX_PROOF_RECEIPTS};
 pub use ai_mode::{AiModePolicy, Capability, CellInvariantError, InvariantCell, PhaseMachine, PhaseMachineError, PhaseTransition, PolicyViolation, ProofPolicy, ProofRequirement, ProofStatus, TraceEventInput, TraceError, TraceLedger, TracePolicy, TraceReceipt, TraceSigner, UnknownProofPolicy, VaultPolicy, VaultRuntime, MAX_PHASE_HISTORY, MAX_PHASE_STATES, MAX_PHASE_TRANSITIONS, MAX_TRACE_RECEIPTS, MAX_TRACE_TOKEN_BYTES, MAX_TRACE_SIGNATURE_BYTES};
