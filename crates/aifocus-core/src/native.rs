@@ -2514,6 +2514,12 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                 NativeInstr::Call { callee, .. } => add_bytes(callee)?,
                 NativeInstr::KvAppend { name, .. } | NativeInstr::ContextAppend { name } => add_bytes(name)?,
                 NativeInstr::Spawn { name, callee, .. } => { add_bytes(name)?; add_bytes(callee)?; }
+                NativeInstr::ReturnTyped(expected) | NativeInstr::PropagateTyped(expected) => {
+                    if expected.trim().is_empty() || expected.len() > 1024 {
+                        return Err(NativeError::InvalidProgram("invalid native return type tag".into()));
+                    }
+                    add_bytes(expected)?;
+                }
                 _ => {}
             }
         }
