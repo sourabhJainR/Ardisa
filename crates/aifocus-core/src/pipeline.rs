@@ -751,4 +751,38 @@ fn main() -> Result<Int, String>
         );
     }
 
+
+    #[test]
+    fn ai_mode_constructs_cannot_be_silently_dropped_by_native_compilation() {
+        let source = r#"module construct_gate
+trace Evidence
+  signature: sha256
+cell State
+  value: Int
+  invariant: valid
+vault NoNetwork
+  denies: network
+  capabilities: filesystem_read
+proof P
+  requires: valid
+  ensures: true
+  on_unknown: reject
+  required: true
+phase Lifecycle
+  Ready -> Done
+fn main() -> Int
+  0
+"#;
+
+        let errors = match compile_source(source) {
+            Err(PipelineError::CompilerContract(errors)) => errors,
+            other => panic!("AI Mode declarations must not be ignored by native codegen: {other:?}"),
+        };
+        for name in ["Evidence", "State", "NoNetwork", "P", "Lifecycle"] {
+            assert!(
+                errors.iter().any(|error| error.contains("AIF610") && error.contains(name)),
+                "missing fail-closed AIF610 diagnostic for {name}: {errors:?}"
+            );
+        }
+    }
 }
