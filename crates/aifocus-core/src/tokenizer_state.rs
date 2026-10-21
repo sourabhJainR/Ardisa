@@ -158,11 +158,13 @@ mod tests {
     #[test]
     fn incremental_utf8_chunks_produce_deterministic_vocabulary_ids() {
         let mut state = tokenizer(64, 8);
-        assert!(state.push_chunk(b"hello ").unwrap().is_empty());
+        assert_eq!(state.push_chunk(b"hello ").unwrap(), vec![1]);
         let bytes = "世".as_bytes();
-        assert!(state.push_chunk(bytes).unwrap().is_empty());
+        assert!(state.push_chunk(&bytes[..2]).unwrap().is_empty());
         assert!(state.has_incomplete_utf8());
-        assert_eq!(state.push_chunk("界 ".as_bytes()).unwrap(), vec![1, 2]);
+        let mut remainder = bytes[2..].to_vec();
+        remainder.extend_from_slice("界 ".as_bytes());
+        assert_eq!(state.push_chunk(&remainder).unwrap(), vec![2]);
         assert_eq!(state.finish().unwrap(), Vec::<u32>::new());
         assert_eq!(state.emitted_ids(), 2);
     }
