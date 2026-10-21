@@ -4,6 +4,9 @@ use ardisa_core::{parse, pipeline::compile_source, sema, typed_ir};
 fn valid_ai_constructs_reach_typed_metadata_but_not_executable_codegen() {
     let source = "module ai_contract\ntrace Audit\n  signature: hmac-sha256\ncell State\n  invariant: non-empty\nvault IO\n  capabilities: filesystem_read filesystem_write\n  denies: network\nproof Review\n  requires: tests-pass\n  ensures: reviewed\n  on_unknown: reject\n  required: true\nphase Delivery\n  draft -> review\n  review -> release\nfn main() -> Int\n  0\n";
     let module = parse(source).expect("construct syntax should parse");
+    let ast_arena = ardisa_core::compiler_engine::AstArena::build(&module);
+    let construct_nodes = ast_arena.nodes.iter().filter(|(_, node)| node.kind.ends_with("-declaration")).count();
+    assert_eq!(construct_nodes, 5, "compiler AST arena must retain all AI construct declarations");
     let constructs = sema::analyze_constructs(&module)
         .expect("well-formed declarations should produce typed semantic metadata");
     assert_eq!(constructs.len(), 5);
