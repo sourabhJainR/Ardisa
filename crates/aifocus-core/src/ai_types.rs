@@ -366,15 +366,15 @@ impl ActivationCache {
         if activations.is_empty() || activations.iter().any(|value| !value.is_finite()) {
             return Err(RuntimeError::new("AIT022", "activation values must be non-empty and finite"));
         }
+        if let Some(shape) = self.shape {
+            if activations.len() != shape {
+                return Err(RuntimeError::new("AIT023", format!(
+                    "activation shape changed from {} to {}", shape, activations.len()
+                )));
+            }
+        }
         let checkpoint = step % self.stride == 0;
         if checkpoint {
-            if let Some(shape) = self.shape {
-                if activations.len() != shape {
-                    return Err(RuntimeError::new("AIT023", format!(
-                        "activation shape changed from {} to {}", shape, activations.len()
-                    )));
-                }
-            }
             if self.checkpoints.len() >= self.max_checkpoints {
                 return Err(RuntimeError::new("AIT024", "activation checkpoint capacity exceeded"));
             }
@@ -383,10 +383,10 @@ impl ActivationCache {
             if retained > self.max_retained_scalars {
                 return Err(RuntimeError::new("AIT024", "activation scalar budget exceeded"));
             }
-            self.shape.get_or_insert(activations.len());
             self.retained_scalars = retained;
             self.checkpoints.push(ActivationCheckpoint { step, activations: activations.to_vec() });
         }
+        self.shape.get_or_insert(activations.len());
         self.last_observed_step = Some(step);
         Ok(checkpoint)
     }
@@ -458,6 +458,16 @@ mod bounded_ai_tape_tests {
         assert_eq!(cache.record(6, &[1.0, 2.0, 3.0]).unwrap_err().code, "AIT023");
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.retained_scalars(), 4);
+    }
+
+    #[test]
+    fn activation_cache_rejects_shape_changes_between_checkpoint_steps_atomically() {
+        let mut cache = ActivationCache::new(3, 4, 12).unwrap();
+        assert!(!cache.record(1, &[1.0, 2.0]).unwrap());
+        assert_eq!(cache.record(2, &[3.0, 4.0, 5.0]).unwrap_err().code, "AIT023");
+        assert_eq!(cache.checkpoint_steps(), Vec::<u64>::new());
+        assert_eq!(cache.retained_scalars(), 0);
+        assert!(cache.record(2, &[3.0, 4.0]).unwrap());
     }
 
     #[test]
