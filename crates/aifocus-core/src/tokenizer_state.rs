@@ -174,11 +174,11 @@ mod tests {
         let mut state = tokenizer(8, 1);
         assert_eq!(state.push_chunk(&[0xff]).unwrap_err().code, "AIT033");
         assert_eq!(state.pending_token(), "");
-        assert!(state.push_chunk(b"hello ").unwrap().is_empty());
+        assert_eq!(state.push_chunk(b"hello ").unwrap(), vec![1]);
         let before = state.clone();
         assert_eq!(state.push_chunk(b"unknown ").unwrap_err().code, "AIT034");
         assert_eq!(state, before);
-        assert_eq!(state.finish().unwrap(), vec![1]);
+        assert_eq!(state.finish().unwrap(), Vec::<u32>::new());
         let before = state.clone();
         assert_eq!(state.push_chunk(b"ok ").unwrap_err().code, "AIT032");
         assert_eq!(state, before);
