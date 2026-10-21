@@ -57,7 +57,7 @@ pub fn validate_construct_metadata(constructs: &[TypedIrConstruct]) -> Result<()
         if construct.name.trim().is_empty() {
             errors.push("construct name must not be empty".to_string());
         }
-        if !construct_names.insert((construct.kind as u8, construct.name.clone())) {
+        if !construct_names.insert(construct.name.clone()) {
             errors.push(format!("duplicate construct declaration: {}", construct.name));
         }
 
@@ -717,6 +717,21 @@ mod tests {
         });
         let errors = validate_construct_metadata(&constructs).unwrap_err();
         assert!(errors.iter().any(|error| error.contains("duplicate member name: value")));
+        assert!(encode_construct_metadata(&constructs).is_err());
+    }
+
+    #[test]
+    fn construct_metadata_rejects_duplicate_names_across_kinds() {
+        let module = crate::parse(
+            "module constructs\ncell Shared\n  value: Int\n  invariant: valid\n",
+        ).unwrap();
+        let mut constructs = lower_constructs(&module).unwrap();
+        let mut duplicate = constructs[0].clone();
+        duplicate.kind = crate::ast::ConstructKind::Vault;
+        constructs.push(duplicate);
+
+        let errors = validate_construct_metadata(&constructs).unwrap_err();
+        assert!(errors.iter().any(|error| error.contains("duplicate construct declaration: Shared")));
         assert!(encode_construct_metadata(&constructs).is_err());
     }
 
