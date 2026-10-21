@@ -109,6 +109,7 @@ pub enum NativeInstr {
     GraphemeAt,
     MakeErr,
     Unwrap,
+    PropagateTyped(String),
     Propagate,
     Load(String),
     Store(String),
@@ -697,8 +698,10 @@ pub fn compile_function(function: &IrFunction) -> Result<Vec<NativeInstr>, Nativ
     }
     let expected = function.return_type.as_ref().map(native_type_tag).unwrap_or_else(|| "Unit".to_string());
     for instr in &mut code {
-        if matches!(instr, NativeInstr::Return) {
-            *instr = NativeInstr::ReturnTyped(expected.clone());
+        match instr {
+            NativeInstr::Return => *instr = NativeInstr::ReturnTyped(expected.clone()),
+            NativeInstr::Propagate => *instr = NativeInstr::PropagateTyped(expected.clone()),
+            _ => {}
         }
     }
     if !matches!(code.last(), Some(NativeInstr::Return | NativeInstr::ReturnTyped(_))) {
@@ -2204,11 +2207,28 @@ fn run_function(
                 validate_value(&result, state.limits)?;
                 stack.push(result);
             }
+            NativeInstr::PropagateTyped(expected) => {
+                match stack.pop().ok_or_else(|| NativeError::InvalidProgram("propagate value missing".into()))? {
+                    NativeValue::ResultOk(value) | NativeValue::OptionSome(value) => stack.push(*value),
+                    NativeValue::ResultErr(value) => {
+                        let result = NativeValue::ResultErr(value);
+                        if !native_value_matches_type_tag(&result, expected) {
+                            return Err(NativeError::Type(format!("propagated value does not match declared return type {expected}")));
+                        }
+                        return Ok(result);
+                    }
+                    NativeValue::OptionNone => {
+                        let result = NativeValue::OptionNone;
+                        if !native_value_matches_type_tag(&result, expected) {
+                            return Err(NativeError::Type(format!("propagated value does not match declared return type {expected}")));
+                        }
+                        return Ok(result);
+                    }
+                    _ => return Err(NativeError::Type("propagate requires Result or Option".into())),
+                }
+            }
             NativeInstr::Propagate => {
-                match stack
-                    .pop()
-                    .ok_or_else(|| NativeError::InvalidProgram("propagate value missing".into()))?
-                {
+                match stack.pop().ok_or_else(|| NativeError::InvalidProgram("propagate value missing".into()))? {
                     NativeValue::ResultOk(value) | NativeValue::OptionSome(value) => stack.push(*value),
                     NativeValue::ResultErr(value) => return Ok(NativeValue::ResultErr(value)),
                     NativeValue::OptionNone => return Ok(NativeValue::OptionNone),
@@ -2523,6 +2543,7 @@ pub fn encode_program(program: &NativeProgram) -> String {
             out.push_str("I|");
             let encoded = match instr {
                 NativeInstr::Return => "ReturnTyped:Any".to_string(),
+                NativeInstr::Propagate => "PropagateTyped:Any".to_string(),
                 other => encode_instr(other),
             };
             out.push_str(&encoded);
@@ -2679,6 +2700,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::Spawn { name, callee, argc } => format!("Spawn:{},{},{}", escape_artifact(name), escape_artifact(callee), argc),
         NativeInstr::Join { name } => format!("Join:{}", escape_artifact(name)),
         NativeInstr::ReturnTyped(expected) => format!("ReturnTyped:{}", escape_artifact(expected)),
+        NativeInstr::PropagateTyped(expected) => format!("PropagateTyped:{}", escape_artifact(expected)),
         NativeInstr::Cancel { name } => format!("Cancel:{}", escape_artifact(name)),
     }
 }
@@ -2752,7 +2774,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         "Call"=>{let mut x=arg.split(','); NativeInstr::Call{callee:unescape_artifact(x.next().ok_or_else(bad)?)?,argc:int(x.next().ok_or_else(bad)?)?}},
         "ScopeStart"=>NativeInstr::ScopeStart,"ScopeEnd"=>NativeInstr::ScopeEnd,
         "Spawn"=>{let mut x=arg.split(','); NativeInstr::Spawn{name:unescape_artifact(x.next().ok_or_else(bad)?)?,callee:unescape_artifact(x.next().ok_or_else(bad)?)?,argc:int(x.next().ok_or_else(bad)?)?}},
-        "Join"=>NativeInstr::Join{name:unescape_artifact(arg)?},"ReturnTyped"=>NativeInstr::ReturnTyped(unescape_artifact(arg)?),"Cancel"=>NativeInstr::Cancel{name:unescape_artifact(arg)?},
+        "Join"=>NativeInstr::Join{name:unescape_artifact(arg)?},"ReturnTyped"=>NativeInstr::ReturnTyped(unescape_artifact(arg)?),"PropagateTyped"=>NativeInstr::PropagateTyped(unescape_artifact(arg)?),"Cancel"=>NativeInstr::Cancel{name:unescape_artifact(arg)?},
         _=>return Err(bad()),
     })
 }
@@ -5402,5 +5424,28 @@ mod typed_artifact_v2_tests {
         assert!(program.functions["main"].code.iter().any(|instr| matches!(instr, NativeInstr::ReturnTyped(ty) if ty == "Int")));
         let decoded = decode_program(&encode_program(&program)).expect("compiled artifact decodes");
         assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(42));
+    }
+}
+
+
+#[cfg(test)]
+mod typed_propagation_v2_tests {
+    use super::*;
+
+    #[test]
+    fn typed_propagation_validates_early_result_return() {
+        let program = NativeProgram {
+            functions: [("main".to_string(), NativeFunction {
+                params: vec![],
+                code: vec![
+                    NativeInstr::PushInt(7),
+                    NativeInstr::MakeErr,
+                    NativeInstr::PropagateTyped("Result<Int,String>".into()),
+                    NativeInstr::ReturnTyped("Result<Int,String>".into()),
+                ],
+            })].into_iter().collect(),
+        };
+        let decoded = decode_program(&encode_program(&program)).expect("V2 artifact decodes");
+        assert!(matches!(run_program(&decoded, "main", &[]), Err(NativeError::Type(message)) if message.contains("propagated value")));
     }
 }
