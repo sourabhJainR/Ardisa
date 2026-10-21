@@ -33,7 +33,7 @@ A declaration without executable semantics must continue to fail compilation wit
 ## Current next steps
 
 1. Complete the end-to-end source-to-runtime phases for Trace, Cell, Vault, Proof and Phase tracked by issue #132. Start with one construct and carry it through typed IR, deterministic encoding, verifier/runtime behavior and integration tests before expanding the supported subset.
-2. Continue the bounded AI data-structure work tracked by issue #186, including GradientTape, ActivationCache and TokenizerState, while keeping generic shapes and unsupported operations fail-closed.
+2. Continue source-level AI data-structure integration under #148; GradientTape and ActivationCache still have runtime helpers only. TokenizerState source-to-runtime semantics are tracked separately by #192. Keep generic shapes and unsupported operations fail-closed.
 3. Preserve the native self-hosting gate in issue #176: Stage 0 -> Stage 1 -> Stage 2 -> Stage 3, byte-identical Stage 2/3 artifacts, independent holdout tests, and no trusted host-Rust compiler fallback.
 4. Run workspace/all-target, Native Phases, generated differential/holdout, and bootstrap checks on the exact PR head. Update capability claims only from those results.
 
