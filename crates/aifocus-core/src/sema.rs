@@ -1667,7 +1667,7 @@ mod tests {
         for name in ["Pin", "NonNull", "RawPtr", "SharedRef", "MutableRef"] {
             for ty in [name.to_string(), format!("{name}<Int>")] {
                 let source = format!(
-                    "module unsupported_reference\\nfn read(value: {ty}) -> Int\\n  0\\n"
+                    "module unsupported_reference\nfn read(value: {ty}) -> Int\n  0\n"
                 );
                 let module = parse(&source).unwrap_or_else(|error| {
                     panic!("fixture for unsupported type {ty} must parse: {error:?}")
