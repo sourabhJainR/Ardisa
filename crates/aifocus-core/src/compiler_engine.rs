@@ -1,6 +1,6 @@
 //! Unified native compiler phase verification.
 use std::collections::{BTreeMap,BTreeSet,HashSet};
-use crate::{arena::{Arena,ArenaId},ast::{Expr,ExprKind,Item,Module,StmtKind,TypeKind},effects::{self,EffectModel},ownership::{self,OwnershipModel},source::{Diagnostic,Span},token::{self,Token},typed_ir::{self,TypedIrModule,TypedIrOp,TypedTerminator,TypedValue,TypedValueKind}};
+use crate::{arena::{Arena,ArenaId},ast::{ConstructKind,Expr,ExprKind,Item,Module,StmtKind,TypeKind},effects::{self,EffectModel},ownership::{self,OwnershipModel},source::{Diagnostic,Span},token::{self,Token},typed_ir::{self,TypedIrModule,TypedIrOp,TypedTerminator,TypedValue,TypedValueKind}};
 
 #[derive(Debug,Clone,Copy,PartialEq,Eq,Hash)] pub struct TokenId(pub ArenaId);
 #[derive(Debug,Clone,Default)] pub struct TokenArena{pub tokens:Arena<Token>}
@@ -10,7 +10,7 @@ impl TokenArena{pub fn from_tokens(xs:Vec<Token>)->Self{let mut a=Arena::with_ca
 #[derive(Debug,Clone,PartialEq,Eq)] pub struct AstNode{pub id:crate::NodeId,pub span:Span,pub kind:&'static str}
 #[derive(Debug,Clone,Default)] pub struct AstArena{pub nodes:Arena<AstNode>}
 impl AstArena{
- pub fn build(m:&Module)->Self{let mut a=Arena::new();add(&mut a,m.id,m.span,"module");for i in &m.items{let Item::Function(f)=i;add(&mut a,f.id,f.span,"function");for p in &f.params{add(&mut a,p.id,p.span,"parameter")}for s in &f.body.stmts{walk_stmt(s,&mut a)}}Self{nodes:a}}
+ pub fn build(m:&Module)->Self{let mut a=Arena::new();add(&mut a,m.id,m.span,"module");for declaration in &m.constructs{let kind=match declaration.kind{ConstructKind::Trace=>"trace-declaration",ConstructKind::Cell=>"cell-declaration",ConstructKind::Vault=>"vault-declaration",ConstructKind::Proof=>"proof-declaration",ConstructKind::Phase=>"phase-declaration"};add(&mut a,declaration.id,declaration.span,kind);}for i in &m.items{let Item::Function(f)=i;add(&mut a,f.id,f.span,"function");for p in &f.params{add(&mut a,p.id,p.span,"parameter")}for s in &f.body.stmts{walk_stmt(s,&mut a)}}Self{nodes:a}}
  pub fn len(&self)->usize{self.nodes.len()}
 }
 fn add(a:&mut Arena<AstNode>,id:crate::NodeId,span:Span,kind:&'static str){a.alloc(AstNode{id,span,kind});}
