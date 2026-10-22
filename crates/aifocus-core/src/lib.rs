@@ -35,6 +35,7 @@ pub mod ownership;
 pub mod optimizer;
 pub mod pipeline;
 pub mod typed_ir;
+pub mod trace_policy_runtime;
 pub mod vault_runtime;
 pub mod protocol;
 pub mod proof_policy_runtime;
