@@ -167,6 +167,8 @@ pub struct PhaseMachine {
 pub enum PhaseMachineError {
     EmptyState,
     EmptyTransitions,
+    NotPhaseConstruct,
+    UnexpectedPhaseMember,
     SelfTransition(String),
     DuplicateTransition { from: String, to: String },
     InitialStateUnknown(String),
@@ -177,6 +179,31 @@ pub enum PhaseMachineError {
 }
 
 impl PhaseMachine {
+    /// Build a runtime-enforced state machine from validated Phase typed-IR metadata.
+    ///
+    /// The caller must supply the initial state explicitly; declaration order is
+    /// not treated as execution semantics. This bridges typed metadata to the
+    /// runtime API but does not enable source-level native execution.
+    pub fn from_typed_construct(
+        construct: &crate::typed_ir::TypedIrConstruct,
+        initial: impl Into<String>,
+    ) -> Result<Self, PhaseMachineError> {
+        if construct.kind != crate::ast::ConstructKind::Phase {
+            return Err(PhaseMachineError::NotPhaseConstruct);
+        }
+
+        let mut transitions = Vec::with_capacity(construct.members.len());
+        for member in &construct.members {
+            match member {
+                crate::typed_ir::TypedIrConstructMember::Transition { from, to, .. } => {
+                    transitions.push((from.clone(), to.clone()));
+                }
+                _ => return Err(PhaseMachineError::UnexpectedPhaseMember),
+            }
+        }
+        Self::new(initial, transitions)
+    }
+
     /// Build a machine from an initial state and a finite set of allowed edges.
     /// Validation is completed before a machine is returned.
     pub fn new(
