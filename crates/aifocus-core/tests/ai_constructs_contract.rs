@@ -21,7 +21,7 @@ fn valid_ai_constructs_reach_typed_metadata_but_not_executable_codegen() {
     assert_eq!(typed_cfg.constructs[4].kind, ardisa_core::ConstructKind::Phase);
     let encoded = typed_ir::encode_construct_metadata(&typed_cfg.constructs)
         .expect("typed CFG construct metadata should remain valid and deterministic");
-    assert!(encoded.starts_with("ARDISA-CONSTRUCT-META-V1\\n"));
+    assert!(encoded.starts_with("ARDISA-CONSTRUCT-META-V1\n"));
 
     let error = compile_source(source)
         .expect_err("construct declarations must not be silently ignored by executable codegen");
