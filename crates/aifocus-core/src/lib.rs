@@ -11,6 +11,7 @@ pub mod ast;
 pub mod benchmark;
 pub mod bootstrap;
 pub mod concurrency;
+pub mod construct_runtime;
 pub mod context_window;
 pub mod compiler_engine;
 pub mod diagnostic_memory;
