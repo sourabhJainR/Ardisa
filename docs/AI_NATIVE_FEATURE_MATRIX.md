@@ -1,45 +1,42 @@
 # AI-native source feature matrix
 
-This matrix distinguishes three separate levels: source-language support, runtime helper APIs, and independently verified end-to-end behavior. A Rust API or a parsed declaration does not by itself make a construct executable in Ardisa.
+This matrix separates source-language behavior from helper APIs and from claims that require independent evidence. Status is limited to the implemented subset; it does not imply general autograd, model-tokenizer compatibility, cryptographic trust, OS isolation, accelerator support, or complete self-hosting.
 
-| Feature | Source / AST | Semantic validation | Typed IR | Runtime helper APIs | ARDISA-EXEC-V1 source execution | Current status |
-|---|---|---|---|---|---|---|
-| Trace declaration | Parsed into Module.constructs; compiler AstArena retains declaration node | Structural clauses and required signature | Metadata lowering exists | Bounded TraceLedger; caller-supplied signer and separate TraceVerifier boundary; predecessor-chain and payload checks | Source-level trace is not lowered to executable behavior; production cryptography and trusted key distribution/rotation are external requirements | **Runtime foundation; source path fail-closed** |
-| Cell declaration | Parsed; compiler AstArena retains declaration node | Required invariant clause; duplicate/member checks | Metadata lowering exists | InvariantCell validates initial/replacement values and commits updates only after validation | No source-level state binding, mutation, or invariant enforcement | **Runtime foundation; source path fail-closed** |
-| Vault declaration | Parsed; compiler AstArena retains declaration node | Capability vocabulary, duplicate/conflicting allow-deny checks | Metadata lowering exists | VaultRuntime checks declared capabilities before invoking routed host operations | Source declarations do not yet intercept arbitrary effects or connect to executable instructions; this is not an OS sandbox | **Runtime foundation; source path fail-closed** |
-| Proof declaration | Parsed; compiler AstArena retains declaration node | Required/ensures, reject-on-unknown and boolean required clause | Metadata lowering exists | Bounded proof status ledger; caller-supplied digest verifier can validate evidence bytes before recording | Source-level proof obligations are not lowered or enforced by native execution; digest shape or ledger state alone does not prove a claim | **Runtime foundation; source path fail-closed** |
-| Phase declaration | Parsed transition edges; compiler AstArena retains declaration node | Duplicate/self-transition and graph checks | Metadata lowering exists; typed Phase metadata can now initialize `PhaseMachine` when the caller supplies an explicit initial state | Bounded deterministic PhaseMachine with transition history; rejects undeclared transitions without mutating state/history | Source-level phase declarations are still not encoded as executable state transitions in ARDISA-EXEC-V1 | **Typed-metadata/runtime bridge added; native source path remains fail-closed** |
-| Probabilistic / Guaranteed | Rust runtime APIs | Some constructor-level checks | Not first-class source values | Selected constructor/runtime checks | Not a general source-language ABI/runtime type | **Runtime API only** |
-| GraphTensor | Rust runtime API with node/edge checks | Not first-class source typing | Not source typed IR | Bounded metadata/runtime checks | No source-level executable construct | **Runtime API only** |
-| Tensor / Embedding / QuantizedTensor | Selected bounded source operations exist | Type and shape checks for implemented constructors | Selected native lowering exists | Supported bounded subset | No blanket accelerator/model guarantees | **Partial** |
-| GradientTape / ActivationCache | Not first-class source features | Source declarations remain fail-closed | No executable source lowering | Bounded scalar GradientTape and stride-based ActivationCache helpers are implemented; exact-head workspace, Native Phases, differential/holdout and bootstrap gates passed in PR #296 | No source-level ARDISA-EXEC-V1 operation; caller owns model execution and recomputation | **Runtime foundation validated; source integration open (#148)** |
-| TokenizerState | Not a first-class source feature | Source declarations remain fail-closed | No executable source lowering | Bounded incremental UTF-8 ingestion, explicit vocabulary, deterministic IDs, and transactional chunk/finish rejection are implemented; exact-head workspace and Native Phases checks passed in PR #297 | No source-level ARDISA-EXEC-V1 operation; whitespace tokenization and explicit-vocabulary semantics are the current helper contract | **Runtime foundation validated; source integration open (#192)** |
+| Feature | Source / AST | Semantic validation | Native artifact/runtime path | Limits and exclusions | Status |
+|---|---|---|---|---|---|
+| Trace declaration | Parsed into `Module.constructs`; compiler AST retains declaration | Structural clauses and required signature | Typed metadata encoding exists; source compilation rejects the declaration with AIF610 | TraceLedger is a helper API. Production signing, key distribution/rotation, and source effect integration are not established | **Helper/metadata only; source path fail-closed** |
+| Cell declaration | Parsed; AST retains declaration | Required invariant clause and duplicate/member checks | Metadata lowering exists; source compilation rejects the declaration with AIF610 | InvariantCell helper does not provide source-level state mutation or invariant enforcement | **Helper/metadata only; source path fail-closed** |
+| Vault declaration | Parsed; AST retains declaration | Capability vocabulary and allow/deny consistency checks | Metadata lowering exists; source compilation rejects the declaration with AIF610 | VaultRuntime is not an OS sandbox; arbitrary source effects are not intercepted | **Helper/metadata only; source path fail-closed** |
+| Proof declaration | Parsed; AST retains declaration | Required/ensures and reject-on-unknown checks | Metadata lowering exists; source compilation rejects the declaration with AIF610 | A digest or ledger status alone does not prove a claim; source proof enforcement is not implemented | **Helper/metadata only; source path fail-closed** |
+| Phase declaration | Parsed transition edges; typed metadata lowering exists | Duplicate/self-transition and graph validation | `PhaseMachine::from_typed_construct` bridges typed metadata to runtime; native source compilation still rejects the declaration with AIF610 | Initial state must be supplied explicitly. No source-level phase instruction or effect-boundary integration yet | **Typed-metadata/runtime bridge; source path fail-closed** |
+| Tensor / Embedding / QuantizedTensor | Selected source built-ins | Type, domain, shape, finite-value, and bound checks for implemented operations | Deterministic native instructions and bounded runtime operations exist | Only the implemented subset; no general accelerator or model-runtime guarantee | **Partial source-to-runtime support** |
+| MoERouter / VectorIndex | Selected source built-ins | Type/domain/dimension/limit checks for supported operations | Bounded native operations; deterministic routing/search behavior | No hardware acceleration claim; supported metrics and operations are narrow | **Partial source-to-runtime support** |
+| MCTSTree | Selected source built-ins | Bounds and operation type checks | Bounded native operations with node/branch/depth checks | Only the implemented indexed tree subset | **Partial source-to-runtime support** |
+| AttentionBlock / LoRAAdapter | Selected source built-ins | Dimension, shape, rank, and causal-mode checks | Native instructions and bounded tensor execution | No generic compile-time shape parameters or accelerator claims | **Partial source-to-runtime support** |
+| GradientTape | Source built-ins: `gradient_tape`, `gradient_input`, `gradient_add`, `gradient_mul`, `gradient_backward`, `gradient_value` / `gradient_get` | Capacity, tape type, slot ID and value checks | Native instruction encoding/decoding and runtime execution are present | Scalar F32/Int input subset; supported derivatives are add and multiply. No arbitrary autograd; prior-slot references, finite values and tape capacity are checked | **Bounded source-to-runtime subset** |
+| ActivationCache | Source built-ins and named mutable cache binding | Capacity, stride, byte-budget, tensor and checkpoint validation | Native instructions support storing and restoring checkpoints and querying cache length | Bounded immutable tensor checkpoints; no claim of general graph recomputation. Callers own the recomputation strategy | **Bounded source-to-runtime subset** |
+| TokenizerState | Source built-ins: constructor, `tokenizer_feed`, `tokenizer_flush`, `tokenizer_token_count`, `tokenizer_token` | State type, byte-list, vocabulary, bounds and mutation-target checks | Native instructions implement bounded incremental input and token retrieval | Explicit supplied vocabulary and deterministic matching only; no implied BPE, SentencePiece, normalization, or pretrained tokenizer support | **Bounded source-to-runtime subset** |
+| Probabilistic / Guaranteed | Runtime APIs; not general first-class source values | Selected constructor checks | No general source ABI/runtime representation | Do not infer source support from Rust types alone | **Runtime API only** |
+| GraphTensor | Runtime API | Bounded node/edge checks | No first-class source operation path | Source typing and native execution remain unsupported | **Runtime API only** |
 
+## Evidence and promotion rules
 
-### Phase construct runtime bridge
+A feature must not be marked fully supported merely because its parser, Rust helper, or native instruction exists. Promotion requires evidence on the exact commit for:
 
-`PhaseMachine::from_typed_construct` accepts only a typed `Phase` declaration and transition-only members. The caller must provide the initial state explicitly; source declaration order is not interpreted as an initial-state rule. Invalid initial states and undeclared transitions fail without state/history mutation. This is a metadata-to-runtime API bridge, not source-level bytecode support. Promotion still requires native artifact encoding and verification, source operation semantics, effect-boundary integration, and end-to-end adversarial/holdout/bootstrap evidence.
+1. Normal `.ardisa` source compilation and observable execution.
+2. Positive, negative, malformed-artifact, resource-limit, and mutation-atomicity tests.
+3. Deterministic artifact round trips and verifier rejection of invalid programs.
+4. Generated differential/holdout results and bootstrap Stage 2/3 reproducibility.
+5. Workspace/all-target and Native Phases checks.
+6. Documentation of the precise supported subset and known exclusions.
 
-## Promotion rule
+The current main commit `85034a10445c0dceab614b6f616431b90eec4563` passed the post-merge Rust workspace/all-target, generated differential/holdout, bootstrap reproducibility/evidence-contract, and Native Phases workflows. This verifies the repository's current gates; it does not establish full language parity or full self-hosting. Keep `self_hosting_ready=false` unless the complete Stage 0 -> Stage 1 -> Stage 2 -> Stage 3 and independent holdout contract is satisfied.
 
-A construct may be promoted to supported only after all of the following are demonstrated on the exact commit:
+## Remaining phases
 
-1. Source syntax and AST representation.
-2. Semantic/type checks plus ownership and effect rules.
-3. Typed IR that preserves the construct without dropping or weakening its meaning.
-4. Deterministic ARDISA-EXEC-V1 encoding and artifact verification.
-5. Runtime enforcement at the actual operation/effect boundary, with explicit resource limits.
-6. Positive, negative, adversarial and mutation tests through the normal .ardisa compilation/execution path.
-7. Independent differential/holdout results and bootstrap reproducibility evidence.
-8. Updated documentation that states what is statically checked, runtime-checked, unknown or unsupported.
+1. **AI construct native integration:** carry one of Trace, Cell, Vault, Proof, or Phase beyond typed metadata into verified native execution and actual effect boundaries. Keep declarations fail-closed until each contract is complete.
+2. **Conformance strengthening:** ensure every AI-native source built-in has a named end-to-end test covering artifact round trip, invalid inputs, resource ceilings, and failure atomicity. Add mutation tests where coverage is missing.
+3. **Independent review and benchmark baseline:** review numerical determinism, bounds, verifier/runtime agreement, and honest capability claims; record reproducible benchmarks without claiming unsupported hardware acceleration.
+4. **Self-hosting:** retain the Stage 0 -> 1 -> 2 -> 3 gate, byte-identical Stage 2/3 output, independent holdouts, and forbidden-host-fallback checks.
 
-A declaration without executable semantics must continue to fail compilation with AIF610 rather than being ignored. Helper APIs remain useful building blocks but are not evidence of source-level integration, cryptographic trust, OS isolation, formal proof, or self-hosting.
-
-## Current next steps
-
-1. **Phase B — typed IR propagation:** validated Trace, Cell, Vault, Proof and Phase declarations now survive `typed_ir::lower_cfg` as typed construct metadata, with deterministic metadata encoding. This is not executable artifact support; `compile_source` still rejects these declarations with AIF610. Next, select one construct and carry it through native encoding, verifier/runtime behavior, effect boundaries and end-to-end tests before expanding the supported subset.
-2. Continue source-level AI data-structure integration under #148; GradientTape and ActivationCache still have runtime helpers only. TokenizerState source-to-runtime semantics are tracked separately by #192. Keep generic shapes and unsupported operations fail-closed.
-3. Preserve the native self-hosting gate in issue #176: Stage 0 -> Stage 1 -> Stage 2 -> Stage 3, byte-identical Stage 2/3 artifacts, independent holdout tests, and no trusted host-Rust compiler fallback.
-4. Run workspace/all-target, Native Phases, generated differential/holdout, and bootstrap checks on the exact PR head. Update capability claims only from those results.
-
-The tests in crates/aifocus-core/tests/ai_constructs_contract.rs intentionally prove both sides of the current boundary: well-formed declarations reach typed metadata, but regular executable compilation remains rejected until the end-to-end runtime path exists.
+A source declaration without executable semantics must continue to fail compilation with AIF610 rather than being ignored. A runtime helper does not establish cryptographic trust, OS isolation, formal proof, Rust parity, or self-hosting.
