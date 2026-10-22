@@ -30,6 +30,52 @@ fn valid_ai_constructs_reach_typed_metadata_but_not_executable_codegen() {
 }
 
 #[test]
+fn each_ai_construct_kind_is_individually_blocked_from_native_codegen() {
+    // Keep the rejection contract per-kind: a test containing every construct
+    // could pass if the compiler rejected only one of them and silently ignored
+    // the remaining declarations.
+    let cases = [
+        (
+            "trace",
+            "module trace_only\ntrace Audit\n  signature: hmac-sha256\nfn main() -> Int\n  0\n",
+        ),
+        (
+            "cell",
+            "module cell_only\ncell State\n  value: Int\n  invariant: non-empty\nfn main() -> Int\n  0\n",
+        ),
+        (
+            "vault",
+            "module vault_only\nvault IO\n  capabilities: filesystem_read\n  denies: network\nfn main() -> Int\n  0\n",
+        ),
+        (
+            "proof",
+            "module proof_only\nproof Review\n  requires: tests-pass\n  ensures: reviewed\n  on_unknown: reject\n  required: true\nfn main() -> Int\n  0\n",
+        ),
+        (
+            "phase",
+            "module phase_only\nphase Delivery\n  draft -> review\nfn main() -> Int\n  0\n",
+        ),
+    ];
+
+    for (kind, source) in cases {
+        let module = parse(source).unwrap_or_else(|error| {
+            panic!("{kind} fixture must parse before checking the native boundary: {error:?}")
+        });
+        sema::analyze_constructs(&module).unwrap_or_else(|errors| {
+            panic!("{kind} fixture must be semantically valid: {errors:?}")
+        });
+        let error = compile_source(source).unwrap_err_or_else(|| {
+            panic!("{kind} declaration was incorrectly accepted by native codegen")
+        });
+        let diagnostics = format!("{error:?}");
+        assert!(
+            diagnostics.contains("AIF610"),
+            "{kind} must fail closed with AIF610 until its executable semantics are implemented; got {diagnostics}"
+        );
+    }
+}
+
+#[test]
 fn malformed_ai_constructs_have_stable_semantic_diagnostics() {
     let cases = [
         ("module duplicate_construct\ntrace Audit\n  signature: hmac\ntrace Audit\n  signature: hmac\n", "AIF611"),
