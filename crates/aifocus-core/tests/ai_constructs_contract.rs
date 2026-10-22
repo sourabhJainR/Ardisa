@@ -64,9 +64,10 @@ fn each_ai_construct_kind_is_individually_blocked_from_native_codegen() {
         sema::analyze_constructs(&module).unwrap_or_else(|errors| {
             panic!("{kind} fixture must be semantically valid: {errors:?}")
         });
-        let error = compile_source(source).unwrap_err_or_else(|| {
-            panic!("{kind} declaration was incorrectly accepted by native codegen")
-        });
+        let error = match compile_source(source) {
+            Err(error) => error,
+            Ok(_) => panic!("{kind} declaration was incorrectly accepted by native codegen"),
+        };
         let diagnostics = format!("{error:?}");
         assert!(
             diagnostics.contains("AIF610"),
