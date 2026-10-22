@@ -12,6 +12,17 @@ fn valid_ai_constructs_reach_typed_metadata_but_not_executable_codegen() {
     assert_eq!(constructs.len(), 5);
     assert_eq!(typed_ir::lower_constructs(&module).expect("construct metadata should lower").len(), 5);
 
+    // The typed CFG must preserve every validated declaration. This is metadata
+    // propagation only: native compilation below still rejects unimplemented
+    // executable semantics rather than silently dropping the declarations.
+    let typed_cfg = typed_ir::lower_cfg(&module).expect("valid declarations should survive typed CFG lowering");
+    assert_eq!(typed_cfg.constructs.len(), 5);
+    assert_eq!(typed_cfg.constructs[0].name, "Audit");
+    assert_eq!(typed_cfg.constructs[4].kind, ardisa_core::ConstructKind::Phase);
+    let encoded = typed_ir::encode_construct_metadata(&typed_cfg.constructs)
+        .expect("typed CFG construct metadata should remain valid and deterministic");
+    assert!(encoded.starts_with("ARDISA-CONSTRUCT-META-V1\n"));
+
     let error = compile_source(source)
         .expect_err("construct declarations must not be silently ignored by executable codegen");
     let diagnostics = format!("{error:?}");
