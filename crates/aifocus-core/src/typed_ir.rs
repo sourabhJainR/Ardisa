@@ -341,7 +341,13 @@ fn lower_expr(
 
 
 pub fn lower_cfg(module: &Module) -> Result<TypedIrModule, Vec<String>> {
-    let analysis = crate::sema::analyze(module).map_err(|errors| {
+    // Validate construct declarations independently, then analyze functions with
+    // declarations removed. The executable pipeline still runs sema::analyze on
+    // the original module first and therefore remains fail-closed (AIF610).
+    let constructs = lower_constructs(module)?;
+    validate_construct_metadata(&constructs)?;
+    let function_module = Module { constructs: Vec::new(), ..module.clone() };
+    let analysis = crate::sema::analyze(&function_module).map_err(|errors| {
         errors.into_iter().map(|e| format!("{}: {}", e.code, e.message)).collect::<Vec<_>>()
     })?;
     let mut functions = Vec::new();
@@ -364,7 +370,11 @@ pub fn lower_cfg(module: &Module) -> Result<TypedIrModule, Vec<String>> {
             blocks,
         });
     }
-    if errors.is_empty() { Ok(TypedIrModule { name: module.name.clone(), functions, constructs: Vec::new() }) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(TypedIrModule { name: module.name.clone(), functions, constructs })
+    } else {
+        Err(errors)
+    }
 }
 
 fn new_cfg_block(blocks: &mut Vec<TypedBasicBlock>) -> u32 {
