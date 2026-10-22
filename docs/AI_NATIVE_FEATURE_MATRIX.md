@@ -32,7 +32,7 @@ A declaration without executable semantics must continue to fail compilation wit
 
 ## Current next steps
 
-1. Complete the end-to-end source-to-runtime phases for Trace, Cell, Vault, Proof and Phase tracked by issue #132. Start with one construct and carry it through typed IR, deterministic encoding, verifier/runtime behavior and integration tests before expanding the supported subset.
+1. **Phase B — typed IR propagation:** validated Trace, Cell, Vault, Proof and Phase declarations now survive `typed_ir::lower_cfg` as typed construct metadata, with deterministic metadata encoding. This is not executable artifact support; `compile_source` still rejects these declarations with AIF610. Next, select one construct and carry it through native encoding, verifier/runtime behavior, effect boundaries and end-to-end tests before expanding the supported subset.
 2. Continue source-level AI data-structure integration under #148; GradientTape and ActivationCache still have runtime helpers only. TokenizerState source-to-runtime semantics are tracked separately by #192. Keep generic shapes and unsupported operations fail-closed.
 3. Preserve the native self-hosting gate in issue #176: Stage 0 -> Stage 1 -> Stage 2 -> Stage 3, byte-identical Stage 2/3 artifacts, independent holdout tests, and no trusted host-Rust compiler fallback.
 4. Run workspace/all-target, Native Phases, generated differential/holdout, and bootstrap checks on the exact PR head. Update capability claims only from those results.
