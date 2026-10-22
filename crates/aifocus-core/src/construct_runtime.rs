@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn runtime_does_not_infer_phase_semantics_from_other_constructs() {
-        let source = "module metadata_only\ncell Counter\n  value: Int\n";
+        let source = "module metadata_only\ncell Counter\n  value: Int\n  invariant: value >= 0\n";
         let runtime = ConstructRuntime::from_source(source, std::iter::empty()).unwrap();
         assert!(runtime.phases.is_empty());
         assert_eq!(runtime.constructs()[0].kind, ConstructKind::Cell);
