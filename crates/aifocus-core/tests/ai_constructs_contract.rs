@@ -107,7 +107,7 @@ fn vault_capability_names_must_match_runtime_capability_vocabulary() {
 fn phase_typed_metadata_builds_runtime_machine_with_explicit_initial_state() {
     use ardisa_core::ai_mode::{PhaseMachine, PhaseMachineError};
 
-    let source = "module phase_runtime_bridge\\nphase Delivery\\n  draft -> review\\n  review -> release\\n";
+    let source = "module phase_runtime_bridge\nphase Delivery\n  draft -> review\n  review -> release\n";
     let module = parse(source).expect("Phase declaration should parse");
     let constructs = typed_ir::lower_constructs(&module).expect("Phase metadata should validate");
     let phase = constructs.first().expect("Phase metadata should exist");
@@ -134,7 +134,7 @@ fn phase_typed_metadata_builds_runtime_machine_with_explicit_initial_state() {
 fn phase_runtime_bridge_rejects_non_phase_constructs() {
     use ardisa_core::ai_mode::{PhaseMachine, PhaseMachineError};
 
-    let source = "module wrong_kind\\ntrace Audit\\n  signature: hmac-sha256\\n";
+    let source = "module wrong_kind\ntrace Audit\n  signature: hmac-sha256\n";
     let module = parse(source).expect("Trace declaration should parse");
     let constructs = typed_ir::lower_constructs(&module).expect("Trace metadata should validate");
     assert!(matches!(
