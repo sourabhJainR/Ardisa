@@ -1,7 +1,8 @@
 //! Source-to-runtime bridge for required, signed Trace receipts.
 //!
 //! Only `signature: required` is supported. Signing and verification are
-//! delegated to caller-provided trusted implementations. This does not enable
+//! delegated to caller-provided trusted implementations; evidence promotion also requires
+//! HTTPS source backing and verifier approval. This does not enable
 //! native Trace instructions or claim that a caller-supplied signer is trusted.
 use std::collections::BTreeMap;
 
