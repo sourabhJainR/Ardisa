@@ -783,6 +783,50 @@ mod tests {
     }
 
     #[test]
+    fn construct_metadata_rejects_kind_mismatches_missing_clauses_and_self_transitions() {
+        let trace_module = crate::parse(
+            "module trace_metadata\\ntrace Audit\\n  signature: hmac-sha256\\n",
+        ).unwrap();
+        let mut trace = lower_constructs(&trace_module).unwrap();
+        trace[0].members.push(TypedIrConstructMember::Transition {
+            from: "draft".into(),
+            to: "review".into(),
+            span: crate::source::Span::new(0, 0),
+        });
+        assert!(
+            encode_construct_metadata(&trace).is_err(),
+            "Trace metadata must not smuggle Phase transitions into the encoded contract"
+        );
+
+        let cell_module = crate::parse(
+            "module cell_metadata\\ncell State\\n  value: Int\\n  invariant: non-empty\\n",
+        ).unwrap();
+        let mut cell = lower_constructs(&cell_module).unwrap();
+        cell[0].members.retain(|member| !matches!(
+            member,
+            TypedIrConstructMember::Clause { name, .. } if name == "invariant"
+        ));
+        assert!(
+            encode_construct_metadata(&cell).is_err(),
+            "Cell metadata must retain its required invariant clause"
+        );
+
+        let phase_module = crate::parse(
+            "module phase_metadata\\nphase Delivery\\n  draft -> review\\n",
+        ).unwrap();
+        let mut phase = lower_constructs(&phase_module).unwrap();
+        phase[0].members[0] = TypedIrConstructMember::Transition {
+            from: "draft".into(),
+            to: "draft".into(),
+            span: crate::source::Span::new(0, 0),
+        };
+        assert!(
+            encode_construct_metadata(&phase).is_err(),
+            "Phase metadata must reject self-transitions even if constructed outside the parser"
+        );
+    }
+
+    #[test]
     fn lowers_typed_function() {
         let m=crate::parse("module x\nfn main(a: Int) -> Int\n  a + 1\n").unwrap();
         let ir=lower(&m).unwrap();
