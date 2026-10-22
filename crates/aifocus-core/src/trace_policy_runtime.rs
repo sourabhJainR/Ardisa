@@ -216,6 +216,32 @@ mod tests {
         assert!(graph.validate_integrity().is_ok());
     }
 
+    struct RejectingEvidenceVerifier;
+    impl crate::evidence::EvidenceSourceVerifier for RejectingEvidenceVerifier {
+        fn verify_source_backing(&self, _envelope: &crate::evidence::EvidenceEnvelope) -> Result<(), String> {
+            Err("source registry unavailable".into())
+        }
+    }
+
+    #[test]
+    fn evidence_verifier_failure_prevents_evidence_graph_promotion() {
+        let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
+        runtime.record("Build", event(), Some(&TestSigner)).unwrap();
+        assert!(matches!(
+            runtime.verified_evidence_graph("Build", "https://example.invalid/source", &TestSigner, &RejectingEvidenceVerifier),
+            Err(TraceRuntimeError::EvidenceVerificationFailed(message)) if message == "source registry unavailable"
+        ));
+    }
+
+    #[test]
+    fn required_trace_rejects_an_empty_ledger() {
+        let runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
+        assert!(matches!(
+            runtime.verify("Build", &TestSigner),
+            Err(TraceRuntimeError::Trace(TraceError::MissingRequiredTrace))
+        ));
+    }
+
     #[test]
     fn invalid_signature_fails_verification() {
         let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
