@@ -379,10 +379,13 @@ impl AiModePolicy {
         trace_present: bool,
         signature_verified: bool,
     ) -> Result<(), PolicyViolation> {
-        if self.trace.required && !trace_present {
+        // A signature requirement is itself a requirement for a trace receipt.
+        // Do not let an inconsistent policy disable verification by setting
+        // `required = false` while leaving `require_signature = true`.
+        if (self.trace.required || self.trace.require_signature) && !trace_present {
             return Err(PolicyViolation::MissingTrace);
         }
-        if self.trace.required && self.trace.require_signature && !signature_verified {
+        if self.trace.require_signature && !signature_verified {
             return Err(PolicyViolation::MissingSignature);
         }
         Ok(())
@@ -737,7 +740,27 @@ mod tests {
     fn optional_trace_does_not_require_an_attestation() {
         let mut policy = policy();
         policy.trace.required = false;
+        policy.trace.require_signature = false;
         assert!(policy.validate_trace(false, false).is_ok());
+    }
+
+    #[test]
+    fn signature_requirement_cannot_be_disabled_by_optional_trace_flag() {
+        let mut policy = policy();
+        policy.trace.required = false;
+        policy.trace.require_signature = true;
+
+        assert_eq!(
+            policy.validate_trace(false, true),
+            Err(PolicyViolation::MissingTrace),
+            "a signature cannot attest to a trace that is absent"
+        );
+        assert_eq!(
+            policy.validate_trace(true, false),
+            Err(PolicyViolation::MissingSignature),
+            "required signatures must be verified even when trace presence is otherwise optional"
+        );
+        assert!(policy.validate_trace(true, true).is_ok());
     }
 
     #[test]
