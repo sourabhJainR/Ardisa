@@ -774,14 +774,13 @@ fn main() -> Int
   0
 "#;
 
-        let errors = match compile_source(source) {
-            Err(PipelineError::CompilerContract(errors)) => errors,
-            other => panic!("AI Mode declarations must not be ignored by native codegen: {other:?}"),
-        };
+        let error = compile_source(source)
+            .expect_err("AI Mode declarations must not be silently ignored by native codegen");
+        let diagnostics = format!("{error:?}");
         for name in ["Evidence", "State", "NoNetwork", "P", "Lifecycle"] {
             assert!(
-                errors.iter().any(|error| error.contains("AIF610") && error.contains(name)),
-                "missing fail-closed AIF610 diagnostic for {name}: {errors:?}"
+                diagnostics.contains("AIF610") && diagnostics.contains(name),
+                "missing fail-closed AIF610 diagnostic for {name}: {diagnostics}"
             );
         }
     }
