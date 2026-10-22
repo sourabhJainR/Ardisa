@@ -785,7 +785,7 @@ mod tests {
     #[test]
     fn construct_metadata_rejects_kind_mismatches_missing_clauses_and_self_transitions() {
         let trace_module = crate::parse(
-            "module trace_metadata\\ntrace Audit\\n  signature: hmac-sha256\\n",
+            "module trace_metadata\ntrace Audit\n  signature: hmac-sha256\n",
         ).unwrap();
         let mut trace = lower_constructs(&trace_module).unwrap();
         trace[0].members.push(TypedIrConstructMember::Transition {
@@ -799,7 +799,7 @@ mod tests {
         );
 
         let cell_module = crate::parse(
-            "module cell_metadata\\ncell State\\n  value: Int\\n  invariant: non-empty\\n",
+            "module cell_metadata\ncell State\n  value: Int\n  invariant: non-empty\n",
         ).unwrap();
         let mut cell = lower_constructs(&cell_module).unwrap();
         cell[0].members.retain(|member| !matches!(
@@ -812,7 +812,7 @@ mod tests {
         );
 
         let phase_module = crate::parse(
-            "module phase_metadata\\nphase Delivery\\n  draft -> review\\n",
+            "module phase_metadata\nphase Delivery\n  draft -> review\n",
         ).unwrap();
         let mut phase = lower_constructs(&phase_module).unwrap();
         phase[0].members[0] = TypedIrConstructMember::Transition {
