@@ -740,6 +740,7 @@ mod tests {
     fn optional_trace_does_not_require_an_attestation() {
         let mut policy = policy();
         policy.trace.required = false;
+        policy.trace.require_signature = false;
         assert!(policy.validate_trace(false, false).is_ok());
     }
 
