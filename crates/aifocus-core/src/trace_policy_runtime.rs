@@ -143,12 +143,20 @@ mod tests {
         ));
     }
 
+    struct BadSigner;
+    impl TraceSigner for BadSigner {
+        fn sign(&self, _payload: &[u8]) -> Result<Vec<u8>, String> {
+            Ok(b"not-a-valid-signature".to_vec())
+        }
+    }
+
     #[test]
-    fn tampered_receipt_is_rejected() {
+    fn invalid_signature_fails_verification() {
         let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
-        runtime.record("Build", event(), Some(&TestSigner)).unwrap();
-        // Public receipts are immutable through this API; verification remains
-        // the authority boundary rather than accepting caller-supplied receipt data.
-        runtime.verify("Build", &TestSigner).unwrap();
+        runtime.record("Build", event(), Some(&BadSigner)).unwrap();
+        assert!(matches!(
+            runtime.verify("Build", &TestSigner),
+            Err(TraceRuntimeError::Trace(TraceError::InvalidSignature))
+        ));
     }
 }
