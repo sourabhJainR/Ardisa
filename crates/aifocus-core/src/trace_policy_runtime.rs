@@ -235,6 +235,16 @@ mod tests {
     }
 
     #[test]
+    fn evidence_promotion_rejects_non_https_source_uris() {
+        let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
+        runtime.record("Build", event(), Some(&TestSigner)).unwrap();
+        assert!(matches!(
+            runtime.verified_evidence_graph("Build", "file:///tmp/source", &TestSigner, &EvidenceVerifier),
+            Err(TraceRuntimeError::EvidenceVerificationFailed(message)) if message == "source URI must be HTTPS"
+        ));
+    }
+
+    #[test]
     fn required_trace_rejects_an_empty_ledger() {
         let runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
         assert!(matches!(
