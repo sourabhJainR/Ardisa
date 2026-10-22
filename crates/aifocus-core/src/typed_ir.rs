@@ -63,9 +63,13 @@ pub fn validate_construct_metadata(constructs: &[TypedIrConstruct]) -> Result<()
 
         let mut member_names = BTreeSet::new();
         let mut transitions = BTreeSet::new();
+        let mut clauses = BTreeSet::new();
         for member in &construct.members {
             match member {
                 TypedIrConstructMember::Field { name, .. } => {
+                    if construct.kind != crate::ast::ConstructKind::Cell {
+                        errors.push(format!("{}: fields are only valid on Cell constructs", construct.name));
+                    }
                     if name.trim().is_empty() {
                         errors.push(format!("{}: field name must not be empty", construct.name));
                     }
@@ -77,19 +81,52 @@ pub fn validate_construct_metadata(constructs: &[TypedIrConstruct]) -> Result<()
                     if name.trim().is_empty() || value.trim().is_empty() {
                         errors.push(format!("{}: clause name and value must not be empty", construct.name));
                     }
+                    let allowed = match construct.kind {
+                        crate::ast::ConstructKind::Trace => name == "signature",
+                        crate::ast::ConstructKind::Cell => name == "invariant",
+                        crate::ast::ConstructKind::Vault => matches!(name.as_str(), "capabilities" | "denies"),
+                        crate::ast::ConstructKind::Proof => matches!(name.as_str(), "requires" | "ensures" | "on_unknown" | "required"),
+                        crate::ast::ConstructKind::Phase => false,
+                    };
+                    if !allowed {
+                        errors.push(format!("{}: clause '{}' is not valid for {:?} constructs", construct.name, name, construct.kind));
+                    }
                     if !member_names.insert(name.clone()) {
                         errors.push(format!("{}: duplicate member name: {}", construct.name, name));
                     }
+                    clauses.insert(name.clone());
                 }
                 TypedIrConstructMember::Transition { from, to, .. } => {
+                    if construct.kind != crate::ast::ConstructKind::Phase {
+                        errors.push(format!("{}: transitions are only valid on Phase constructs", construct.name));
+                    }
                     if from.trim().is_empty() || to.trim().is_empty() {
                         errors.push(format!("{}: transition endpoints must not be empty", construct.name));
+                    }
+                    if from == to {
+                        errors.push(format!("{}: self-transition is not valid: {} -> {}", construct.name, from, to));
                     }
                     if !transitions.insert((from.clone(), to.clone())) {
                         errors.push(format!("{}: duplicate transition: {} -> {}", construct.name, from, to));
                     }
                 }
             }
+        }
+
+        let required_clauses: &[&str] = match construct.kind {
+            crate::ast::ConstructKind::Trace => &["signature"],
+            crate::ast::ConstructKind::Cell => &["invariant"],
+            crate::ast::ConstructKind::Vault => &["capabilities"],
+            crate::ast::ConstructKind::Proof => &["requires", "ensures", "on_unknown", "required"],
+            crate::ast::ConstructKind::Phase => &[],
+        };
+        for required in required_clauses {
+            if !clauses.contains(*required) {
+                errors.push(format!("{}: missing required clause '{}'", construct.name, required));
+            }
+        }
+        if construct.kind == crate::ast::ConstructKind::Phase && transitions.is_empty() {
+            errors.push(format!("{}: Phase construct must declare at least one transition", construct.name));
         }
     }
     if errors.is_empty() { Ok(()) } else { Err(errors) }
