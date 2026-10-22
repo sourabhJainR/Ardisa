@@ -281,7 +281,7 @@ fn native_artifact_mutation_corpus_rejects_corrupted_framing() {
     let original = compiled.artifact;
     let mutations: Vec<(&str, String)> = vec![
         ("magic", format!("X{}", &original[1..])),
-        ("version", original.replacen("ARDISA-EXEC-V1", "ARDISA-EXEC-V9", 1)),
+        ("version", original.replacen(native::ARTIFACT_MAGIC, "ARDISA-EXEC-V9", 1)),
         ("function marker", original.replacen("FN|", "XX|", 1)),
         ("terminator", original.replacen("END\n", "BAD\n", 1)),
         ("trailing garbage", format!("{original}not-an-instruction\n")),
