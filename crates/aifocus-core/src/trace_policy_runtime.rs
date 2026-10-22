@@ -94,9 +94,13 @@ impl TraceRuntimeSet {
     pub fn verified_evidence_graph<V: TraceVerifier, E: EvidenceSourceVerifier>(
         &self,
         trace: &str,
+        source_uri: &str,
         verifier: &V,
         evidence_verifier: &E,
     ) -> Result<EvidenceGraph, TraceRuntimeError> {
+        if !source_uri.starts_with("https://") || source_uri.len() <= "https://".len() {
+            return Err(TraceRuntimeError::EvidenceVerificationFailed("source URI must be HTTPS".into()));
+        }
         self.verify(trace, verifier)?;
         let entry = self.traces.get(trace)
             .ok_or_else(|| TraceRuntimeError::UnknownTrace(trace.to_string()))?;
@@ -111,9 +115,9 @@ impl TraceRuntimeSet {
                 outcome: receipt.outcome.clone(),
                 verification: "trace_signature_verified".into(),
                 evidence: vec![
-                    receipt.subject_sha256.clone(),
-                    signature_hex,
-                    previous_hex,
+                    format!("source_uri={source_uri}"),
+                    format!("source_sha256={}", receipt.subject_sha256),
+                    format!("verification_receipt={signature_hex};previous={previous_hex}"),
                 ],
             };
             evidence_verifier.verify_source_backing(&envelope)
@@ -191,9 +195,9 @@ mod tests {
     impl crate::evidence::EvidenceSourceVerifier for EvidenceVerifier {
         fn verify_source_backing(&self, envelope: &crate::evidence::EvidenceEnvelope) -> Result<(), String> {
             if envelope.verification == "trace_signature_verified"
-                && envelope.evidence.len() == 3
-                && envelope.evidence[0].len() == 64
-                && !envelope.evidence[1].is_empty() {
+                && envelope.evidence.iter().any(|item| item.starts_with("source_uri=https://"))
+                && envelope.evidence.iter().any(|item| item.starts_with("source_sha256=") && item.len() == "source_sha256=".len() + 64)
+                && envelope.evidence.iter().any(|item| item.starts_with("verification_receipt=") && item.len() > "verification_receipt=".len()) {
                 Ok(())
             } else {
                 Err("trace receipt lacks verified source backing".into())
@@ -205,7 +209,7 @@ mod tests {
     fn verified_receipts_enter_evidence_graph_only_after_both_verifiers_pass() {
         let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
         runtime.record("Build", event(), Some(&TestSigner)).unwrap();
-        let graph = runtime.verified_evidence_graph("Build", &TestSigner, &EvidenceVerifier).unwrap();
+        let graph = runtime.verified_evidence_graph("Build", "https://example.invalid/source", &TestSigner, &EvidenceVerifier).unwrap();
         assert_eq!(graph.envelopes.len(), 1);
         assert_eq!(graph.envelopes[0].episode_id, "Build:0");
         assert_eq!(graph.envelopes[0].verification, "trace_signature_verified");
