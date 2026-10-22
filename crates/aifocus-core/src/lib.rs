@@ -35,6 +35,7 @@ pub mod ownership;
 pub mod optimizer;
 pub mod pipeline;
 pub mod typed_ir;
+pub mod vault_runtime;
 pub mod protocol;
 pub mod proof_runtime;
 pub mod resource_guard;
