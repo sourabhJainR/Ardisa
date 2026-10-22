@@ -774,13 +774,16 @@ fn main() -> Int
   0
 "#;
 
-        let error = compile_source(source)
-            .expect_err("AI Mode declarations must not be silently ignored by native codegen");
-        let diagnostics = format!("{error:?}");
+        let diagnostics = match compile_source(source) {
+            Err(PipelineError::Semantic(diagnostics)) => diagnostics,
+            other => panic!("AI Mode declarations must fail during semantic analysis: {other:?}"),
+        };
         for name in ["Evidence", "State", "NoNetwork", "P", "Lifecycle"] {
             assert!(
-                diagnostics.contains("AIF610") && diagnostics.contains(name),
-                "missing fail-closed AIF610 diagnostic for {name}: {diagnostics}"
+                diagnostics.iter().any(|diagnostic| {
+                    diagnostic.code == "AIF610" && diagnostic.message.contains(name)
+                }),
+                "missing fail-closed AIF610 diagnostic for {name}: {diagnostics:?}"
             );
         }
     }
