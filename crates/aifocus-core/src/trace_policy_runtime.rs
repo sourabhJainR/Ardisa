@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use crate::{
     ai_mode::{TraceError, TraceEventInput, TraceLedger, TracePolicy, TraceSigner, TraceVerifier},
     ast::ConstructKind,
+    evidence::{EvidenceEnvelope, EvidenceGraph, EvidenceSourceVerifier},
     typed_ir::{self, TypedIrConstructMember},
 };
 
@@ -18,6 +19,7 @@ pub enum TraceRuntimeError {
     UnknownTrace(String),
     UnsupportedConfiguration { trace: String, detail: String },
     Trace(TraceError),
+    EvidenceVerificationFailed(String),
 }
 
 struct SourceTrace {
@@ -86,6 +88,41 @@ impl TraceRuntimeSet {
             .ok_or_else(|| TraceRuntimeError::UnknownTrace(trace.to_string()))?;
         entry.ledger.verify_chain(&entry.policy, verifier).map_err(TraceRuntimeError::Trace)
     }
+
+    /// Promote verified receipts into an evidence graph only after both signature
+    /// verification and the configured source-backing verifier accept each envelope.
+    pub fn verified_evidence_graph<V: TraceVerifier, E: EvidenceSourceVerifier>(
+        &self,
+        trace: &str,
+        verifier: &V,
+        evidence_verifier: &E,
+    ) -> Result<EvidenceGraph, TraceRuntimeError> {
+        self.verify(trace, verifier)?;
+        let entry = self.traces.get(trace)
+            .ok_or_else(|| TraceRuntimeError::UnknownTrace(trace.to_string()))?;
+        let mut graph = EvidenceGraph::default();
+        for receipt in entry.ledger.receipts() {
+            let signature_hex = receipt.signature.iter().map(|b| format!("{b:02x}")).collect::<String>();
+            let previous_hex = receipt.previous_signature.iter().map(|b| format!("{b:02x}")).collect::<String>();
+            let envelope = EvidenceEnvelope {
+                episode_id: format!("{trace}:{}", receipt.sequence),
+                capability: receipt.event_kind.clone(),
+                task_kind: receipt.actor.clone(),
+                outcome: receipt.outcome.clone(),
+                verification: "trace_signature_verified".into(),
+                evidence: vec![
+                    receipt.subject_sha256.clone(),
+                    signature_hex,
+                    previous_hex,
+                ],
+            };
+            evidence_verifier.verify_source_backing(&envelope)
+                .map_err(TraceRuntimeError::EvidenceVerificationFailed)?;
+            graph.add(envelope);
+        }
+        graph.validate_integrity().map_err(TraceRuntimeError::EvidenceVerificationFailed)?;
+        Ok(graph)
+    }
 }
 
 #[cfg(test)]
@@ -148,6 +185,31 @@ mod tests {
         fn sign(&self, _payload: &[u8]) -> Result<Vec<u8>, String> {
             Ok(b"not-a-valid-signature".to_vec())
         }
+    }
+
+    struct EvidenceVerifier;
+    impl crate::evidence::EvidenceSourceVerifier for EvidenceVerifier {
+        fn verify_source_backing(&self, envelope: &crate::evidence::EvidenceEnvelope) -> Result<(), String> {
+            if envelope.verification == "trace_signature_verified"
+                && envelope.evidence.len() == 3
+                && envelope.evidence[0].len() == 64
+                && !envelope.evidence[1].is_empty() {
+                Ok(())
+            } else {
+                Err("trace receipt lacks verified source backing".into())
+            }
+        }
+    }
+
+    #[test]
+    fn verified_receipts_enter_evidence_graph_only_after_both_verifiers_pass() {
+        let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
+        runtime.record("Build", event(), Some(&TestSigner)).unwrap();
+        let graph = runtime.verified_evidence_graph("Build", &TestSigner, &EvidenceVerifier).unwrap();
+        assert_eq!(graph.envelopes.len(), 1);
+        assert_eq!(graph.envelopes[0].episode_id, "Build:0");
+        assert_eq!(graph.envelopes[0].verification, "trace_signature_verified");
+        assert!(graph.validate_integrity().is_ok());
     }
 
     #[test]
