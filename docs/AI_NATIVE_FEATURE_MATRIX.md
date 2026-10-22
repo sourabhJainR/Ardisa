@@ -30,7 +30,7 @@ A feature must not be marked fully supported merely because its parser, Rust hel
 5. Workspace/all-target and Native Phases checks.
 6. Documentation of the precise supported subset and known exclusions.
 
-The current main commit `85034a10445c0dceab614b6f616431b90eec4563` passed the post-merge Rust workspace/all-target, generated differential/holdout, bootstrap reproducibility/evidence-contract, and Native Phases workflows. This verifies the repository's current gates; it does not establish full language parity or full self-hosting. Keep `self_hosting_ready=false` unless the complete Stage 0 -> Stage 1 -> Stage 2 -> Stage 3 and independent holdout contract is satisfied.
+The previous main commit `85034a10445c0dceab614b6f616431b90eec4563` passed Rust workspace/all-target, generated differential/holdout, bootstrap reproducibility/evidence-contract, and Native Phases workflows. The matrix change in PR #310 also passed its exact-head CI and Native Phases workflows before merge. Post-merge checks must still be evaluated on the resulting main commit. These gates do not establish full language parity or full self-hosting. Keep `self_hosting_ready=false` unless the complete Stage 0 -> Stage 1 -> Stage 2 -> Stage 3 and independent holdout contract is satisfied.
 
 ## Remaining phases
 
