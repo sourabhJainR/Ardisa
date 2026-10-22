@@ -101,3 +101,44 @@ fn vault_capability_names_must_match_runtime_capability_vocabulary() {
         "expected AIF620 for unsupported capability name, got {errors:?}"
     );
 }
+
+
+#[test]
+fn phase_typed_metadata_builds_runtime_machine_with_explicit_initial_state() {
+    use ardisa_core::ai_mode::{PhaseMachine, PhaseMachineError};
+
+    let source = "module phase_runtime_bridge\\nphase Delivery\\n  draft -> review\\n  review -> release\\n";
+    let module = parse(source).expect("Phase declaration should parse");
+    let constructs = typed_ir::lower_constructs(&module).expect("Phase metadata should validate");
+    let phase = constructs.first().expect("Phase metadata should exist");
+
+    let mut machine = PhaseMachine::from_typed_construct(phase, "draft")
+        .expect("typed Phase edges should create a runtime machine");
+    assert_eq!(machine.current(), "draft");
+    assert!(machine.can_transition_to("review"));
+    machine.transition("review").expect("declared transition should succeed");
+    assert_eq!(machine.current(), "review");
+
+    let error = machine.transition("draft").expect_err("undeclared reverse transition must fail");
+    assert!(matches!(error, PhaseMachineError::InvalidTransition { .. }));
+    assert_eq!(machine.current(), "review", "rejected transition must not mutate state");
+    assert_eq!(machine.history().len(), 1, "rejected transition must not append history");
+
+    assert!(matches!(
+        PhaseMachine::from_typed_construct(phase, "unknown"),
+        Err(PhaseMachineError::InitialStateUnknown(_))
+    ));
+}
+
+#[test]
+fn phase_runtime_bridge_rejects_non_phase_constructs() {
+    use ardisa_core::ai_mode::{PhaseMachine, PhaseMachineError};
+
+    let source = "module wrong_kind\\ntrace Audit\\n  signature: hmac-sha256\\n";
+    let module = parse(source).expect("Trace declaration should parse");
+    let constructs = typed_ir::lower_constructs(&module).expect("Trace metadata should validate");
+    assert!(matches!(
+        PhaseMachine::from_typed_construct(&constructs[0], "draft"),
+        Err(PhaseMachineError::NotPhaseConstruct)
+    ));
+}
