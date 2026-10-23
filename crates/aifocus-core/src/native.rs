@@ -34,6 +34,91 @@ impl NativePhaseState {
     pub fn current(&self) -> &str { &self.current }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeCellInvariant {
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+}
+
+impl NativeCellInvariant {
+    fn parse(source: &str) -> Option<(Self, i64)> {
+        let tail = source.trim().strip_prefix("value")?.trim_start();
+        for (token, invariant) in [
+            ("==", Self::Equal),
+            ("!=", Self::NotEqual),
+            ("<=", Self::LessEqual),
+            (">=", Self::GreaterEqual),
+            ("<", Self::Less),
+            (">", Self::Greater),
+        ] {
+            if let Some(rhs) = tail.strip_prefix(token) {
+                return Some((invariant, rhs.trim().parse::<i64>().ok()?));
+            }
+        }
+        None
+    }
+
+    fn accepts(self, value: i64, bound: i64) -> bool {
+        match self {
+            Self::Equal => value == bound,
+            Self::NotEqual => value != bound,
+            Self::Less => value < bound,
+            Self::LessEqual => value <= bound,
+            Self::Greater => value > bound,
+            Self::GreaterEqual => value >= bound,
+        }
+    }
+
+    fn artifact_name(self) -> &'static str {
+        match self {
+            Self::Equal => "eq",
+            Self::NotEqual => "ne",
+            Self::Less => "lt",
+            Self::LessEqual => "le",
+            Self::Greater => "gt",
+            Self::GreaterEqual => "ge",
+        }
+    }
+
+    fn from_artifact_name(name: &str) -> Option<Self> {
+        match name {
+            "eq" => Some(Self::Equal),
+            "ne" => Some(Self::NotEqual),
+            "lt" => Some(Self::Less),
+            "le" => Some(Self::LessEqual),
+            "gt" => Some(Self::Greater),
+            "ge" => Some(Self::GreaterEqual),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCellSpec {
+    pub name: String,
+    pub initial: i64,
+    pub invariant: NativeCellInvariant,
+    pub bound: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCellState {
+    name: String,
+    value: i64,
+    invariant: NativeCellInvariant,
+    bound: i64,
+}
+
+impl NativeCellState {
+    pub fn name(&self) -> &str { &self.name }
+    pub fn value(&self) -> i64 { self.value }
+}
+
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeInstr {
     /// Create an immutable Phase state token from a validated declaration graph.
@@ -42,6 +127,12 @@ pub enum NativeInstr {
     PhaseTransition,
     /// Read the current state without mutating the Phase token.
     PhaseCurrent,
+    /// Create an invariant-checked Cell value token.
+    CellStart { spec: NativeCellSpec },
+    /// Return a new Cell token only if the invariant accepts the proposed value.
+    CellUpdate,
+    /// Read the value without mutating the Cell token.
+    CellCurrent,
     PushInt(i64),
     PushFloat(u32),
     PushBool(bool),
@@ -214,6 +305,44 @@ pub fn phase_start_instruction(
     Ok(NativeInstr::PhaseStart { graph })
 }
 
+/// Lower the supported integer Cell subset into an executable CellStart instruction.
+/// Only one `value: Int` field and one `value <op> integer` invariant are supported.
+pub fn cell_start_instruction(
+    construct: &crate::typed_ir::TypedIrConstruct,
+    initial: i64,
+) -> Result<NativeInstr, NativeError> {
+    if construct.kind != crate::ast::ConstructKind::Cell {
+        return Err(NativeError::InvalidProgram("CellStart lowering requires a Cell declaration".into()));
+    }
+    crate::typed_ir::validate_construct_metadata(std::slice::from_ref(construct))
+        .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
+    let fields = construct.members.iter().filter_map(|member| match member {
+        crate::typed_ir::TypedIrConstructMember::Field { name, ty, .. } => Some((name.as_str(), ty)),
+        _ => None,
+    }).collect::<Vec<_>>();
+    if fields.len() != 1 || fields[0].0 != "value" || fields[0].1 != &crate::ast::TypeKind::Int {
+        return Err(NativeError::InvalidProgram(format!("Cell '{}' must contain only value: Int", construct.name)));
+    }
+    let invariants = construct.members.iter().filter_map(|member| match member {
+        crate::typed_ir::TypedIrConstructMember::Clause { name, value, .. } if name == "invariant" => Some(value.as_str()),
+        _ => None,
+    }).collect::<Vec<_>>();
+    if invariants.len() != 1 {
+        return Err(NativeError::InvalidProgram(format!("Cell '{}' must have exactly one invariant", construct.name)));
+    }
+    if construct.members.iter().any(|member| matches!(member,
+        crate::typed_ir::TypedIrConstructMember::Clause { name, .. } if name != "invariant"
+    ) || matches!(member, crate::typed_ir::TypedIrConstructMember::Transition { .. })) {
+        return Err(NativeError::InvalidProgram(format!("Cell '{}' contains unsupported members", construct.name)));
+    }
+    let (invariant, bound) = NativeCellInvariant::parse(invariants[0]).ok_or_else(|| {
+        NativeError::InvalidProgram(format!("Cell '{}' has an unsupported invariant", construct.name))
+    })?;
+    let spec = NativeCellSpec { name: construct.name.clone(), initial, invariant, bound };
+    validate_cell_spec(&spec)?;
+    Ok(NativeInstr::CellStart { spec })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Deterministic collection of compiled Ardisa functions.
 pub struct NativeProgram {
@@ -303,6 +432,7 @@ pub enum NativeValue {
     ContextWindow { max_segments: usize, max_bytes: usize, max_tokens: usize, segments: Vec<(String, Vec<u8>, usize)>, bytes: usize, tokens: usize },
     String(String),
     PhaseState(NativePhaseState),
+    CellState(NativeCellState),
     List(Vec<NativeValue>),
     OptionSome(Box<NativeValue>),
     OptionNone,
@@ -558,6 +688,12 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                     return Err(NativeError::ResourceLimit("PhaseState exceeds value-node budget".into()));
                 }
             }
+            NativeValue::CellState(state) => {
+                validate_cell_state_parts(&state.name, state.value, state.invariant, state.bound)?;
+                if limits.max_value_nodes < 1 {
+                    return Err(NativeError::ResourceLimit("CellState exceeds value-node budget".into()));
+                }
+            }
             NativeValue::List(items) => {
                 if items.len() > limits.max_collection_items {
                     return Err(NativeError::ResourceLimit("collection exceeds item limit".into()));
@@ -625,6 +761,10 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
                     string_bytes = string_bytes.checked_add(from.len()).and_then(|n| n.checked_add(to.len()))
                         .ok_or_else(|| NativeError::ResourceLimit("PhaseState byte accounting overflow".into()))?;
                 }
+            }
+            NativeValue::CellState(state) => {
+                nodes = nodes.checked_add(1).ok_or_else(|| NativeError::ResourceLimit("CellState footprint overflow".into()))?;
+                string_bytes = string_bytes.checked_add(state.name.len()).ok_or_else(|| NativeError::ResourceLimit("CellState byte accounting overflow".into()))?;
             }
             NativeValue::List(items) => pending.extend(items.iter()),
             NativeValue::OptionSome(inner) | NativeValue::ResultOk(inner) | NativeValue::ResultErr(inner) => pending.push(inner),
@@ -740,6 +880,7 @@ fn native_value_matches_type_tag(value: &NativeValue, expected: &str) -> bool {
         ("VectorIndex", NativeValue::VectorIndex { .. }) | ("KvCache", NativeValue::KvCache { .. }) |
         ("ContextWindow", NativeValue::ContextWindow { .. }) |
         ("PhaseState", NativeValue::PhaseState(_)) |
+        ("CellState", NativeValue::CellState(_)) |
         ("GradientTape", NativeValue::GradientTape { .. }) | ("ActivationCache", NativeValue::ActivationCache { .. }) |
         ("TokenizerState", NativeValue::TokenizerState { .. }) => true,
         _ => false,
@@ -803,7 +944,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape" | "ActivationCache" | "TokenizerState" | "PhaseState"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape" | "ActivationCache" | "TokenizerState" | "PhaseState" | "CellState"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -1437,6 +1578,9 @@ fn run_function(
                 | NativeInstr::PhaseStart { .. }
                 | NativeInstr::PhaseTransition
                 | NativeInstr::PhaseCurrent
+                | NativeInstr::CellStart { .. }
+                | NativeInstr::CellUpdate
+                | NativeInstr::CellCurrent
                 | NativeInstr::PushString(_)
                 | NativeInstr::PushList(_)
                 | NativeInstr::Index
@@ -2192,6 +2336,38 @@ fn run_function(
                     None => return Err(NativeError::InvalidProgram("phase_current state missing".into())),
                 }
             }
+            NativeInstr::CellStart { spec } => {
+                validate_cell_spec(spec)?;
+                stack.push(NativeValue::CellState(NativeCellState {
+                    name: spec.name.clone(),
+                    value: spec.initial,
+                    invariant: spec.invariant,
+                    bound: spec.bound,
+                }));
+            }
+            NativeInstr::CellUpdate => {
+                let value = match stack.pop() {
+                    Some(NativeValue::Int(value)) => value,
+                    Some(_) => return Err(NativeError::Type("cell_update value must be Int".into())),
+                    None => return Err(NativeError::InvalidProgram("cell_update value missing".into())),
+                };
+                let state = match stack.pop() {
+                    Some(NativeValue::CellState(state)) => state,
+                    Some(_) => return Err(NativeError::Type("cell_update requires CellState".into())),
+                    None => return Err(NativeError::InvalidProgram("cell_update state missing".into())),
+                };
+                if !state.invariant.accepts(value, state.bound) {
+                    return Err(NativeError::Type(format!("Cell invariant rejected update: '{}'", state.name)));
+                }
+                stack.push(NativeValue::CellState(NativeCellState { value, ..state }));
+            }
+            NativeInstr::CellCurrent => {
+                match stack.pop() {
+                    Some(NativeValue::CellState(state)) => stack.push(NativeValue::Int(state.value)),
+                    Some(_) => return Err(NativeError::Type("cell_current requires CellState".into())),
+                    None => return Err(NativeError::InvalidProgram("cell_current state missing".into())),
+                }
+            }
             NativeInstr::PushUnit => stack.push(NativeValue::Unit),
             NativeInstr::PushString(value) => {
                 if value.len() > state.limits.max_string_bytes {
@@ -2606,6 +2782,20 @@ fn validate_phase_state_parts(name: &str, current: &str, transitions: &[(String,
     validate_phase_graph(&graph)
 }
 
+fn validate_cell_spec(spec: &NativeCellSpec) -> Result<(), NativeError> {
+    if spec.name.trim().is_empty() {
+        return Err(NativeError::InvalidProgram("Cell name must not be empty".into()));
+    }
+    if !spec.invariant.accepts(spec.initial, spec.bound) {
+        return Err(NativeError::InvalidProgram(format!("Cell '{}' initial value violates its invariant", spec.name)));
+    }
+    Ok(())
+}
+
+fn validate_cell_state_parts(name: &str, value: i64, invariant: NativeCellInvariant, bound: i64) -> Result<(), NativeError> {
+    validate_cell_spec(&NativeCellSpec { name: name.to_string(), initial: value, invariant, bound })
+}
+
 fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
     if program.functions.len() > MAX_PROGRAM_FUNCTIONS {
         return Err(NativeError::ResourceLimit(format!(
@@ -2655,6 +2845,10 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                     add_bytes(&graph.name)?;
                     add_bytes(&graph.initial)?;
                     for (from, to) in &graph.transitions { add_bytes(from)?; add_bytes(to)?; }
+                }
+                NativeInstr::CellStart { spec } => {
+                    validate_cell_spec(spec)?;
+                    add_bytes(&spec.name)?;
                 }
                 NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
                 NativeInstr::PushTensor { shape, values } => { validate_tensor_parts(shape, values, MAX_TENSOR_ELEMENTS)?; }
@@ -2808,6 +3002,9 @@ fn encode_instr(instr: &NativeInstr) -> String {
         ),
         NativeInstr::PhaseTransition => "PhaseTransition".into(),
         NativeInstr::PhaseCurrent => "PhaseCurrent".into(),
+        NativeInstr::CellStart { spec } => format!("CellStart:{},{},{},{}", escape_artifact(&spec.name), spec.initial, spec.invariant.artifact_name(), spec.bound),
+        NativeInstr::CellUpdate => "CellUpdate".into(),
+        NativeInstr::CellCurrent => "CellCurrent".into(),
         NativeInstr::PushInt(v) => format!("PushInt:{v}"),
         NativeInstr::PushFloat(bits) => format!("PushFloat:{bits}"),
         NativeInstr::PushBool(v) => format!("PushBool:{v}"),
@@ -2908,6 +3105,16 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         },
         "PhaseTransition" => NativeInstr::PhaseTransition,
         "PhaseCurrent" => NativeInstr::PhaseCurrent,
+        "CellStart" => {
+            let mut fields = arg.splitn(4, ',');
+            let name = unescape_artifact(fields.next().ok_or_else(bad)?)?;
+            let initial = fields.next().ok_or_else(bad)?.parse::<i64>().map_err(|_| bad())?;
+            let invariant = NativeCellInvariant::from_artifact_name(fields.next().ok_or_else(bad)?).ok_or_else(bad)?;
+            let bound = fields.next().ok_or_else(bad)?.parse::<i64>().map_err(|_| bad())?;
+            NativeInstr::CellStart { spec: NativeCellSpec { name, initial, invariant, bound } }
+        },
+        "CellUpdate" => NativeInstr::CellUpdate,
+        "CellCurrent" => NativeInstr::CellCurrent,
         "PushInt"=>NativeInstr::PushInt(arg.parse().map_err(|_|bad())?),
         "PushFloat"=>{let bits=arg.parse::<u32>().map_err(|_|bad())?;if !f32::from_bits(bits).is_finite(){return Err(bad());}NativeInstr::PushFloat(bits)},
         "PushBool"=>NativeInstr::PushBool(arg=="true"),
@@ -5768,3 +5975,128 @@ mod native_phase_state_tests {
     }
 }
 
+
+
+#[cfg(test)]
+mod native_cell_state_tests {
+    use super::*;
+
+    fn program(code: Vec<NativeInstr>) -> NativeProgram {
+        NativeProgram {
+            functions: [("main".to_string(), NativeFunction { params: vec![], code })].into_iter().collect(),
+        }
+    }
+
+    fn cell_instruction(invariant: &str, initial: i64) -> NativeInstr {
+        let source = format!(
+            "module cell_source\ncell Counter\n  value: Int\n  invariant: {invariant}\n"
+        );
+        let module = crate::parse(&source).expect("Cell source parses");
+        let constructs = crate::typed_ir::lower_constructs(&module).expect("typed Cell metadata");
+        cell_start_instruction(&constructs[0], initial).expect("Cell declaration lowers")
+    }
+
+    #[test]
+    fn source_cell_lowers_and_executes_through_native_artifact() {
+        let program = program(vec![
+            cell_instruction("value >= 0", 1),
+            NativeInstr::PushInt(7),
+            NativeInstr::CellUpdate,
+            NativeInstr::CellCurrent,
+            NativeInstr::ReturnTyped("Int".into()),
+        ]);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("Cell instructions round-trip");
+        assert_eq!(encode_program(&decoded), artifact);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(7));
+    }
+
+    #[test]
+    fn invalid_cell_update_is_rejected_without_a_committed_state_token() {
+        let program = program(vec![
+            cell_instruction("value >= 0", 3),
+            NativeInstr::PushInt(-1),
+            NativeInstr::CellUpdate,
+            NativeInstr::CellCurrent,
+            NativeInstr::ReturnTyped("Int".into()),
+        ]);
+        assert!(matches!(
+            run_program(&program, "main", &[]),
+            Err(NativeError::Type(message)) if message.contains("Cell invariant rejected update")
+        ));
+    }
+
+    #[test]
+    fn native_cell_rejects_invalid_initial_values_and_unsupported_shapes() {
+        let source = "module cell_source\ncell Counter\n  value: Int\n  invariant: value >= 0\n";
+        let module = crate::parse(source).unwrap();
+        let construct = crate::typed_ir::lower_constructs(&module).unwrap();
+        assert!(cell_start_instruction(&construct[0], -1).is_err());
+
+        let wrong_shape = "module cell_source\ncell Counter\n  value: String\n  invariant: value >= 0\n";
+        let module = crate::parse(wrong_shape).unwrap();
+        let construct = crate::typed_ir::lower_constructs(&module).unwrap();
+        assert!(cell_start_instruction(&construct[0], 1).is_err());
+    }
+
+    #[test]
+    fn malformed_cell_artifact_and_forged_initial_spec_fail_closed() {
+        assert!(decode_instr("CellStart:Counter,1,unknown,0").is_err());
+        let invalid = program(vec![
+            NativeInstr::CellStart {
+                spec: NativeCellSpec {
+                    name: "Counter".into(),
+                    initial: -1,
+                    invariant: NativeCellInvariant::GreaterEqual,
+                    bound: 0,
+                },
+            },
+            NativeInstr::Return,
+        ]);
+        assert!(matches!(
+            ValidatedNativeProgram::try_new(invalid),
+            Err(NativeError::InvalidProgram(message)) if message.contains("violates its invariant")
+        ));
+    }
+
+    #[test]
+    fn cell_artifact_escapes_field_delimiters_in_cell_names() {
+        let program = program(vec![
+            NativeInstr::CellStart {
+                spec: NativeCellSpec {
+                    name: "Counter,primary".into(),
+                    initial: 1,
+                    invariant: NativeCellInvariant::GreaterEqual,
+                    bound: 0,
+                },
+            },
+            NativeInstr::CellCurrent,
+            NativeInstr::ReturnTyped("Int".into()),
+        ]);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("escaped Cell name decodes");
+        assert_eq!(encode_program(&decoded), artifact);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(1));
+    }
+
+    #[test]
+    fn native_cell_enforces_each_supported_comparison() {
+        let cases = [
+            ("value == 3", 3, 4),
+            ("value != 3", 4, 3),
+            ("value < 3", 2, 3),
+            ("value <= 3", 3, 4),
+            ("value > 3", 4, 3),
+            ("value >= 3", 3, 2),
+        ];
+        for (invariant, initial, rejected) in cases {
+            let program = program(vec![
+                cell_instruction(invariant, initial),
+                NativeInstr::PushInt(rejected),
+                NativeInstr::CellUpdate,
+                NativeInstr::ReturnTyped("CellState".into()),
+            ]);
+            assert!(run_program(&program, "main", &[]).is_err(), "invalid value accepted for {invariant}");
+        }
+    }
+}
