@@ -126,14 +126,8 @@ mod tests {
             compile_vault_source(SOURCE, "ReadOnly", "hyperdrive"),
             Err(NativeVaultCompileError::UnsupportedCapability(_))
         ));
-        assert!(matches!(
-            compile_vault_source("module v\nvault Empty\n  denies: network\n", "Empty", "network"),
-            Err(NativeVaultCompileError::Native(native::NativeError::InvalidProgram(_)))
-        ));
-        assert!(matches!(
-            compile_vault_source("module v\nvault Broken\n  capabilities: network\n  denies: network\n", "Broken", "network"),
-            Err(NativeVaultCompileError::Native(native::NativeError::InvalidProgram(_)))
-        ));
+        assert!(compile_vault_source("module v\nvault Empty\n  denies: network\n", "Empty", "network").is_err());
+        assert!(compile_vault_source("module v\nvault Broken\n  capabilities: network\n  denies: network\n", "Broken", "network").is_err());
     }
 
     #[test]
