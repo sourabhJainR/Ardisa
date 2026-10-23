@@ -23,12 +23,13 @@ pub enum TraceRuntimeError {
     EvidenceVerificationFailed(String),
 }
 
+#[derive(Clone)]
 struct SourceTrace {
     policy: TracePolicy,
     ledger: TraceLedger,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TraceRuntimeSet {
     traces: BTreeMap<String, SourceTrace>,
 }
@@ -88,6 +89,22 @@ impl TraceRuntimeSet {
         let entry = self.traces.get(trace)
             .ok_or_else(|| TraceRuntimeError::UnknownTrace(trace.to_string()))?;
         entry.ledger.verify_chain(&entry.policy, verifier).map_err(TraceRuntimeError::Trace)
+    }
+
+    /// Append and verify on a candidate copy, committing only if trusted verification passes.
+    /// A broken signer/verifier pair therefore cannot poison the live receipt chain.
+    pub fn record_verified<S: TraceSigner, V: TraceVerifier>(
+        &mut self,
+        trace: &str,
+        event: TraceEventInput,
+        signer: &S,
+        verifier: &V,
+    ) -> Result<(), TraceRuntimeError> {
+        let mut candidate = self.clone();
+        candidate.record(trace, event, Some(signer))?;
+        candidate.verify(trace, verifier)?;
+        *self = candidate;
+        Ok(())
     }
 
     /// Promote verified receipts into an evidence graph only after both signature
