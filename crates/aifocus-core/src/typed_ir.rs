@@ -86,7 +86,7 @@ pub fn validate_construct_metadata(constructs: &[TypedIrConstruct]) -> Result<()
                         crate::ast::ConstructKind::Cell => name == "invariant",
                         crate::ast::ConstructKind::Vault => matches!(name.as_str(), "capabilities" | "denies"),
                         crate::ast::ConstructKind::Proof => matches!(name.as_str(), "requires" | "ensures" | "on_unknown" | "required"),
-                        crate::ast::ConstructKind::Phase => false,
+                        crate::ast::ConstructKind::Phase => name == "initial",
                     };
                     if !allowed {
                         errors.push(format!("{}: clause '{}' is not valid for {:?} constructs", construct.name, name, construct.kind));
@@ -120,6 +120,16 @@ pub fn validate_construct_metadata(constructs: &[TypedIrConstruct]) -> Result<()
             crate::ast::ConstructKind::Proof => &["requires", "ensures", "on_unknown", "required"],
             crate::ast::ConstructKind::Phase => &[],
         };
+        if construct.kind == crate::ast::ConstructKind::Phase {
+            let states: BTreeSet<&str> = transitions.iter().flat_map(|(from, to)| [from.as_str(), to.as_str()]).collect();
+            for member in &construct.members {
+                if let TypedIrConstructMember::Clause { name, value, .. } = member {
+                    if name == "initial" && !states.contains(value.trim()) {
+                        errors.push(format!("{}: initial state '{}' is not declared by any transition", construct.name, value.trim()));
+                    }
+                }
+            }
+        }
         for required in required_clauses {
             if !clauses.contains(*required) {
                 errors.push(format!("{}: missing required clause '{}'", construct.name, required));
