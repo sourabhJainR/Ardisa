@@ -213,6 +213,8 @@ pub enum NativeInstr {
     PhaseCurrent,
     /// Enforce a source Vault capability before subsequent protected work.
     VaultAuthorize { spec: NativeVaultSpec, capability: NativeVaultCapability },
+    /// Validate a source Trace event before the host receipt/signature boundary.
+    TracePrepare { name: String },
     /// Validate runtime-supplied outcomes against a source Proof policy.
     ProofCheck { spec: NativeProofSpec },
     /// Create an invariant-checked Cell value token.
@@ -1760,6 +1762,7 @@ fn run_function(
                 | NativeInstr::PhaseCurrent
                 | NativeInstr::VaultAuthorize { .. }
                 | NativeInstr::ProofCheck { .. }
+                | NativeInstr::TracePrepare { .. }
                 | NativeInstr::CellStart { .. }
                 | NativeInstr::CellUpdate
                 | NativeInstr::CellCurrent
@@ -2597,6 +2600,40 @@ fn run_function(
                 }
                 stack.push(NativeValue::Unit);
             }
+            NativeInstr::TracePrepare { name } => {
+                if name.trim().is_empty() {
+                    return Err(NativeError::InvalidProgram("Trace name must not be empty".into()));
+                }
+                let values = match stack.pop() {
+                    Some(NativeValue::List(values)) => values,
+                    Some(_) => return Err(NativeError::Type("TracePrepare requires a List of six String fields".into())),
+                    None => return Err(NativeError::InvalidProgram("TracePrepare event missing".into())),
+                };
+                if values.len() != 6 {
+                    return Err(NativeError::Type("TracePrepare requires six fields: event_kind, actor, subject_sha256, outcome, provider_id, session_sha256".into()));
+                }
+                let mut fields = Vec::with_capacity(6);
+                for value in values {
+                    match value {
+                        NativeValue::String(value) if value.len() <= state.limits.max_string_bytes => fields.push(value),
+                        NativeValue::String(_) => return Err(NativeError::ResourceLimit("Trace event field exceeds string limit".into())),
+                        _ => return Err(NativeError::Type("TracePrepare fields must be Strings".into())),
+                    }
+                }
+                for index in [0usize, 1, 3] {
+                    if fields[index].trim().is_empty() {
+                        return Err(NativeError::Type(format!("TracePrepare field {index} must not be empty")));
+                    }
+                }
+                let is_sha256 = |value: &str| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+                if !is_sha256(&fields[2]) {
+                    return Err(NativeError::Type("TracePrepare subject_sha256 must be 64 hexadecimal characters".into()));
+                }
+                if !fields[5].is_empty() && !is_sha256(&fields[5]) {
+                    return Err(NativeError::Type("TracePrepare session_sha256 must be empty or 64 hexadecimal characters".into()));
+                }
+                stack.push(NativeValue::List(fields.into_iter().map(NativeValue::String).collect()));
+            }
             NativeInstr::PushUnit => stack.push(NativeValue::Unit),
             NativeInstr::PushString(value) => {
                 if value.len() > state.limits.max_string_bytes {
@@ -3109,6 +3146,10 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                     validate_proof_spec(spec)?;
                     add_bytes(&spec.name)?;
                 }
+                NativeInstr::TracePrepare { name } => {
+                    if name.trim().is_empty() { return Err(NativeError::InvalidProgram("Trace name must not be empty".into())); }
+                    add_bytes(name)?;
+                }
                 NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
                 NativeInstr::PushTensor { shape, values } => { validate_tensor_parts(shape, values, MAX_TENSOR_ELEMENTS)?; }
                 NativeInstr::PushQuantizedTensor { shape, scale_bits, values, .. } => { validate_quantized_tensor_parts(shape, *scale_bits, values, MAX_TENSOR_ELEMENTS)?; }
@@ -3275,6 +3316,7 @@ fn encode_instr(instr: &NativeInstr) -> String {
             escape_artifact(&spec.name),
             spec.required.iter().map(|item| item.as_str()).collect::<Vec<_>>().join("+")
         ),
+        NativeInstr::TracePrepare { name } => format!("TracePrepare:{}", escape_artifact(name)), 
         NativeInstr::PushInt(v) => format!("PushInt:{v}"),
         NativeInstr::PushFloat(bits) => format!("PushFloat:{bits}"),
         NativeInstr::PushBool(v) => format!("PushBool:{v}"),
@@ -3405,6 +3447,7 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
                 .collect::<Result<Vec<_>, _>>()?;
             NativeInstr::ProofCheck { spec: NativeProofSpec { name, required } }
         },
+        "TracePrepare" => NativeInstr::TracePrepare { name: unescape_artifact(arg)? }, 
         "PushInt"=>NativeInstr::PushInt(arg.parse().map_err(|_|bad())?),
         "PushFloat"=>{let bits=arg.parse::<u32>().map_err(|_|bad())?;if !f32::from_bits(bits).is_finite(){return Err(bad());}NativeInstr::PushFloat(bits)},
         "PushBool"=>NativeInstr::PushBool(arg=="true"),
