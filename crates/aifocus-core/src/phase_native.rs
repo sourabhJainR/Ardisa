@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn declared_initial_state_lowers_into_the_native_artifact() {
-        let source = "module lifecycle\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Running\\n  Running -> Done\\n";
+        let source = "module lifecycle\nphase Lifecycle\n  initial: Ready\n  Ready -> Running\n  Running -> Done\n";
         let artifact = compile_declared_phase_source(source, "Lifecycle", &["Running".into(), "Done".into()]).unwrap();
         assert_eq!(artifact.initial_state, "Ready");
         assert_eq!(execute_phase_artifact(&artifact).unwrap(), "Done");
@@ -173,14 +173,14 @@ mod tests {
 
     #[test]
     fn declared_phase_requires_a_valid_explicit_initial_state() {
-        let missing = "module lifecycle\\nphase Lifecycle\\n  Ready -> Done\\n";
+        let missing = "module lifecycle\nphase Lifecycle\n  Ready -> Done\n";
         assert!(matches!(
             compile_declared_phase_source(missing, "Lifecycle", &[]),
             Err(NativePhaseCompileError::MissingInitialState(name)) if name == "Lifecycle"
         ));
-        let invalid = "module lifecycle\\nphase Lifecycle\\n  initial: Missing\\n  Ready -> Done\\n";
+        let invalid = "module lifecycle\nphase Lifecycle\n  initial: Missing\n  Ready -> Done\n";
         assert!(compile_declared_phase_source(invalid, "Lifecycle", &[]).is_err());
-        let mismatched = "module lifecycle\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Done\\n";
+        let mismatched = "module lifecycle\nphase Lifecycle\n  initial: Ready\n  Ready -> Done\n";
         assert!(matches!(
             compile_phase_source(mismatched, "Lifecycle", "Done", &[]),
             Err(NativePhaseCompileError::InvalidInitialState { .. })
