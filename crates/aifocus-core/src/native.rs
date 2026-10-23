@@ -34,6 +34,53 @@ impl NativePhaseState {
     pub fn current(&self) -> &str { &self.current }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NativeVaultCapability {
+    Clock,
+    Random,
+    FilesystemRead,
+    FilesystemWrite,
+    Network,
+    Process,
+    Secrets,
+    UnsafeInterop,
+}
+
+impl NativeVaultCapability {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "clock" => Some(Self::Clock),
+            "random" => Some(Self::Random),
+            "filesystem_read" => Some(Self::FilesystemRead),
+            "filesystem_write" => Some(Self::FilesystemWrite),
+            "network" => Some(Self::Network),
+            "process" => Some(Self::Process),
+            "secrets" => Some(Self::Secrets),
+            "unsafe_interop" => Some(Self::UnsafeInterop),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clock => "clock",
+            Self::Random => "random",
+            Self::FilesystemRead => "filesystem_read",
+            Self::FilesystemWrite => "filesystem_write",
+            Self::Network => "network",
+            Self::Process => "process",
+            Self::Secrets => "secrets",
+            Self::UnsafeInterop => "unsafe_interop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVaultSpec {
+    pub name: String,
+    pub allowed: Vec<NativeVaultCapability>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeCellInvariant {
     Equal,
@@ -127,6 +174,8 @@ pub enum NativeInstr {
     PhaseTransition,
     /// Read the current state without mutating the Phase token.
     PhaseCurrent,
+    /// Enforce a source Vault capability before subsequent protected work.
+    VaultAuthorize { spec: NativeVaultSpec, capability: NativeVaultCapability },
     /// Create an invariant-checked Cell value token.
     CellStart { spec: NativeCellSpec },
     /// Return a new Cell token only if the invariant accepts the proposed value.
@@ -303,6 +352,49 @@ pub fn phase_start_instruction(
     };
     validate_phase_graph(&graph)?;
     Ok(NativeInstr::PhaseStart { graph })
+}
+
+/// Lower a typed Vault declaration to a capability-check instruction.
+/// Unknown, duplicate, missing, or overlapping grants/denials fail closed.
+pub fn vault_authorize_instruction(
+    construct: &crate::typed_ir::TypedIrConstruct,
+    required: NativeVaultCapability,
+) -> Result<NativeInstr, NativeError> {
+    if construct.kind != crate::ast::ConstructKind::Vault {
+        return Err(NativeError::InvalidProgram("VaultAuthorize lowering requires a Vault declaration".into()));
+    }
+    crate::typed_ir::validate_construct_metadata(std::slice::from_ref(construct))
+        .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
+    let mut grants = std::collections::BTreeSet::new();
+    let mut denies = std::collections::BTreeSet::new();
+    let mut saw_capabilities = false;
+    for member in &construct.members {
+        let crate::typed_ir::TypedIrConstructMember::Clause { name, value, .. } = member else {
+            return Err(NativeError::InvalidProgram(format!("Vault '{}' contains unsupported member", construct.name)));
+        };
+        let target = match name.as_str() {
+            "capabilities" => { saw_capabilities = true; &mut grants }
+            "denies" => &mut denies,
+            _ => return Err(NativeError::InvalidProgram(format!("Vault '{}' has unsupported clause '{name}'", construct.name))),
+        };
+        for token in value.split(|ch: char| ch.is_whitespace() || ch == ',').filter(|part| !part.is_empty()) {
+            let capability = NativeVaultCapability::parse(token).ok_or_else(|| {
+                NativeError::InvalidProgram(format!("Vault '{}' has unknown capability '{token}'", construct.name))
+            })?;
+            if !target.insert(capability) {
+                return Err(NativeError::InvalidProgram(format!("Vault '{}' repeats capability '{token}'", construct.name)));
+            }
+        }
+    }
+    if !saw_capabilities {
+        return Err(NativeError::InvalidProgram(format!("Vault '{}' is missing capabilities", construct.name)));
+    }
+    if !grants.is_disjoint(&denies) {
+        return Err(NativeError::InvalidProgram(format!("Vault '{}' both grants and denies a capability", construct.name)));
+    }
+    let spec = NativeVaultSpec { name: construct.name.clone(), allowed: grants.into_iter().collect() };
+    validate_vault_spec(&spec)?;
+    Ok(NativeInstr::VaultAuthorize { spec, capability: required })
 }
 
 /// Lower the supported integer Cell subset into an executable CellStart instruction.
@@ -1578,6 +1670,7 @@ fn run_function(
                 | NativeInstr::PhaseStart { .. }
                 | NativeInstr::PhaseTransition
                 | NativeInstr::PhaseCurrent
+                | NativeInstr::VaultAuthorize { .. }
                 | NativeInstr::CellStart { .. }
                 | NativeInstr::CellUpdate
                 | NativeInstr::CellCurrent
@@ -2368,6 +2461,17 @@ fn run_function(
                     None => return Err(NativeError::InvalidProgram("cell_current state missing".into())),
                 }
             }
+            NativeInstr::VaultAuthorize { spec, capability } => {
+                validate_vault_spec(spec)?;
+                if !spec.allowed.contains(capability) {
+                    return Err(NativeError::Type(format!(
+                        "Vault '{}' denied capability '{}'",
+                        spec.name,
+                        capability.as_str()
+                    )));
+                }
+                stack.push(NativeValue::Unit);
+            }
             NativeInstr::PushUnit => stack.push(NativeValue::Unit),
             NativeInstr::PushString(value) => {
                 if value.len() > state.limits.max_string_bytes {
@@ -2782,6 +2886,17 @@ fn validate_phase_state_parts(name: &str, current: &str, transitions: &[(String,
     validate_phase_graph(&graph)
 }
 
+fn validate_vault_spec(spec: &NativeVaultSpec) -> Result<(), NativeError> {
+    if spec.name.trim().is_empty() {
+        return Err(NativeError::InvalidProgram("Vault name must not be empty".into()));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    if spec.allowed.iter().any(|capability| !seen.insert(*capability)) {
+        return Err(NativeError::InvalidProgram(format!("Vault '{}' repeats a capability", spec.name)));
+    }
+    Ok(())
+}
+
 fn validate_cell_spec(spec: &NativeCellSpec) -> Result<(), NativeError> {
     if spec.name.trim().is_empty() {
         return Err(NativeError::InvalidProgram("Cell name must not be empty".into()));
@@ -2848,6 +2963,10 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                 }
                 NativeInstr::CellStart { spec } => {
                     validate_cell_spec(spec)?;
+                    add_bytes(&spec.name)?;
+                }
+                NativeInstr::VaultAuthorize { spec, capability: _ } => {
+                    validate_vault_spec(spec)?;
                     add_bytes(&spec.name)?;
                 }
                 NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
@@ -3005,6 +3124,12 @@ fn encode_instr(instr: &NativeInstr) -> String {
         NativeInstr::CellStart { spec } => format!("CellStart:{},{},{},{}", escape_artifact(&spec.name), spec.initial, spec.invariant.artifact_name(), spec.bound),
         NativeInstr::CellUpdate => "CellUpdate".into(),
         NativeInstr::CellCurrent => "CellCurrent".into(),
+        NativeInstr::VaultAuthorize { spec, capability } => format!(
+            "VaultAuthorize:{},{},{}",
+            escape_artifact(&spec.name),
+            spec.allowed.iter().map(|item| item.as_str()).collect::<Vec<_>>().join("+"),
+            capability.as_str()
+        ),
         NativeInstr::PushInt(v) => format!("PushInt:{v}"),
         NativeInstr::PushFloat(bits) => format!("PushFloat:{bits}"),
         NativeInstr::PushBool(v) => format!("PushBool:{v}"),
@@ -3115,6 +3240,17 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         },
         "CellUpdate" => NativeInstr::CellUpdate,
         "CellCurrent" => NativeInstr::CellCurrent,
+        "VaultAuthorize" => {
+            let mut fields = arg.splitn(3, ',');
+            let name = unescape_artifact(fields.next().ok_or_else(bad)?)?;
+            let allowed_field = fields.next().ok_or_else(bad)?;
+            let allowed = if allowed_field.is_empty() { Vec::new() } else {
+                allowed_field.split('+').map(|name| NativeVaultCapability::parse(name).ok_or_else(bad))
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            let capability = NativeVaultCapability::parse(fields.next().ok_or_else(bad)?).ok_or_else(bad)?;
+            NativeInstr::VaultAuthorize { spec: NativeVaultSpec { name, allowed }, capability }
+        },
         "PushInt"=>NativeInstr::PushInt(arg.parse().map_err(|_|bad())?),
         "PushFloat"=>{let bits=arg.parse::<u32>().map_err(|_|bad())?;if !f32::from_bits(bits).is_finite(){return Err(bad());}NativeInstr::PushFloat(bits)},
         "PushBool"=>NativeInstr::PushBool(arg=="true"),
