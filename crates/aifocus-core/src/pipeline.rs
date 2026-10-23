@@ -61,7 +61,7 @@ pub fn compile_source(source: &str) -> Result<CompiledArtifact, PipelineError> {
     let typed = typed_ir::optimize(typed_ir::lower_cfg(&module).map_err(PipelineError::TypedIr)?);
     phase_order.push("typed_ir");
 
-    let ir_module = optimizer::optimize(typed_ir::to_legacy_ir(&typed));
+    let ir_module = optimizer::optimize(typed_ir::to_legacy_ir(&typed).map_err(PipelineError::TypedIr)?);
     phase_order.push("optimizer");
 
     let native_program = native::compile_program(&ir_module).map_err(PipelineError::Native)?;
