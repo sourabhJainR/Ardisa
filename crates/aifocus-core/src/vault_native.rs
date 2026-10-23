@@ -74,6 +74,19 @@ pub fn execute_vault_authorization(artifact: &NativeVaultArtifact) -> Result<(),
     }
 }
 
+/// Authorize through the compiled native artifact before invoking a host operation.
+/// The closure is never called when compilation or capability validation fails.
+pub fn execute_vault_operation<T>(
+    source: &str,
+    vault_name: &str,
+    required_capability: &str,
+    operation: impl FnOnce() -> T,
+) -> Result<T, NativeVaultCompileError> {
+    let artifact = compile_vault_source(source, vault_name, required_capability)?;
+    execute_vault_authorization(&artifact)?;
+    Ok(operation())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +100,14 @@ mod tests {
         assert_eq!(first.artifact, second.artifact);
         assert!(first.artifact.starts_with(native::ARTIFACT_MAGIC));
         execute_vault_authorization(&first).unwrap();
+    }
+
+    #[test]
+    fn denied_native_vault_check_never_invokes_host_operation() {
+        let called = std::cell::Cell::new(false);
+        let result = execute_vault_operation(SOURCE, "ReadOnly", "network", || called.set(true));
+        assert!(result.is_err());
+        assert!(!called.get());
     }
 
     #[test]
