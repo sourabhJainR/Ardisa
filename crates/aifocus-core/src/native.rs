@@ -34,6 +34,7 @@ impl NativePhaseState {
     pub fn current(&self) -> &str { &self.current }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeInstr {
     /// Create an immutable Phase state token from a validated declaration graph.
     PhaseStart { graph: NativePhaseGraph },
