@@ -2748,7 +2748,7 @@ fn unescape_artifact(value: &str) -> Result<String, NativeError> {
     let mut escaped = false;
     for ch in value.chars() {
         if escaped {
-            out.push(match ch { 'p' => '|', 'c' => ',', 'n' => '\n', '\\' => '\\', other => other });
+            out.push(match ch { 'p' => '|', 'c' => ',', 'n' => '\n', '\\' => '\\', 's' => ';', 'g' => '>', other => other });
             escaped = false;
         } else if ch == '\\' {
             escaped = true;
