@@ -38,6 +38,7 @@ pub mod pipeline;
 pub mod phase_native;
 pub mod typed_ir;
 pub mod trace_policy_runtime;
+pub mod trace_native;
 pub mod vault_runtime;
 pub mod vault_native;
 pub mod protocol;
