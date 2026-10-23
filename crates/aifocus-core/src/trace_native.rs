@@ -169,6 +169,10 @@ mod tests {
         malformed.subject_sha256 = "not-a-digest".into();
         assert!(execute_trace_event(&artifact, &mut runtime, malformed, &TestSigner, &TestSigner).is_err());
         assert!(runtime.receipts("Build").unwrap().is_empty());
+        let mut metadata = event();
+        metadata.provider_id = Some("provider".into());
+        assert!(execute_trace_event(&artifact, &mut runtime, metadata, &TestSigner, &TestSigner).is_err());
+        assert!(runtime.receipts("Build").unwrap().is_empty());
         assert!(execute_trace_event(&artifact, &mut runtime, event(), &BadSigner, &TestSigner).is_err());
         assert!(runtime.receipts("Build").unwrap().is_empty());
     }
