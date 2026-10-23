@@ -688,6 +688,12 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                     return Err(NativeError::ResourceLimit("PhaseState exceeds value-node budget".into()));
                 }
             }
+            NativeValue::CellState(state) => {
+                validate_cell_state_parts(&state.name, state.value, state.invariant, state.bound)?;
+                if limits.max_value_nodes < 1 {
+                    return Err(NativeError::ResourceLimit("CellState exceeds value-node budget".into()));
+                }
+            }
             NativeValue::List(items) => {
                 if items.len() > limits.max_collection_items {
                     return Err(NativeError::ResourceLimit("collection exceeds item limit".into()));
@@ -755,6 +761,10 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
                     string_bytes = string_bytes.checked_add(from.len()).and_then(|n| n.checked_add(to.len()))
                         .ok_or_else(|| NativeError::ResourceLimit("PhaseState byte accounting overflow".into()))?;
                 }
+            }
+            NativeValue::CellState(state) => {
+                nodes = nodes.checked_add(1).ok_or_else(|| NativeError::ResourceLimit("CellState footprint overflow".into()))?;
+                string_bytes = string_bytes.checked_add(state.name.len()).ok_or_else(|| NativeError::ResourceLimit("CellState byte accounting overflow".into()))?;
             }
             NativeValue::List(items) => pending.extend(items.iter()),
             NativeValue::OptionSome(inner) | NativeValue::ResultOk(inner) | NativeValue::ResultErr(inner) => pending.push(inner),
@@ -870,6 +880,7 @@ fn native_value_matches_type_tag(value: &NativeValue, expected: &str) -> bool {
         ("VectorIndex", NativeValue::VectorIndex { .. }) | ("KvCache", NativeValue::KvCache { .. }) |
         ("ContextWindow", NativeValue::ContextWindow { .. }) |
         ("PhaseState", NativeValue::PhaseState(_)) |
+        ("CellState", NativeValue::CellState(_)) |
         ("GradientTape", NativeValue::GradientTape { .. }) | ("ActivationCache", NativeValue::ActivationCache { .. }) |
         ("TokenizerState", NativeValue::TokenizerState { .. }) => true,
         _ => false,
@@ -933,7 +944,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape" | "ActivationCache" | "TokenizerState" | "PhaseState"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape" | "ActivationCache" | "TokenizerState" | "PhaseState" | "CellState"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -1567,6 +1578,9 @@ fn run_function(
                 | NativeInstr::PhaseStart { .. }
                 | NativeInstr::PhaseTransition
                 | NativeInstr::PhaseCurrent
+                | NativeInstr::CellStart { .. }
+                | NativeInstr::CellUpdate
+                | NativeInstr::CellCurrent
                 | NativeInstr::PushString(_)
                 | NativeInstr::PushList(_)
                 | NativeInstr::Index
@@ -2322,6 +2336,38 @@ fn run_function(
                     None => return Err(NativeError::InvalidProgram("phase_current state missing".into())),
                 }
             }
+            NativeInstr::CellStart { spec } => {
+                validate_cell_spec(spec)?;
+                stack.push(NativeValue::CellState(NativeCellState {
+                    name: spec.name.clone(),
+                    value: spec.initial,
+                    invariant: spec.invariant,
+                    bound: spec.bound,
+                }));
+            }
+            NativeInstr::CellUpdate => {
+                let value = match stack.pop() {
+                    Some(NativeValue::Int(value)) => value,
+                    Some(_) => return Err(NativeError::Type("cell_update value must be Int".into())),
+                    None => return Err(NativeError::InvalidProgram("cell_update value missing".into())),
+                };
+                let state = match stack.pop() {
+                    Some(NativeValue::CellState(state)) => state,
+                    Some(_) => return Err(NativeError::Type("cell_update requires CellState".into())),
+                    None => return Err(NativeError::InvalidProgram("cell_update state missing".into())),
+                };
+                if !state.invariant.accepts(value, state.bound) {
+                    return Err(NativeError::Type(format!("Cell invariant rejected update: '{}'", state.name)));
+                }
+                stack.push(NativeValue::CellState(NativeCellState { value, ..state }));
+            }
+            NativeInstr::CellCurrent => {
+                match stack.pop() {
+                    Some(NativeValue::CellState(state)) => stack.push(NativeValue::Int(state.value)),
+                    Some(_) => return Err(NativeError::Type("cell_current requires CellState".into())),
+                    None => return Err(NativeError::InvalidProgram("cell_current state missing".into())),
+                }
+            }
             NativeInstr::PushUnit => stack.push(NativeValue::Unit),
             NativeInstr::PushString(value) => {
                 if value.len() > state.limits.max_string_bytes {
@@ -2736,6 +2782,20 @@ fn validate_phase_state_parts(name: &str, current: &str, transitions: &[(String,
     validate_phase_graph(&graph)
 }
 
+fn validate_cell_spec(spec: &NativeCellSpec) -> Result<(), NativeError> {
+    if spec.name.trim().is_empty() {
+        return Err(NativeError::InvalidProgram("Cell name must not be empty".into()));
+    }
+    if !spec.invariant.accepts(spec.initial, spec.bound) {
+        return Err(NativeError::InvalidProgram(format!("Cell '{}' initial value violates its invariant", spec.name)));
+    }
+    Ok(())
+}
+
+fn validate_cell_state_parts(name: &str, value: i64, invariant: NativeCellInvariant, bound: i64) -> Result<(), NativeError> {
+    validate_cell_spec(&NativeCellSpec { name: name.to_string(), initial: value, invariant, bound })
+}
+
 fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
     if program.functions.len() > MAX_PROGRAM_FUNCTIONS {
         return Err(NativeError::ResourceLimit(format!(
@@ -2785,6 +2845,10 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                     add_bytes(&graph.name)?;
                     add_bytes(&graph.initial)?;
                     for (from, to) in &graph.transitions { add_bytes(from)?; add_bytes(to)?; }
+                }
+                NativeInstr::CellStart { spec } => {
+                    validate_cell_spec(spec)?;
+                    add_bytes(&spec.name)?;
                 }
                 NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
                 NativeInstr::PushTensor { shape, values } => { validate_tensor_parts(shape, values, MAX_TENSOR_ELEMENTS)?; }
@@ -2938,6 +3002,9 @@ fn encode_instr(instr: &NativeInstr) -> String {
         ),
         NativeInstr::PhaseTransition => "PhaseTransition".into(),
         NativeInstr::PhaseCurrent => "PhaseCurrent".into(),
+        NativeInstr::CellStart { spec } => format!("CellStart:{},{},{},{}", escape_artifact(&spec.name), spec.initial, spec.invariant.artifact_name(), spec.bound),
+        NativeInstr::CellUpdate => "CellUpdate".into(),
+        NativeInstr::CellCurrent => "CellCurrent".into(),
         NativeInstr::PushInt(v) => format!("PushInt:{v}"),
         NativeInstr::PushFloat(bits) => format!("PushFloat:{bits}"),
         NativeInstr::PushBool(v) => format!("PushBool:{v}"),
@@ -3038,6 +3105,16 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
         },
         "PhaseTransition" => NativeInstr::PhaseTransition,
         "PhaseCurrent" => NativeInstr::PhaseCurrent,
+        "CellStart" => {
+            let mut fields = arg.splitn(4, ',');
+            let name = unescape_artifact(fields.next().ok_or_else(bad)?)?;
+            let initial = fields.next().ok_or_else(bad)?.parse::<i64>().map_err(|_| bad())?;
+            let invariant = NativeCellInvariant::from_artifact_name(fields.next().ok_or_else(bad)?).ok_or_else(bad)?;
+            let bound = fields.next().ok_or_else(bad)?.parse::<i64>().map_err(|_| bad())?;
+            NativeInstr::CellStart { spec: NativeCellSpec { name, initial, invariant, bound } }
+        },
+        "CellUpdate" => NativeInstr::CellUpdate,
+        "CellCurrent" => NativeInstr::CellCurrent,
         "PushInt"=>NativeInstr::PushInt(arg.parse().map_err(|_|bad())?),
         "PushFloat"=>{let bits=arg.parse::<u32>().map_err(|_|bad())?;if !f32::from_bits(bits).is_finite(){return Err(bad());}NativeInstr::PushFloat(bits)},
         "PushBool"=>NativeInstr::PushBool(arg=="true"),
