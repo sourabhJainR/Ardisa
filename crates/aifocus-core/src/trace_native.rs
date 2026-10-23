@@ -146,7 +146,7 @@ mod tests {
             actor: "compiler".into(),
             subject_sha256: "a".repeat(64),
             outcome: "passed".into(),
-            provider_id: Some("local".into()),
+            provider_id: None,
             session_sha256: None,
         }
     }
