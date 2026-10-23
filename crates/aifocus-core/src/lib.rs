@@ -34,6 +34,7 @@ pub mod native;
 pub mod ownership;
 pub mod optimizer;
 pub mod pipeline;
+pub mod phase_native;
 pub mod typed_ir;
 pub mod trace_policy_runtime;
 pub mod vault_runtime;
