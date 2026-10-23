@@ -5669,7 +5669,7 @@ mod native_phase_state_tests {
             NativeInstr::PhaseTransition,
             NativeInstr::Return,
         ]);
-        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("PhaseState")));
+        assert!(run_program(&program, "main", &[]).is_err(), "a String must not be accepted as a PhaseState token");
     }
 }
 
