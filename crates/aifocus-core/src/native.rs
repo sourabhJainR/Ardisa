@@ -34,6 +34,91 @@ impl NativePhaseState {
     pub fn current(&self) -> &str { &self.current }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeCellInvariant {
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+}
+
+impl NativeCellInvariant {
+    fn parse(source: &str) -> Option<(Self, i64)> {
+        let tail = source.trim().strip_prefix("value")?.trim_start();
+        for (token, invariant) in [
+            ("==", Self::Equal),
+            ("!=", Self::NotEqual),
+            ("<=", Self::LessEqual),
+            (">=", Self::GreaterEqual),
+            ("<", Self::Less),
+            (">", Self::Greater),
+        ] {
+            if let Some(rhs) = tail.strip_prefix(token) {
+                return Some((invariant, rhs.trim().parse::<i64>().ok()?));
+            }
+        }
+        None
+    }
+
+    fn accepts(self, value: i64, bound: i64) -> bool {
+        match self {
+            Self::Equal => value == bound,
+            Self::NotEqual => value != bound,
+            Self::Less => value < bound,
+            Self::LessEqual => value <= bound,
+            Self::Greater => value > bound,
+            Self::GreaterEqual => value >= bound,
+        }
+    }
+
+    fn artifact_name(self) -> &'static str {
+        match self {
+            Self::Equal => "eq",
+            Self::NotEqual => "ne",
+            Self::Less => "lt",
+            Self::LessEqual => "le",
+            Self::Greater => "gt",
+            Self::GreaterEqual => "ge",
+        }
+    }
+
+    fn from_artifact_name(name: &str) -> Option<Self> {
+        match name {
+            "eq" => Some(Self::Equal),
+            "ne" => Some(Self::NotEqual),
+            "lt" => Some(Self::Less),
+            "le" => Some(Self::LessEqual),
+            "gt" => Some(Self::Greater),
+            "ge" => Some(Self::GreaterEqual),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCellSpec {
+    pub name: String,
+    pub initial: i64,
+    pub invariant: NativeCellInvariant,
+    pub bound: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCellState {
+    name: String,
+    value: i64,
+    invariant: NativeCellInvariant,
+    bound: i64,
+}
+
+impl NativeCellState {
+    pub fn name(&self) -> &str { &self.name }
+    pub fn value(&self) -> i64 { self.value }
+}
+
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeInstr {
     /// Create an immutable Phase state token from a validated declaration graph.
@@ -42,6 +127,12 @@ pub enum NativeInstr {
     PhaseTransition,
     /// Read the current state without mutating the Phase token.
     PhaseCurrent,
+    /// Create an invariant-checked Cell value token.
+    CellStart { spec: NativeCellSpec },
+    /// Return a new Cell token only if the invariant accepts the proposed value.
+    CellUpdate,
+    /// Read the value without mutating the Cell token.
+    CellCurrent,
     PushInt(i64),
     PushFloat(u32),
     PushBool(bool),
@@ -214,6 +305,43 @@ pub fn phase_start_instruction(
     Ok(NativeInstr::PhaseStart { graph })
 }
 
+/// Lower the supported integer Cell subset into an executable CellStart instruction.
+/// Only one `value: Int` field and one `value <op> integer` invariant are supported.
+pub fn cell_start_instruction(
+    construct: &crate::typed_ir::TypedIrConstruct,
+) -> Result<NativeInstr, NativeError> {
+    if construct.kind != crate::ast::ConstructKind::Cell {
+        return Err(NativeError::InvalidProgram("CellStart lowering requires a Cell declaration".into()));
+    }
+    crate::typed_ir::validate_construct_metadata(std::slice::from_ref(construct))
+        .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
+    let fields = construct.members.iter().filter_map(|member| match member {
+        crate::typed_ir::TypedIrConstructMember::Field { name, ty, .. } => Some((name.as_str(), ty)),
+        _ => None,
+    }).collect::<Vec<_>>();
+    if fields.len() != 1 || fields[0].0 != "value" || fields[0].1 != &crate::ast::TypeKind::Int {
+        return Err(NativeError::InvalidProgram(format!("Cell '{}' must contain only value: Int", construct.name)));
+    }
+    let invariants = construct.members.iter().filter_map(|member| match member {
+        crate::typed_ir::TypedIrConstructMember::Clause { name, value, .. } if name == "invariant" => Some(value.as_str()),
+        _ => None,
+    }).collect::<Vec<_>>();
+    if invariants.len() != 1 {
+        return Err(NativeError::InvalidProgram(format!("Cell '{}' must have exactly one invariant", construct.name)));
+    }
+    if construct.members.iter().any(|member| matches!(member,
+        crate::typed_ir::TypedIrConstructMember::Clause { name, .. } if name != "invariant"
+    ) || matches!(member, crate::typed_ir::TypedIrConstructMember::Transition { .. })) {
+        return Err(NativeError::InvalidProgram(format!("Cell '{}' contains unsupported members", construct.name)));
+    }
+    let (invariant, bound) = NativeCellInvariant::parse(invariants[0]).ok_or_else(|| {
+        NativeError::InvalidProgram(format!("Cell '{}' has an unsupported invariant", construct.name))
+    })?;
+    let spec = NativeCellSpec { name: construct.name.clone(), initial: 0, invariant, bound };
+    validate_cell_spec(&spec)?;
+    Ok(NativeInstr::CellStart { spec })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Deterministic collection of compiled Ardisa functions.
 pub struct NativeProgram {
@@ -303,6 +431,7 @@ pub enum NativeValue {
     ContextWindow { max_segments: usize, max_bytes: usize, max_tokens: usize, segments: Vec<(String, Vec<u8>, usize)>, bytes: usize, tokens: usize },
     String(String),
     PhaseState(NativePhaseState),
+    CellState(NativeCellState),
     List(Vec<NativeValue>),
     OptionSome(Box<NativeValue>),
     OptionNone,
