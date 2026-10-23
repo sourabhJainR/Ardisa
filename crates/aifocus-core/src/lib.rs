@@ -41,6 +41,7 @@ pub mod vault_runtime;
 pub mod vault_native;
 pub mod protocol;
 pub mod proof_policy_runtime;
+pub mod proof_native;
 pub mod proof_runtime;
 pub mod resource_guard;
 pub mod sema;
