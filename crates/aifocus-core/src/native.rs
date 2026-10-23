@@ -216,7 +216,7 @@ pub enum NativeInstr {
     /// Validate a source Trace event before the host receipt/signature boundary.
     TracePrepare { name: String },
     /// Validate runtime-supplied outcomes against a source Proof policy.
-    ProofCheck { spec: NativeProofSpec }
+    ProofCheck { spec: NativeProofSpec },
     /// Create an invariant-checked Cell value token.
     CellStart { spec: NativeCellSpec },
     /// Return a new Cell token only if the invariant accepts the proposed value.
