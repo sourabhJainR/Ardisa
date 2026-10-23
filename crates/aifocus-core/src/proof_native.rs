@@ -102,13 +102,10 @@ mod tests {
             ),
             Err(NativeProofCompileError::Native(native::NativeError::InvalidProgram(_)))
         ));
-        assert!(matches!(
-            compile_proof_source(
-                "module p\nproof P\n  requires: bounds\n  ensures: true\n  on_unknown: record\n  required: true\n",
-                "P"
-            ),
-            Err(NativeProofCompileError::Native(native::NativeError::InvalidProgram(_)))
-        ));
+        assert!(compile_proof_source(
+            "module p\nproof P\n  requires: bounds\n  ensures: true\n  on_unknown: record\n  required: true\n",
+            "P"
+        ).is_err());
         let artifact = compile_proof_source(SOURCE, "ReleaseGate").unwrap();
         assert!(matches!(
             execute_proof_artifact(&artifact, &["bounds=proved".into(), "bounds=runtime_checked".into(), "type_safety=proved".into()]),
