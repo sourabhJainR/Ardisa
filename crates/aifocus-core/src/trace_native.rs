@@ -92,6 +92,17 @@ pub fn execute_trace_event<S: TraceSigner, V: TraceVerifier>(
         event.session_sha256.clone().unwrap_or_default(),
     ];
     let program = native::decode_program(&artifact.artifact).map_err(NativeTraceCompileError::Native)?;
+    let embedded_trace = program.functions.get("main").and_then(|function| {
+        function.code.iter().find_map(|instruction| match instruction {
+            NativeInstr::TracePrepare { name } => Some(name.as_str()),
+            _ => None,
+        })
+    });
+    if embedded_trace != Some(artifact.trace_name.as_str()) {
+        return Err(NativeTraceCompileError::Native(native::NativeError::InvalidProgram(
+            "Trace artifact name does not match its encoded policy".into(),
+        )));
+    }
     let args = [NativeValue::List(event_fields.into_iter().map(NativeValue::String).collect())];
     match native::run_program(&program, "main", &args) {
         Ok(NativeValue::List(_)) => {}
@@ -159,6 +170,15 @@ mod tests {
         assert!(execute_trace_event(&artifact, &mut runtime, malformed, &TestSigner, &TestSigner).is_err());
         assert!(runtime.receipts("Build").unwrap().is_empty());
         assert!(execute_trace_event(&artifact, &mut runtime, event(), &BadSigner, &TestSigner).is_err());
+        assert!(runtime.receipts("Build").unwrap().is_empty());
+    }
+
+    #[test]
+    fn modified_artifact_metadata_cannot_redirect_receipts_to_another_trace() {
+        let mut artifact = compile_trace_source(SOURCE, "Build").unwrap();
+        artifact.trace_name = "OtherTrace".into();
+        let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
+        assert!(execute_trace_event(&artifact, &mut runtime, event(), &TestSigner, &TestSigner).is_err());
         assert!(runtime.receipts("Build").unwrap().is_empty());
     }
 
