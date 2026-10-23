@@ -132,9 +132,25 @@ impl CellRuntime {
                     fields.push((name.as_str(), ty));
                 }
                 TypedIrConstructMember::Clause { name, value, .. } if name == "invariant" => {
-                    invariant = Some(value.as_str());
+                    if invariant.replace(value.as_str()).is_some() {
+                        return Err(CellRuntimeError::UnsupportedInvariant {
+                            cell: construct.name.clone(),
+                            invariant: "duplicate invariant clause".into(),
+                        });
+                    }
                 }
-                _ => {}
+                TypedIrConstructMember::Clause { name, .. } => {
+                    return Err(CellRuntimeError::UnsupportedInvariant {
+                        cell: construct.name.clone(),
+                        invariant: format!("unsupported clause '{name}'"),
+                    });
+                }
+                TypedIrConstructMember::Transition { from, to, .. } => {
+                    return Err(CellRuntimeError::UnsupportedInvariant {
+                        cell: construct.name.clone(),
+                        invariant: format!("unsupported transition '{from} -> {to}'"),
+                    });
+                }
             }
         }
         if fields.len() != 1
@@ -221,6 +237,15 @@ mod tests {
             ),
             Err(CellRuntimeError::DuplicateInitialValue("Counter".into()))
         );
+    }
+
+    #[test]
+    fn unsupported_cell_members_are_rejected_instead_of_ignored() {
+        let unknown_clause = "module cells\\ncell Counter\\n  value: Int\\n  invariant: value >= 0\\n  reset: allowed\\n";
+        assert!(CellRuntime::from_source(unknown_clause, [("Counter".into(), 1)]).is_err());
+
+        let duplicate_invariant = "module cells\\ncell Counter\\n  value: Int\\n  invariant: value >= 0\\n  invariant: value <= 100\\n";
+        assert!(CellRuntime::from_source(duplicate_invariant, [("Counter".into(), 1)]).is_err());
     }
 
     #[test]
