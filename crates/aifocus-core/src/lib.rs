@@ -192,21 +192,37 @@ impl Parser {
         while !self.at(TokenKind::Dedent) && !self.at(TokenKind::Eof) {
             let member_start = self.current().span.start;
             if kind == "phase" {
-                let from = self.expect(TokenKind::Ident, "source phase")?;
-                self.expect(TokenKind::Arrow, "'->' in phase transition")?;
-                let to = self.expect(TokenKind::Ident, "destination phase")?;
-                let span = source::Span::new(member_start, to.span.end);
-                members.push(ConstructMember::Transition {
-                    from: from.lexeme,
-                    to: to.lexeme,
-                    span,
-                });
-                self.expect(TokenKind::Newline, "end of phase transition")?;
+                if self.tokens.get(self.pos + 1).is_some_and(|token| token.kind == TokenKind::Colon) {
+                    let member_name = self.expect(TokenKind::Ident, "phase policy clause")?;
+                    self.expect(TokenKind::Colon, "':' after phase policy clause")?;
+                    let mut parts = Vec::new();
+                    while !self.at(TokenKind::Newline) && !self.at(TokenKind::Dedent) && !self.at(TokenKind::Eof) {
+                        parts.push(self.bump().lexeme);
+                    }
+                    let span = source::Span::new(member_start, self.previous_span().end);
+                    members.push(ConstructMember::Clause {
+                        name: member_name.lexeme,
+                        value: parts.join(" "),
+                        span,
+                    });
+                    self.expect(TokenKind::Newline, "end of phase policy clause")?;
+                } else {
+                    let from = self.expect(TokenKind::Ident, "source phase")?;
+                    self.expect(TokenKind::Arrow, "'->' in phase transition")?;
+                    let to = self.expect(TokenKind::Ident, "destination phase")?;
+                    let span = source::Span::new(member_start, to.span.end);
+                    members.push(ConstructMember::Transition {
+                        from: from.lexeme,
+                        to: to.lexeme,
+                        span,
+                    });
+                    self.expect(TokenKind::Newline, "end of phase transition")?;
+                }
             } else {
                 let member_name = self.expect(TokenKind::Ident, "field or policy clause name")?;
                 self.expect(TokenKind::Colon, "':' after field or policy clause name")?;
                 let member_key = member_name.lexeme.clone();
-                if matches!(member_key.as_str(), "invariant" | "capabilities" | "denies" | "requires" | "ensures" | "on_unknown" | "required" | "signature") {
+                if matches!(member_key.as_str(), "invariant" | "capabilities" | "denies" | "requires" | "ensures" | "on_unknown" | "required" | "signature" | "initial") {
                     let mut parts = Vec::new();
                     while !self.at(TokenKind::Newline) && !self.at(TokenKind::Dedent) && !self.at(TokenKind::Eof) {
                         parts.push(self.bump().lexeme);
