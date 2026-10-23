@@ -1033,3 +1033,6 @@ fn invalid(value: Tensor<String>) -> Tensor<String>
         assert!(errors.iter().any(|item| item.code == "AIF320"));
     }
 }
+
+#[cfg(test)]
+mod construct_release_gate;
