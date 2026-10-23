@@ -2632,6 +2632,9 @@ fn run_function(
                 if !fields[5].is_empty() && !is_sha256(&fields[5]) {
                     return Err(NativeError::Type("TracePrepare session_sha256 must be empty or 64 hexadecimal characters".into()));
                 }
+                if !fields[4].is_empty() || !fields[5].is_empty() {
+                    return Err(NativeError::Type("Trace policy does not allow provider/session metadata".into()));
+                }
                 stack.push(NativeValue::List(fields.into_iter().map(NativeValue::String).collect()));
             }
             NativeInstr::PushUnit => stack.push(NativeValue::Unit),
