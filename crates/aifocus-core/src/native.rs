@@ -2739,6 +2739,10 @@ fn escape_artifact(value: &str) -> String {
     value.replace('\\', "\\\\").replace('|', r"\p").replace(',', r"\c").replace('\n', r"\n")
 }
 
+fn escape_phase_label(value: &str) -> String {
+    escape_artifact(value).replace(';', r"\s").replace('>', r"\g")
+}
+
 fn unescape_artifact(value: &str) -> Result<String, NativeError> {
     let mut out = String::new();
     let mut escaped = false;
@@ -2760,9 +2764,9 @@ fn encode_instr(instr: &NativeInstr) -> String {
     match instr {
         NativeInstr::PhaseStart { graph } => format!(
             "PhaseStart:{},{},{}",
-            escape_artifact(&graph.name),
-            escape_artifact(&graph.initial),
-            graph.transitions.iter().map(|(from, to)| format!("{}>{}", escape_artifact(from), escape_artifact(to))).collect::<Vec<_>>().join(";")
+            escape_phase_label(&graph.name),
+            escape_phase_label(&graph.initial),
+            graph.transitions.iter().map(|(from, to)| format!("{}>{}", escape_phase_label(from), escape_phase_label(to))).collect::<Vec<_>>().join(";")
         ),
         NativeInstr::PhaseTransition => "PhaseTransition".into(),
         NativeInstr::PhaseCurrent => "PhaseCurrent".into(),
@@ -5649,6 +5653,28 @@ mod native_phase_state_tests {
             NativeInstr::ReturnTyped("PhaseState".into()),
         ]);
         assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("undeclared Phase transition")));
+    }
+
+    #[test]
+    fn phase_artifact_round_trips_delimiter_characters_in_state_names() {
+        let mut graph = graph();
+        graph.name = "Lifecycle;main".into();
+        graph.initial = "Ready>Now".into();
+        graph.transitions = vec![
+            ("Ready>Now".into(), "Running;Safe".into()),
+            ("Running;Safe".into(), "Done\\Final".into()),
+        ];
+        let program = program(vec![
+            NativeInstr::PhaseStart { graph },
+            NativeInstr::PushString("Running;Safe".into()),
+            NativeInstr::PhaseTransition,
+            NativeInstr::PhaseCurrent,
+            NativeInstr::ReturnTyped("String".into()),
+        ]);
+        let encoded = encode_program(&program);
+        let decoded = decode_program(&encoded).expect("delimiter-containing labels must decode");
+        assert_eq!(encode_program(&decoded), encoded);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::String("Running;Safe".into()));
     }
 
     #[test]
