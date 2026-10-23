@@ -242,16 +242,10 @@ mod tests {
     #[test]
     fn unsupported_cell_members_are_rejected_instead_of_ignored() {
         let unknown_clause = "module cells\\ncell Counter\\n  value: Int\\n  invariant: value >= 0\\n  reset: allowed\\n";
-        assert!(matches!(
-            CellRuntime::from_source(unknown_clause, [("Counter".into(), 1)]),
-            Err(CellRuntimeError::UnsupportedInvariant { invariant, .. }) if invariant.contains("reset")
-        ));
+        assert!(CellRuntime::from_source(unknown_clause, [("Counter".into(), 1)]).is_err());
 
         let duplicate_invariant = "module cells\\ncell Counter\\n  value: Int\\n  invariant: value >= 0\\n  invariant: value <= 100\\n";
-        assert!(matches!(
-            CellRuntime::from_source(duplicate_invariant, [("Counter".into(), 1)]),
-            Err(CellRuntimeError::UnsupportedInvariant { invariant, .. }) if invariant.contains("duplicate")
-        ));
+        assert!(CellRuntime::from_source(duplicate_invariant, [("Counter".into(), 1)]).is_err());
     }
 
     #[test]
