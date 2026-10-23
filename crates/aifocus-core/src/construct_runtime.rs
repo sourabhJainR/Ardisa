@@ -18,6 +18,7 @@ pub enum ConstructRuntimeError {
     TypedIr(Vec<String>),
     DuplicateInitialState(String),
     MissingInitialState(String),
+    InitialStateMismatch { phase: String, source: String, supplied: String },
     UnknownInitialState(String),
     UnknownPhase(String),
     Phase { name: String, source: PhaseMachineError },
@@ -64,9 +65,24 @@ impl ConstructRuntime {
 
         let mut phases = BTreeMap::new();
         for construct in constructs.iter().filter(|c| c.kind == ConstructKind::Phase) {
-            let initial = supplied
-                .remove(&construct.name)
-                .ok_or_else(|| ConstructRuntimeError::MissingInitialState(construct.name.clone()))?;
+            let declared_initial = construct.members.iter().find_map(|member| {
+                if let typed_ir::TypedIrConstructMember::Clause { name, value, .. } = member {
+                    (name == "initial").then(|| value.trim().to_string())
+                } else {
+                    None
+                }
+            });
+            let supplied_initial = supplied.remove(&construct.name);
+            let initial = match (declared_initial, supplied_initial) {
+                (Some(source), Some(supplied)) if source != supplied => {
+                    return Err(ConstructRuntimeError::InitialStateMismatch {
+                        phase: construct.name.clone(), source, supplied,
+                    });
+                }
+                (Some(source), _) => source,
+                (None, Some(supplied)) => supplied,
+                (None, None) => return Err(ConstructRuntimeError::MissingInitialState(construct.name.clone())),
+            };
             let machine = PhaseMachine::from_typed_construct(construct, initial)
                 .map_err(|source| ConstructRuntimeError::Phase {
                     name: construct.name.clone(),
