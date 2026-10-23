@@ -39,7 +39,6 @@ pub enum PipelineError {
 pub fn compile_source(source: &str) -> Result<CompiledArtifact, PipelineError> {
     let mut phase_order = Vec::new();
 
-    let contract = crate::compiler_engine::validate_source(source).map_err(PipelineError::CompilerContract)?;
     let tokens = crate::token::lex(source).map_err(PipelineError::Parse)?;
     phase_order.push("lexer");
 
@@ -48,6 +47,9 @@ pub fn compile_source(source: &str) -> Result<CompiledArtifact, PipelineError> {
 
     let semantic = sema::analyze(&module).map_err(PipelineError::Semantic)?;
     phase_order.push("semantic_type");
+
+    // Preserve source diagnostics (including AIF610) before backend contract validation.
+    let contract = crate::compiler_engine::validate_source(source).map_err(PipelineError::CompilerContract)?;
 
     let ownership_model = ownership::analyze(&module).map_err(PipelineError::Ownership)?;
     phase_order.push("ownership");
