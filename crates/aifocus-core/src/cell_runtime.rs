@@ -241,11 +241,58 @@ mod tests {
 
     #[test]
     fn unsupported_cell_members_are_rejected_instead_of_ignored() {
-        let unknown_clause = "module cells\\ncell Counter\\n  value: Int\\n  invariant: value >= 0\\n  reset: allowed\\n";
+        let unknown_clause = "module cells\ncell Counter\n  value: Int\n  invariant: value >= 0\n  reset: allowed\n";
         assert!(CellRuntime::from_source(unknown_clause, [("Counter".into(), 1)]).is_err());
 
-        let duplicate_invariant = "module cells\\ncell Counter\\n  value: Int\\n  invariant: value >= 0\\n  invariant: value <= 100\\n";
+        let duplicate_invariant = "module cells\ncell Counter\n  value: Int\n  invariant: value >= 0\n  invariant: value <= 100\n";
         assert!(CellRuntime::from_source(duplicate_invariant, [("Counter".into(), 1)]).is_err());
+    }
+
+    #[test]
+    fn every_integer_comparison_is_enforced_at_initialization_and_update() {
+        let cases = [
+            ("value == 3", 3, 4),
+            ("value != 3", 4, 3),
+            ("value < 3", 2, 3),
+            ("value <= 3", 3, 4),
+            ("value > 3", 4, 3),
+            ("value >= 3", 3, 2),
+        ];
+        for (invariant, valid, invalid) in cases {
+            let source = format!(
+                "module cells\ncell Counter\n  value: Int\n  invariant: {invariant}\n"
+            );
+            let mut runtime = CellRuntime::from_source(&source, [("Counter".into(), valid)])
+                .unwrap_or_else(|error| panic!("valid initial value rejected for {invariant}: {error:?}"));
+            assert_eq!(
+                runtime.update("Counter", invalid),
+                Err(CellRuntimeError::InvariantViolation("Counter".into())),
+                "invalid update accepted for {invariant}"
+            );
+            assert_eq!(runtime.get("Counter"), Ok(valid), "state changed for {invariant}");
+        }
+    }
+
+    #[test]
+    fn malformed_or_trailing_invariant_tokens_fail_closed() {
+        for invariant in [
+            "value >= 0 trailing",
+            "value >=",
+            "value <> 0",
+            "value >= 0 || value < 10",
+            "other >= 0",
+        ] {
+            let source = format!(
+                "module cells\ncell Counter\n  value: Int\n  invariant: {invariant}\n"
+            );
+            assert!(
+                matches!(
+                    CellRuntime::from_source(&source, [("Counter".into(), 1)]),
+                    Err(CellRuntimeError::UnsupportedInvariant { .. })
+                ),
+                "unexpectedly accepted invariant: {invariant}"
+            );
+        }
     }
 
     #[test]
