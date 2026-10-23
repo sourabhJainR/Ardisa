@@ -16,7 +16,31 @@ use crate::ir::{IrFunction, IrModule, IrOp, IrValue};
 const MAX_TENSOR_ELEMENTS: usize = 16_384;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePhaseGraph {
+    pub name: String,
+    pub initial: String,
+    pub transitions: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePhaseState {
+    name: String,
+    current: String,
+    transitions: Vec<(String, String)>,
+}
+
+impl NativePhaseState {
+    pub fn name(&self) -> &str { &self.name }
+    pub fn current(&self) -> &str { &self.current }
+}
+
 pub enum NativeInstr {
+    /// Create an immutable Phase state token from a validated declaration graph.
+    PhaseStart { graph: NativePhaseGraph },
+    /// Apply one declared edge to a Phase state token, returning a new token.
+    PhaseTransition,
+    /// Read the current state without mutating the Phase token.
+    PhaseCurrent,
     PushInt(i64),
     PushFloat(u32),
     PushBool(bool),
@@ -239,6 +263,7 @@ pub enum NativeValue {
     /// Bounded multimodal context with opaque byte payloads and explicit upstream token counts.
     ContextWindow { max_segments: usize, max_bytes: usize, max_tokens: usize, segments: Vec<(String, Vec<u8>, usize)>, bytes: usize, tokens: usize },
     String(String),
+    PhaseState(NativePhaseState),
     List(Vec<NativeValue>),
     OptionSome(Box<NativeValue>),
     OptionNone,
@@ -485,6 +510,15 @@ fn validate_value(value: &NativeValue, limits: ExecutionLimits) -> Result<(), Na
                 let actual_tokens = segments.iter().try_fold(0usize, |sum, (_, _, count)| sum.checked_add(*count).ok_or_else(|| NativeError::ResourceLimit("ContextWindow token accounting overflow".into())))?;
                 if actual_bytes != *bytes || actual_tokens != *tokens { return Err(NativeError::InvalidProgram("ContextWindow counters do not match retained segments".into())); }
             }
+            NativeValue::PhaseState(state) => {
+                validate_phase_state_parts(&state.name, &state.current, &state.transitions)?;
+                let state_nodes = state.transitions.len().checked_mul(2)
+                    .and_then(|n| n.checked_add(2))
+                    .ok_or_else(|| NativeError::ResourceLimit("PhaseState footprint overflow".into()))?;
+                if state_nodes > limits.max_value_nodes {
+                    return Err(NativeError::ResourceLimit("PhaseState exceeds value-node budget".into()));
+                }
+            }
             NativeValue::List(items) => {
                 if items.len() > limits.max_collection_items {
                     return Err(NativeError::ResourceLimit("collection exceeds item limit".into()));
@@ -542,6 +576,16 @@ fn value_footprint(value: &NativeValue) -> Result<(usize, usize), NativeError> {
                     .ok_or_else(|| NativeError::ResourceLimit("VectorIndex footprint accounting overflow".into()))?;
                 string_bytes = string_bytes.checked_add(domain.len())
                     .ok_or_else(|| NativeError::ResourceLimit("VectorIndex domain byte accounting overflow".into()))?;
+            }
+            NativeValue::PhaseState(state) => {
+                nodes = nodes.checked_add(state.transitions.len().checked_mul(2).ok_or_else(|| NativeError::ResourceLimit("PhaseState footprint overflow".into()))?)
+                    .ok_or_else(|| NativeError::ResourceLimit("PhaseState footprint overflow".into()))?;
+                string_bytes = string_bytes.checked_add(state.name.len()).and_then(|n| n.checked_add(state.current.len()))
+                    .ok_or_else(|| NativeError::ResourceLimit("PhaseState byte accounting overflow".into()))?;
+                for (from, to) in &state.transitions {
+                    string_bytes = string_bytes.checked_add(from.len()).and_then(|n| n.checked_add(to.len()))
+                        .ok_or_else(|| NativeError::ResourceLimit("PhaseState byte accounting overflow".into()))?;
+                }
             }
             NativeValue::List(items) => pending.extend(items.iter()),
             NativeValue::OptionSome(inner) | NativeValue::ResultOk(inner) | NativeValue::ResultErr(inner) => pending.push(inner),
@@ -656,6 +700,7 @@ fn native_value_matches_type_tag(value: &NativeValue, expected: &str) -> bool {
         ("LoRAAdapter", NativeValue::LoRAAdapter { .. }) | ("MoERouter", NativeValue::MoERouter { .. }) |
         ("VectorIndex", NativeValue::VectorIndex { .. }) | ("KvCache", NativeValue::KvCache { .. }) |
         ("ContextWindow", NativeValue::ContextWindow { .. }) |
+        ("PhaseState", NativeValue::PhaseState(_)) |
         ("GradientTape", NativeValue::GradientTape { .. }) | ("ActivationCache", NativeValue::ActivationCache { .. }) |
         ("TokenizerState", NativeValue::TokenizerState { .. }) => true,
         _ => false,
@@ -719,7 +764,7 @@ fn is_native_type(ty: &TypeKind) -> bool {
         TypeKind::Int | TypeKind::Bool | TypeKind::String | TypeKind::Unit => true,
         TypeKind::List(element) => is_native_type(&element.kind),
         TypeKind::Result(ok, err) => is_native_type(&ok.kind) && is_native_type(&err.kind),
-        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape" | "ActivationCache" | "TokenizerState"),
+        TypeKind::Named(name) => matches!(name.as_str(), "KvCache" | "ContextWindow" | "MctsTree" | "AttentionBlock" | "LoRAAdapter" | "MoERouter" | "VectorIndex" | "GradientTape" | "ActivationCache" | "TokenizerState" | "PhaseState"),
         TypeKind::Generic(_, _) => false,
     }
 }
@@ -1350,6 +1395,9 @@ fn run_function(
                 | NativeInstr::ContextTokens
                 | NativeInstr::ContextAppend { .. }
                 | NativeInstr::PushUnit
+                | NativeInstr::PhaseStart { .. }
+                | NativeInstr::PhaseTransition
+                | NativeInstr::PhaseCurrent
                 | NativeInstr::PushString(_)
                 | NativeInstr::PushList(_)
                 | NativeInstr::Index
@@ -2070,6 +2118,41 @@ fn run_function(
                 }
                 stack.push(NativeValue::Float(sum.to_bits()));
             }
+            NativeInstr::PhaseStart { graph } => {
+                validate_phase_graph(graph)?;
+                stack.push(NativeValue::PhaseState(NativePhaseState {
+                    name: graph.name.clone(),
+                    current: graph.initial.clone(),
+                    transitions: graph.transitions.clone(),
+                }));
+            }
+            NativeInstr::PhaseTransition => {
+                let target = match stack.pop() {
+                    Some(NativeValue::String(value)) => value,
+                    Some(_) => return Err(NativeError::Type("phase_transition target must be String".into())),
+                    None => return Err(NativeError::InvalidProgram("phase_transition target missing".into())),
+                };
+                let state = match stack.pop() {
+                    Some(NativeValue::PhaseState(value)) => value,
+                    Some(_) => return Err(NativeError::Type("phase_transition requires PhaseState".into())),
+                    None => return Err(NativeError::InvalidProgram("phase_transition state missing".into())),
+                };
+                if !state.transitions.iter().any(|(from, to)| from == &state.current && to == &target) {
+                    return Err(NativeError::Type(format!("undeclared Phase transition '{}': '{}' -> '{}'", state.name, state.current, target)));
+                }
+                stack.push(NativeValue::PhaseState(NativePhaseState {
+                    name: state.name,
+                    current: target,
+                    transitions: state.transitions,
+                }));
+            }
+            NativeInstr::PhaseCurrent => {
+                match stack.pop() {
+                    Some(NativeValue::PhaseState(state)) => stack.push(NativeValue::String(state.current)),
+                    Some(_) => return Err(NativeError::Type("phase_current requires PhaseState".into())),
+                    None => return Err(NativeError::InvalidProgram("phase_current state missing".into())),
+                }
+            }
             NativeInstr::PushUnit => stack.push(NativeValue::Unit),
             NativeInstr::PushString(value) => {
                 if value.len() > state.limits.max_string_bytes {
@@ -2451,6 +2534,39 @@ pub const MAX_ARTIFACT_BYTES: usize = 16 * 1024 * 1024;
 /// Validate an executable before cloning it into the shared runtime state.
 /// The byte budget covers function names, parameter names, and string operands;
 /// it is not a claim about total heap usage or allocator overhead.
+fn validate_phase_graph(graph: &NativePhaseGraph) -> Result<(), NativeError> {
+    if graph.name.trim().is_empty() || graph.initial.trim().is_empty() {
+        return Err(NativeError::InvalidProgram("Phase graph name and initial state must not be empty".into()));
+    }
+    if graph.transitions.is_empty() || graph.transitions.len() > crate::ai_mode::MAX_PHASE_TRANSITIONS {
+        return Err(NativeError::ResourceLimit("Phase transition count is empty or exceeds the limit".into()));
+    }
+    let mut edges = std::collections::BTreeSet::new();
+    let mut states = std::collections::BTreeSet::new();
+    for (from, to) in &graph.transitions {
+        if from.trim().is_empty() || to.trim().is_empty() || from == to {
+            return Err(NativeError::InvalidProgram("Phase graph contains an empty state or self-transition".into()));
+        }
+        if !edges.insert((from.clone(), to.clone())) {
+            return Err(NativeError::InvalidProgram("Phase graph contains duplicate transitions".into()));
+        }
+        states.insert(from.clone());
+        states.insert(to.clone());
+    }
+    if states.len() > crate::ai_mode::MAX_PHASE_STATES {
+        return Err(NativeError::ResourceLimit("Phase state count exceeds the limit".into()));
+    }
+    if !states.contains(&graph.initial) {
+        return Err(NativeError::InvalidProgram("Phase initial state is absent from transition graph".into()));
+    }
+    Ok(())
+}
+
+fn validate_phase_state_parts(name: &str, current: &str, transitions: &[(String, String)]) -> Result<(), NativeError> {
+    let graph = NativePhaseGraph { name: name.to_string(), initial: current.to_string(), transitions: transitions.to_vec() };
+    validate_phase_graph(&graph)
+}
+
 fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
     if program.functions.len() > MAX_PROGRAM_FUNCTIONS {
         return Err(NativeError::ResourceLimit(format!(
@@ -2494,6 +2610,12 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                     return Err(NativeError::InvalidProgram(format!(
                         "jump target {target} is outside function '{name}' at instruction {instruction_index}"
                     )));
+                }
+                NativeInstr::PhaseStart { graph } => {
+                    validate_phase_graph(graph)?;
+                    add_bytes(&graph.name)?;
+                    add_bytes(&graph.initial)?;
+                    for (from, to) in &graph.transitions { add_bytes(from)?; add_bytes(to)?; }
                 }
                 NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
                 NativeInstr::PushTensor { shape, values } => { validate_tensor_parts(shape, values, MAX_TENSOR_ELEMENTS)?; }
@@ -2635,6 +2757,14 @@ fn unescape_artifact(value: &str) -> Result<String, NativeError> {
 
 fn encode_instr(instr: &NativeInstr) -> String {
     match instr {
+        NativeInstr::PhaseStart { graph } => format!(
+            "PhaseStart:{},{},{}",
+            escape_artifact(&graph.name),
+            escape_artifact(&graph.initial),
+            graph.transitions.iter().map(|(from, to)| format!("{}>{}", escape_artifact(from), escape_artifact(to))).collect::<Vec<_>>().join(";")
+        ),
+        NativeInstr::PhaseTransition => "PhaseTransition".into(),
+        NativeInstr::PhaseCurrent => "PhaseCurrent".into(),
         NativeInstr::PushInt(v) => format!("PushInt:{v}"),
         NativeInstr::PushFloat(bits) => format!("PushFloat:{bits}"),
         NativeInstr::PushBool(v) => format!("PushBool:{v}"),
@@ -2720,6 +2850,21 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
     let bad=||NativeError::InvalidProgram(format!("invalid instruction '{s}'"));
     let int=|v:&str|v.parse::<usize>().map_err(|_|bad());
     Ok(match op {
+        "PhaseStart" => {
+            let mut fields = arg.splitn(3, ',');
+            let name = unescape_artifact(fields.next().ok_or_else(bad)?)?;
+            let initial = unescape_artifact(fields.next().ok_or_else(bad)?)?;
+            let transitions = fields.next().ok_or_else(bad)?;
+            let transitions = if transitions.is_empty() { Vec::new() } else {
+                transitions.split(';').map(|edge| {
+                    let (from, to) = edge.split_once('>').ok_or_else(bad)?;
+                    Ok((unescape_artifact(from)?, unescape_artifact(to)?))
+                }).collect::<Result<Vec<_>, NativeError>>()?
+            };
+            NativeInstr::PhaseStart { graph: NativePhaseGraph { name, initial, transitions } }
+        },
+        "PhaseTransition" => NativeInstr::PhaseTransition,
+        "PhaseCurrent" => NativeInstr::PhaseCurrent,
         "PushInt"=>NativeInstr::PushInt(arg.parse().map_err(|_|bad())?),
         "PushFloat"=>{let bits=arg.parse::<u32>().map_err(|_|bad())?;if !f32::from_bits(bits).is_finite(){return Err(bad());}NativeInstr::PushFloat(bits)},
         "PushBool"=>NativeInstr::PushBool(arg=="true"),
@@ -5459,3 +5604,71 @@ mod typed_propagation_v2_tests {
         assert!(matches!(run_program(&decoded, "main", &[]), Err(NativeError::Type(message)) if message.contains("propagated value")));
     }
 }
+
+
+#[cfg(test)]
+mod native_phase_state_tests {
+    use super::*;
+
+    fn graph() -> NativePhaseGraph {
+        NativePhaseGraph {
+            name: "Lifecycle".into(),
+            initial: "Ready".into(),
+            transitions: vec![("Ready".into(), "Running".into()), ("Running".into(), "Done".into())],
+        }
+    }
+
+    fn program(code: Vec<NativeInstr>) -> NativeProgram {
+        NativeProgram {
+            functions: [("main".to_string(), NativeFunction { params: vec![], code })].into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn phase_state_is_created_transitioned_and_observed_through_artifact() {
+        let program = program(vec![
+            NativeInstr::PhaseStart { graph: graph() },
+            NativeInstr::PushString("Running".into()),
+            NativeInstr::PhaseTransition,
+            NativeInstr::PhaseCurrent,
+            NativeInstr::ReturnTyped("String".into()),
+        ]);
+        let encoded = encode_program(&program);
+        let decoded = decode_program(&encoded).expect("Phase instructions must round-trip");
+        assert_eq!(encode_program(&decoded), encoded);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::String("Running".into()));
+    }
+
+    #[test]
+    fn undeclared_phase_transition_rejects_without_a_state_result() {
+        let program = program(vec![
+            NativeInstr::PhaseStart { graph: graph() },
+            NativeInstr::PushString("Done".into()),
+            NativeInstr::PhaseTransition,
+            NativeInstr::ReturnTyped("PhaseState".into()),
+        ]);
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("undeclared Phase transition")));
+    }
+
+    #[test]
+    fn malformed_phase_graph_is_rejected_before_execution() {
+        let bad = NativePhaseGraph {
+            name: "Lifecycle".into(),
+            initial: "Missing".into(),
+            transitions: vec![("Ready".into(), "Done".into())],
+        };
+        let program = program(vec![NativeInstr::PhaseStart { graph: bad }, NativeInstr::Return]);
+        assert!(matches!(ValidatedNativeProgram::try_new(program), Err(NativeError::InvalidProgram(message)) if message.contains("initial state")));
+    }
+
+    #[test]
+    fn phase_state_token_cannot_be_forged_from_source_strings() {
+        let program = program(vec![
+            NativeInstr::PushString("Ready".into()),
+            NativeInstr::PhaseTransition,
+            NativeInstr::Return,
+        ]);
+        assert!(matches!(run_program(&program, "main", &[]), Err(NativeError::Type(message)) if message.contains("PhaseState")));
+    }
+}
+
