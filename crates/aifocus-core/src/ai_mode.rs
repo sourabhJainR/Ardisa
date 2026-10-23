@@ -198,6 +198,7 @@ impl PhaseMachine {
                 crate::typed_ir::TypedIrConstructMember::Transition { from, to, .. } => {
                     transitions.push((from.clone(), to.clone()));
                 }
+                crate::typed_ir::TypedIrConstructMember::Clause { name, .. } if name == "initial" => {}
                 _ => return Err(PhaseMachineError::UnexpectedPhaseMember),
             }
         }
