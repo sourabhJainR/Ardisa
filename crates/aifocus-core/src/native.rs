@@ -5989,7 +5989,7 @@ mod native_cell_state_tests {
 
     fn cell_instruction(invariant: &str, initial: i64) -> NativeInstr {
         let source = format!(
-            "module cell_source\\ncell Counter\\n  value: Int\\n  invariant: {invariant}\\n"
+            "module cell_source\ncell Counter\n  value: Int\n  invariant: {invariant}\n"
         );
         let module = crate::parse(&source).expect("Cell source parses");
         let constructs = crate::typed_ir::lower_constructs(&module).expect("typed Cell metadata");
@@ -6028,12 +6028,12 @@ mod native_cell_state_tests {
 
     #[test]
     fn native_cell_rejects_invalid_initial_values_and_unsupported_shapes() {
-        let source = "module cell_source\\ncell Counter\\n  value: Int\\n  invariant: value >= 0\\n";
+        let source = "module cell_source\ncell Counter\n  value: Int\n  invariant: value >= 0\n";
         let module = crate::parse(source).unwrap();
         let construct = crate::typed_ir::lower_constructs(&module).unwrap();
         assert!(cell_start_instruction(&construct[0], -1).is_err());
 
-        let wrong_shape = "module cell_source\\ncell Counter\\n  value: String\\n  invariant: value >= 0\\n";
+        let wrong_shape = "module cell_source\ncell Counter\n  value: String\n  invariant: value >= 0\n";
         let module = crate::parse(wrong_shape).unwrap();
         let construct = crate::typed_ir::lower_constructs(&module).unwrap();
         assert!(cell_start_instruction(&construct[0], 1).is_err());
