@@ -62,6 +62,14 @@ pub fn compile_phase_source(
             TypedIrConstructMember::Field { name, .. } => {
                 return Err(NativePhaseCompileError::UnsupportedConstruct(format!("field '{name}'")));
             }
+            TypedIrConstructMember::Clause { name, value, .. } if name == "initial" => {
+                if value.trim() != initial_state {
+                    return Err(NativePhaseCompileError::InvalidInitialState {
+                        phase: phase_name.to_string(),
+                        state: value.trim().to_string(),
+                    });
+                }
+            }
             TypedIrConstructMember::Clause { name, .. } => {
                 return Err(NativePhaseCompileError::UnsupportedConstruct(format!("clause '{name}'")));
             }
@@ -103,6 +111,30 @@ pub fn compile_phase_source(
     })
 }
 
+
+/// Compile a Phase using its declared `initial:` state instead of a host-supplied
+/// initial value. This is the preferred source-backed API for declarations that
+/// include an initial state. The operation targets remain explicit runtime inputs.
+pub fn compile_declared_phase_source(
+    source: &str,
+    phase_name: &str,
+    transition_targets: &[String],
+) -> Result<NativePhaseArtifact, NativePhaseCompileError> {
+    let module = crate::parse(source).map_err(NativePhaseCompileError::Parse)?;
+    let constructs = typed_ir::lower_constructs(&module).map_err(NativePhaseCompileError::TypedIr)?;
+    if constructs.len() != 1 || constructs[0].kind != ConstructKind::Phase {
+        return Err(NativePhaseCompileError::ExpectedSinglePhase);
+    }
+    let construct = constructs.iter().find(|item| item.name == phase_name)
+        .ok_or_else(|| NativePhaseCompileError::UnknownPhase(phase_name.to_string()))?;
+    let initial_state = construct.members.iter().find_map(|member| match member {
+        TypedIrConstructMember::Clause { name, value, .. } if name == "initial" => Some(value.trim().to_string()),
+        _ => None,
+    }).filter(|value| !value.is_empty())
+      .ok_or_else(|| NativePhaseCompileError::MissingInitialState(phase_name.to_string()))?;
+    compile_phase_source(source, phase_name, &initial_state, transition_targets)
+}
+
 /// Execute the exact serialized artifact emitted by compile_phase_source.
 pub fn execute_phase_artifact(artifact: &NativePhaseArtifact) -> Result<String, NativePhaseCompileError> {
     let program = native::decode_program(&artifact.artifact).map_err(NativePhaseCompileError::Native)?;
@@ -129,6 +161,30 @@ mod tests {
         assert_eq!(first.artifact, second.artifact);
         assert_eq!(execute_phase_artifact(&first).unwrap(), "Done");
         assert!(first.artifact.starts_with(native::ARTIFACT_MAGIC));
+    }
+
+    #[test]
+    fn declared_initial_state_lowers_into_the_native_artifact() {
+        let source = "module lifecycle\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Running\\n  Running -> Done\\n";
+        let artifact = compile_declared_phase_source(source, "Lifecycle", &["Running".into(), "Done".into()]).unwrap();
+        assert_eq!(artifact.initial_state, "Ready");
+        assert_eq!(execute_phase_artifact(&artifact).unwrap(), "Done");
+    }
+
+    #[test]
+    fn declared_phase_requires_a_valid_explicit_initial_state() {
+        let missing = "module lifecycle\\nphase Lifecycle\\n  Ready -> Done\\n";
+        assert!(matches!(
+            compile_declared_phase_source(missing, "Lifecycle", &[]),
+            Err(NativePhaseCompileError::MissingInitialState(name)) if name == "Lifecycle"
+        ));
+        let invalid = "module lifecycle\\nphase Lifecycle\\n  initial: Missing\\n  Ready -> Done\\n";
+        assert!(compile_declared_phase_source(invalid, "Lifecycle", &[]).is_err());
+        let mismatched = "module lifecycle\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Done\\n";
+        assert!(matches!(
+            compile_phase_source(mismatched, "Lifecycle", "Done", &[]),
+            Err(NativePhaseCompileError::InvalidInitialState { .. })
+        ));
     }
 
     #[test]
