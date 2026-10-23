@@ -81,6 +81,43 @@ pub struct NativeVaultSpec {
     pub allowed: Vec<NativeVaultCapability>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NativeProofRequirement {
+    TypeSafety,
+    Bounds,
+    EffectPolicy,
+    ContractPostconditions,
+    ConstantTime,
+}
+
+impl NativeProofRequirement {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "type_safety" => Some(Self::TypeSafety),
+            "bounds" => Some(Self::Bounds),
+            "effect_policy" => Some(Self::EffectPolicy),
+            "contract_postconditions" => Some(Self::ContractPostconditions),
+            "constant_time" => Some(Self::ConstantTime),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TypeSafety => "type_safety",
+            Self::Bounds => "bounds",
+            Self::EffectPolicy => "effect_policy",
+            Self::ContractPostconditions => "contract_postconditions",
+            Self::ConstantTime => "constant_time",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeProofSpec {
+    pub name: String,
+    pub required: Vec<NativeProofRequirement>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeCellInvariant {
     Equal,
@@ -176,6 +213,8 @@ pub enum NativeInstr {
     PhaseCurrent,
     /// Enforce a source Vault capability before subsequent protected work.
     VaultAuthorize { spec: NativeVaultSpec, capability: NativeVaultCapability },
+    /// Validate runtime-supplied outcomes against a source Proof policy.
+    ProofCheck { spec: NativeProofSpec },
     /// Create an invariant-checked Cell value token.
     CellStart { spec: NativeCellSpec },
     /// Return a new Cell token only if the invariant accepts the proposed value.
@@ -395,6 +434,55 @@ pub fn vault_authorize_instruction(
     let spec = NativeVaultSpec { name: construct.name.clone(), allowed: grants.into_iter().collect() };
     validate_vault_spec(&spec)?;
     Ok(NativeInstr::VaultAuthorize { spec, capability: required })
+}
+
+/// Lower a typed Proof declaration to a runtime-result validation instruction.
+/// Only explicit required requirements and conservative unknown rejection are supported.
+pub fn proof_check_instruction(
+    construct: &crate::typed_ir::TypedIrConstruct,
+) -> Result<NativeInstr, NativeError> {
+    if construct.kind != crate::ast::ConstructKind::Proof {
+        return Err(NativeError::InvalidProgram("ProofCheck lowering requires a Proof declaration".into()));
+    }
+    crate::typed_ir::validate_construct_metadata(std::slice::from_ref(construct))
+        .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
+    let mut requires = None;
+    let mut ensures = None;
+    let mut on_unknown = None;
+    let mut required = None;
+    for member in &construct.members {
+        let crate::typed_ir::TypedIrConstructMember::Clause { name, value, .. } = member else {
+            return Err(NativeError::InvalidProgram(format!("Proof '{}' contains unsupported members", construct.name)));
+        };
+        match name.as_str() {
+            "requires" => requires = Some(value.as_str()),
+            "ensures" => ensures = Some(value.trim()),
+            "on_unknown" => on_unknown = Some(value.trim()),
+            "required" => required = Some(value.trim()),
+            _ => return Err(NativeError::InvalidProgram(format!("Proof '{}' has unsupported clause '{name}'", construct.name))),
+        }
+    }
+    if required != Some("true") || on_unknown != Some("reject") || ensures != Some("true") {
+        return Err(NativeError::InvalidProgram(format!(
+            "Proof '{}' requires required: true, ensures: true, and on_unknown: reject",
+            construct.name
+        )));
+    }
+    let mut requirements = std::collections::BTreeSet::new();
+    for token in requires.unwrap_or("").split(|ch: char| ch.is_whitespace() || ch == ',').filter(|part| !part.is_empty()) {
+        let item = NativeProofRequirement::parse(token).ok_or_else(|| {
+            NativeError::InvalidProgram(format!("Proof '{}' has unknown requirement '{token}'", construct.name))
+        })?;
+        if !requirements.insert(item) {
+            return Err(NativeError::InvalidProgram(format!("Proof '{}' repeats requirement '{token}'", construct.name)));
+        }
+    }
+    if requirements.is_empty() {
+        return Err(NativeError::InvalidProgram(format!("Proof '{}' requires at least one named requirement", construct.name)));
+    }
+    let spec = NativeProofSpec { name: construct.name.clone(), required: requirements.into_iter().collect() };
+    validate_proof_spec(&spec)?;
+    Ok(NativeInstr::ProofCheck { spec })
 }
 
 /// Lower the supported integer Cell subset into an executable CellStart instruction.
@@ -1671,6 +1759,7 @@ fn run_function(
                 | NativeInstr::PhaseTransition
                 | NativeInstr::PhaseCurrent
                 | NativeInstr::VaultAuthorize { .. }
+                | NativeInstr::ProofCheck { .. }
                 | NativeInstr::CellStart { .. }
                 | NativeInstr::CellUpdate
                 | NativeInstr::CellCurrent
@@ -2472,6 +2561,42 @@ fn run_function(
                 }
                 stack.push(NativeValue::Unit);
             }
+            NativeInstr::ProofCheck { spec } => {
+                validate_proof_spec(spec)?;
+                let results = match stack.pop() {
+                    Some(NativeValue::List(items)) => items,
+                    Some(_) => return Err(NativeError::Type("ProofCheck requires a List of requirement=status strings".into())),
+                    None => return Err(NativeError::InvalidProgram("ProofCheck results missing".into())),
+                };
+                let mut observed = std::collections::BTreeMap::new();
+                for item in results {
+                    let NativeValue::String(item) = item else {
+                        return Err(NativeError::Type("ProofCheck result entries must be Strings".into()));
+                    };
+                    let (name, status) = item.split_once('=').ok_or_else(|| {
+                        NativeError::Type("ProofCheck result must use requirement=status".into())
+                    })?;
+                    let requirement = NativeProofRequirement::parse(name).ok_or_else(|| {
+                        NativeError::Type(format!("ProofCheck has unknown result requirement '{name}'"))
+                    })?;
+                    if !["proved", "runtime_checked", "unknown", "failed"].contains(&status) {
+                        return Err(NativeError::Type(format!("ProofCheck has unknown status '{status}'")));
+                    }
+                    if observed.insert(requirement, status.to_string()).is_some() {
+                        return Err(NativeError::Type(format!("ProofCheck repeats result '{name}'")));
+                    }
+                }
+                for requirement in &spec.required {
+                    match observed.get(requirement).map(String::as_str) {
+                        Some("proved" | "runtime_checked") => {}
+                        Some("unknown") => return Err(NativeError::Type(format!("Proof '{}' has unknown required outcome '{}'", spec.name, requirement.as_str()))),
+                        Some("failed") => return Err(NativeError::Type(format!("Proof '{}' has failed required outcome '{}'", spec.name, requirement.as_str()))),
+                        None => return Err(NativeError::Type(format!("Proof '{}' is missing required outcome '{}'", spec.name, requirement.as_str()))),
+                        _ => unreachable!("status was validated"),
+                    }
+                }
+                stack.push(NativeValue::Unit);
+            }
             NativeInstr::PushUnit => stack.push(NativeValue::Unit),
             NativeInstr::PushString(value) => {
                 if value.len() > state.limits.max_string_bytes {
@@ -2886,6 +3011,17 @@ fn validate_phase_state_parts(name: &str, current: &str, transitions: &[(String,
     validate_phase_graph(&graph)
 }
 
+fn validate_proof_spec(spec: &NativeProofSpec) -> Result<(), NativeError> {
+    if spec.name.trim().is_empty() || spec.required.is_empty() {
+        return Err(NativeError::InvalidProgram("Proof name and requirements must not be empty".into()));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    if spec.required.iter().any(|requirement| !seen.insert(*requirement)) {
+        return Err(NativeError::InvalidProgram(format!("Proof '{}' repeats a requirement", spec.name)));
+    }
+    Ok(())
+}
+
 fn validate_vault_spec(spec: &NativeVaultSpec) -> Result<(), NativeError> {
     if spec.name.trim().is_empty() {
         return Err(NativeError::InvalidProgram("Vault name must not be empty".into()));
@@ -2967,6 +3103,10 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                 }
                 NativeInstr::VaultAuthorize { spec, capability: _ } => {
                     validate_vault_spec(spec)?;
+                    add_bytes(&spec.name)?;
+                }
+                NativeInstr::ProofCheck { spec } => {
+                    validate_proof_spec(spec)?;
                     add_bytes(&spec.name)?;
                 }
                 NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
@@ -3130,6 +3270,11 @@ fn encode_instr(instr: &NativeInstr) -> String {
             spec.allowed.iter().map(|item| item.as_str()).collect::<Vec<_>>().join("+"),
             capability.as_str()
         ),
+        NativeInstr::ProofCheck { spec } => format!(
+            "ProofCheck:{},{}",
+            escape_artifact(&spec.name),
+            spec.required.iter().map(|item| item.as_str()).collect::<Vec<_>>().join("+")
+        ),
         NativeInstr::PushInt(v) => format!("PushInt:{v}"),
         NativeInstr::PushFloat(bits) => format!("PushFloat:{bits}"),
         NativeInstr::PushBool(v) => format!("PushBool:{v}"),
@@ -3250,6 +3395,15 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
             };
             let capability = NativeVaultCapability::parse(fields.next().ok_or_else(bad)?).ok_or_else(bad)?;
             NativeInstr::VaultAuthorize { spec: NativeVaultSpec { name, allowed }, capability }
+        },
+        "ProofCheck" => {
+            let mut fields = arg.splitn(2, ',');
+            let name = unescape_artifact(fields.next().ok_or_else(bad)?)?;
+            let required_field = fields.next().ok_or_else(bad)?;
+            let required = required_field.split('+')
+                .map(|name| NativeProofRequirement::parse(name).ok_or_else(bad))
+                .collect::<Result<Vec<_>, _>>()?;
+            NativeInstr::ProofCheck { spec: NativeProofSpec { name, required } }
         },
         "PushInt"=>NativeInstr::PushInt(arg.parse().map_err(|_|bad())?),
         "PushFloat"=>{let bits=arg.parse::<u32>().map_err(|_|bad())?;if !f32::from_bits(bits).is_finite(){return Err(bad());}NativeInstr::PushFloat(bits)},
