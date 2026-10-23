@@ -5669,7 +5669,7 @@ mod native_phase_state_tests {
 
     #[test]
     fn source_phase_declaration_lowers_to_executable_artifact() {
-        let source = "module phase_source\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Running\\n  Running -> Done\\n";
+        let source = "module phase_source\nphase Lifecycle\n  initial: Ready\n  Ready -> Running\n  Running -> Done\n";
         let module = crate::parse(source).expect("source Phase declaration parses");
         let constructs = crate::typed_ir::lower_constructs(&module).expect("typed Phase lowering");
         let instruction = phase_start_instruction(&constructs[0]).expect("Phase declaration lowers");
@@ -5687,12 +5687,12 @@ mod native_phase_state_tests {
 
     #[test]
     fn source_phase_lowering_rejects_missing_initial_state_and_non_phase_constructs() {
-        let missing_initial = "module phase_source\\nphase Lifecycle\\n  Ready -> Running\\n";
+        let missing_initial = "module phase_source\nphase Lifecycle\n  Ready -> Running\n";
         let module = crate::parse(missing_initial).expect("source parses");
         let constructs = crate::typed_ir::lower_constructs(&module).expect("typed metadata parses");
         assert!(phase_start_instruction(&constructs[0]).is_err());
 
-        let cell_source = "module cell_source\\ncell Counter\\n  value: Int\\n  invariant: value >= 0\\n";
+        let cell_source = "module cell_source\ncell Counter\n  value: Int\n  invariant: value >= 0\n";
         let module = crate::parse(cell_source).expect("source parses");
         let constructs = crate::typed_ir::lower_constructs(&module).expect("typed metadata parses");
         assert!(phase_start_instruction(&constructs[0]).is_err());
