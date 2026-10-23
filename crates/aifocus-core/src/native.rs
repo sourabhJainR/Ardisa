@@ -309,6 +309,7 @@ pub fn phase_start_instruction(
 /// Only one `value: Int` field and one `value <op> integer` invariant are supported.
 pub fn cell_start_instruction(
     construct: &crate::typed_ir::TypedIrConstruct,
+    initial: i64,
 ) -> Result<NativeInstr, NativeError> {
     if construct.kind != crate::ast::ConstructKind::Cell {
         return Err(NativeError::InvalidProgram("CellStart lowering requires a Cell declaration".into()));
@@ -337,7 +338,7 @@ pub fn cell_start_instruction(
     let (invariant, bound) = NativeCellInvariant::parse(invariants[0]).ok_or_else(|| {
         NativeError::InvalidProgram(format!("Cell '{}' has an unsupported invariant", construct.name))
     })?;
-    let spec = NativeCellSpec { name: construct.name.clone(), initial: 0, invariant, bound };
+    let spec = NativeCellSpec { name: construct.name.clone(), initial, invariant, bound };
     validate_cell_spec(&spec)?;
     Ok(NativeInstr::CellStart { spec })
 }
