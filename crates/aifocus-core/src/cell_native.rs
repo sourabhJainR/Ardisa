@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(first.artifact, second.artifact);
         assert!(matches!(
             compile_cell_source(
-                "module c\ncell C\n  value: Int\n  invariant: value != 0\n",
+                "module c\ncell C\n  value: Int\n  invariant: value > 0 && value < 10\n",
                 "C", 1, &[]
             ),
             Err(NativeCellCompileError::Native(native::NativeError::InvalidProgram(_)))
