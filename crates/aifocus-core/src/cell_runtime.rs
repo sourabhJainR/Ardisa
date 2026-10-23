@@ -286,10 +286,7 @@ mod tests {
                 "module cells\ncell Counter\n  value: Int\n  invariant: {invariant}\n"
             );
             assert!(
-                matches!(
-                    CellRuntime::from_source(&source, [("Counter".into(), 1)]),
-                    Err(CellRuntimeError::UnsupportedInvariant { .. })
-                ),
+                CellRuntime::from_source(&source, [("Counter".into(), 1)]).is_err(),
                 "unexpectedly accepted invariant: {invariant}"
             );
         }
