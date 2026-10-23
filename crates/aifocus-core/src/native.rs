@@ -176,6 +176,44 @@ pub enum NativeInstr {
     },
 }
 
+/// Lower one validated typed Phase declaration to the executable PhaseStart instruction.
+///
+/// This is a focused lowering API for compiler integration and testing. It does not
+/// enable source declarations in `pipeline::compile_source`; the full source compiler
+/// remains fail-closed until calls/operations are represented and checked end to end.
+pub fn phase_start_instruction(
+    construct: &crate::typed_ir::TypedIrConstruct,
+) -> Result<NativeInstr, NativeError> {
+    if construct.kind != crate::ast::ConstructKind::Phase {
+        return Err(NativeError::InvalidProgram(
+            "PhaseStart lowering requires a Phase declaration".into(),
+        ));
+    }
+    crate::typed_ir::validate_construct_metadata(std::slice::from_ref(construct))
+        .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
+    let initial = construct.members.iter().find_map(|member| match member {
+        crate::typed_ir::TypedIrConstructMember::Clause { name, value, .. } if name == "initial" => {
+            Some(value.trim().to_string())
+        }
+        _ => None,
+    }).filter(|value| !value.is_empty()).ok_or_else(|| {
+        NativeError::InvalidProgram(format!("Phase '{}' must declare an explicit initial state", construct.name))
+    })?;
+    let transitions = construct.members.iter().filter_map(|member| match member {
+        crate::typed_ir::TypedIrConstructMember::Transition { from, to, .. } => {
+            Some((from.clone(), to.clone()))
+        }
+        _ => None,
+    }).collect::<Vec<_>>();
+    let graph = NativePhaseGraph {
+        name: construct.name.clone(),
+        initial,
+        transitions,
+    };
+    validate_phase_graph(&graph)?;
+    Ok(NativeInstr::PhaseStart { graph })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Deterministic collection of compiled Ardisa functions.
 pub struct NativeProgram {
@@ -5627,6 +5665,37 @@ mod native_phase_state_tests {
         NativeProgram {
             functions: [("main".to_string(), NativeFunction { params: vec![], code })].into_iter().collect(),
         }
+    }
+
+    #[test]
+    fn source_phase_declaration_lowers_to_executable_artifact() {
+        let source = "module phase_source\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Running\\n  Running -> Done\\n";
+        let module = crate::parse(source).expect("source Phase declaration parses");
+        let constructs = crate::typed_ir::lower_constructs(&module).expect("typed Phase lowering");
+        let instruction = phase_start_instruction(&constructs[0]).expect("Phase declaration lowers");
+        let program = program(vec![
+            instruction,
+            NativeInstr::PushString("Running".into()),
+            NativeInstr::PhaseTransition,
+            NativeInstr::PhaseCurrent,
+            NativeInstr::ReturnTyped("String".into()),
+        ]);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("source-lowered Phase artifact decodes");
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::String("Running".into()));
+    }
+
+    #[test]
+    fn source_phase_lowering_rejects_missing_initial_state_and_non_phase_constructs() {
+        let missing_initial = "module phase_source\\nphase Lifecycle\\n  Ready -> Running\\n";
+        let module = crate::parse(missing_initial).expect("source parses");
+        let constructs = crate::typed_ir::lower_constructs(&module).expect("typed metadata parses");
+        assert!(phase_start_instruction(&constructs[0]).is_err());
+
+        let cell_source = "module cell_source\\ncell Counter\\n  value: Int\\n  invariant: value >= 0\\n";
+        let module = crate::parse(cell_source).expect("source parses");
+        let constructs = crate::typed_ir::lower_constructs(&module).expect("typed metadata parses");
+        assert!(phase_start_instruction(&constructs[0]).is_err());
     }
 
     #[test]
