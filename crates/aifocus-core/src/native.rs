@@ -6040,6 +6040,46 @@ mod native_cell_state_tests {
     }
 
     #[test]
+    fn malformed_cell_artifact_and_forged_initial_spec_fail_closed() {
+        assert!(decode_instr("CellStart:Counter,1,unknown,0").is_err());
+        let invalid = program(vec![
+            NativeInstr::CellStart {
+                spec: NativeCellSpec {
+                    name: "Counter".into(),
+                    initial: -1,
+                    invariant: NativeCellInvariant::GreaterEqual,
+                    bound: 0,
+                },
+            },
+            NativeInstr::Return,
+        ]);
+        assert!(matches!(
+            ValidatedNativeProgram::try_new(invalid),
+            Err(NativeError::InvalidProgram(message)) if message.contains("violates its invariant")
+        ));
+    }
+
+    #[test]
+    fn cell_artifact_escapes_field_delimiters_in_cell_names() {
+        let program = program(vec![
+            NativeInstr::CellStart {
+                spec: NativeCellSpec {
+                    name: "Counter,primary".into(),
+                    initial: 1,
+                    invariant: NativeCellInvariant::GreaterEqual,
+                    bound: 0,
+                },
+            },
+            NativeInstr::CellCurrent,
+            NativeInstr::ReturnTyped("Int".into()),
+        ]);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("escaped Cell name decodes");
+        assert_eq!(encode_program(&decoded), artifact);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(1));
+    }
+
+    #[test]
     fn native_cell_enforces_each_supported_comparison() {
         let cases = [
             ("value == 3", 3, 4),
