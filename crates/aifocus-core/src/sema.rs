@@ -316,7 +316,7 @@ fn validate_construct_declarations(module: &Module, checker: &mut Checker) {
                         ConstructKind::Cell => matches!(name.as_str(), "invariant"),
                         ConstructKind::Vault => matches!(name.as_str(), "capabilities" | "denies"),
                         ConstructKind::Proof => matches!(name.as_str(), "requires" | "ensures" | "on_unknown" | "required"),
-                        ConstructKind::Phase => false,
+                        ConstructKind::Phase => name == "initial",
                     };
                     if !allowed {
                         checker.error(
@@ -416,6 +416,31 @@ fn validate_construct_declarations(module: &Module, checker: &mut Checker) {
                     ),
                     declaration.span,
                 );
+            }
+        }
+        if declaration.kind == ConstructKind::Phase {
+            let states: std::collections::HashSet<&str> = declaration.members.iter().filter_map(|member| {
+                if let ConstructMember::Transition { from, to, .. } = member {
+                    Some([from.as_str(), to.as_str()])
+                } else {
+                    None
+                }
+            }).flatten().collect();
+            for member in &declaration.members {
+                if let ConstructMember::Clause { name, value, span } = member {
+                    if name == "initial" {
+                        let initial = value.trim();
+                        if initial.is_empty()
+                            || !initial.chars().enumerate().all(|(index, ch)| {
+                                ch == '_' || ch.is_ascii_alphanumeric() && (index > 0 || !ch.is_ascii_digit())
+                            })
+                        {
+                            checker.error("AIF618", format!("phase '{}' initial state must be one identifier", declaration.name), *span);
+                        } else if !states.contains(initial) {
+                            checker.error("AIF618", format!("phase '{}' initial state '{}' is not declared by any transition", declaration.name, initial), *span);
+                        }
+                    }
+                }
             }
         }
         if declaration.kind == ConstructKind::Phase && transitions.is_empty() {
