@@ -5975,3 +5975,88 @@ mod native_phase_state_tests {
     }
 }
 
+
+
+#[cfg(test)]
+mod native_cell_state_tests {
+    use super::*;
+
+    fn program(code: Vec<NativeInstr>) -> NativeProgram {
+        NativeProgram {
+            functions: [("main".to_string(), NativeFunction { params: vec![], code })].into_iter().collect(),
+        }
+    }
+
+    fn cell_instruction(invariant: &str, initial: i64) -> NativeInstr {
+        let source = format!(
+            "module cell_source\\ncell Counter\\n  value: Int\\n  invariant: {invariant}\\n"
+        );
+        let module = crate::parse(&source).expect("Cell source parses");
+        let constructs = crate::typed_ir::lower_constructs(&module).expect("typed Cell metadata");
+        cell_start_instruction(&constructs[0], initial).expect("Cell declaration lowers")
+    }
+
+    #[test]
+    fn source_cell_lowers_and_executes_through_native_artifact() {
+        let program = program(vec![
+            cell_instruction("value >= 0", 1),
+            NativeInstr::PushInt(7),
+            NativeInstr::CellUpdate,
+            NativeInstr::CellCurrent,
+            NativeInstr::ReturnTyped("Int".into()),
+        ]);
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("Cell instructions round-trip");
+        assert_eq!(encode_program(&decoded), artifact);
+        assert_eq!(run_program(&decoded, "main", &[]).unwrap(), NativeValue::Int(7));
+    }
+
+    #[test]
+    fn invalid_cell_update_is_rejected_without_a_committed_state_token() {
+        let program = program(vec![
+            cell_instruction("value >= 0", 3),
+            NativeInstr::PushInt(-1),
+            NativeInstr::CellUpdate,
+            NativeInstr::CellCurrent,
+            NativeInstr::ReturnTyped("Int".into()),
+        ]);
+        assert!(matches!(
+            run_program(&program, "main", &[]),
+            Err(NativeError::Type(message)) if message.contains("Cell invariant rejected update")
+        ));
+    }
+
+    #[test]
+    fn native_cell_rejects_invalid_initial_values_and_unsupported_shapes() {
+        let source = "module cell_source\\ncell Counter\\n  value: Int\\n  invariant: value >= 0\\n";
+        let module = crate::parse(source).unwrap();
+        let construct = crate::typed_ir::lower_constructs(&module).unwrap();
+        assert!(cell_start_instruction(&construct[0], -1).is_err());
+
+        let wrong_shape = "module cell_source\\ncell Counter\\n  value: String\\n  invariant: value >= 0\\n";
+        let module = crate::parse(wrong_shape).unwrap();
+        let construct = crate::typed_ir::lower_constructs(&module).unwrap();
+        assert!(cell_start_instruction(&construct[0], 1).is_err());
+    }
+
+    #[test]
+    fn native_cell_enforces_each_supported_comparison() {
+        let cases = [
+            ("value == 3", 3, 4),
+            ("value != 3", 4, 3),
+            ("value < 3", 2, 3),
+            ("value <= 3", 3, 4),
+            ("value > 3", 4, 3),
+            ("value >= 3", 3, 2),
+        ];
+        for (invariant, initial, rejected) in cases {
+            let program = program(vec![
+                cell_instruction(invariant, initial),
+                NativeInstr::PushInt(rejected),
+                NativeInstr::CellUpdate,
+                NativeInstr::ReturnTyped("CellState".into()),
+            ]);
+            assert!(run_program(&program, "main", &[]).is_err(), "invalid value accepted for {invariant}");
+        }
+    }
+}
