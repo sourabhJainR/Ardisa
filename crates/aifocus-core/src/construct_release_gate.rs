@@ -18,7 +18,7 @@ mod tests {
 
     #[test]
     fn phase_release_gate_executes_declared_edges_and_rejects_undeclared_edges() {
-        let source = "module release\nphase Job\n  transition: todo -> running\n  transition: running -> done\n";
+        let source = "module release\nphase Job\n  todo -> running\n  running -> done\n";
         let artifact = compile_phase_source(source, "Job", "todo", &["running".into(), "done".into()]).unwrap();
         assert_eq!(execute_phase_artifact(&artifact).unwrap(), "done");
         let invalid = compile_phase_source(source, "Job", "todo", &["unknown".into()]).unwrap();
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn general_compiler_stays_fail_closed_until_constructs_are_integrated_into_its_pipeline() {
-        let source = "module release\ntrace Build\n  signature: required\nfn main() -> Int { return 1; }\n";
+        let source = "module release\ntrace Build\n  signature: required\nfn main() -> Int\n  1\n";
         let result = compile_source(source);
         assert!(matches!(result, Err(PipelineError::Semantic(errors)) if errors.iter().any(|error| error.code == "AIF610")));
     }
