@@ -141,14 +141,6 @@ pub fn validate_module_operations(
 ) -> Result<ValidatedConstructOperations, Vec<String>> {
     let constructs = crate::typed_ir::lower_constructs(module)?;
     let validated = validate_operations(&constructs, operations)?;
-    let functions: BTreeSet<&str> = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Function(function) => Some(function.name.as_str()),
-        })
-        .collect();
-
     let function_map: std::collections::BTreeMap<&str, &crate::ast::Function> = module
         .items
         .iter()
