@@ -18,6 +18,7 @@ pub enum NativeProofCompileError {
     ExpectedSingleProof,
     UnknownProof(String),
     Native(native::NativeError),
+    InvalidOperation(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +52,29 @@ pub fn compile_proof_source(
     Ok(NativeProofArtifact { artifact, proof_name: proof_name.to_string() })
 }
 
+/// Validate and execute a named ProofEvaluate operation through the native policy.
+/// Outcomes remain explicit runtime evidence supplied by the caller; this bridge does
+/// not attest to the provenance or truthfulness of the outcome producer.
+pub fn execute_proof_construct_operation(
+    source: &str,
+    operation: &crate::construct_operations::ConstructOperation,
+    outcomes: &[String],
+) -> Result<(), NativeProofCompileError> {
+    let module = crate::parse(source).map_err(NativeProofCompileError::Parse)?;
+    crate::construct_operations::validate_module_operations(
+        &module,
+        std::slice::from_ref(operation),
+    ).map_err(|errors| NativeProofCompileError::InvalidOperation(errors.join("; ")))?;
+    let proof_name = match &operation.kind {
+        crate::construct_operations::ConstructOperationKind::ProofEvaluate { proof } => proof.as_str(),
+        _ => return Err(NativeProofCompileError::InvalidOperation(
+            "Proof runtime bridge requires a ProofEvaluate operation".into(),
+        )),
+    };
+    let artifact = compile_proof_source(source, proof_name)?;
+    execute_proof_artifact(&artifact, outcomes)
+}
+
 /// Execute the artifact with explicit runtime outcome records.
 pub fn execute_proof_artifact(
     artifact: &NativeProofArtifact,
@@ -78,6 +102,41 @@ mod tests {
         let artifact = compile_proof_source(SOURCE, "ReleaseGate").unwrap();
         let results = vec!["type_safety=proved".into(), "bounds=runtime_checked".into()];
         execute_proof_artifact(&artifact, &results).unwrap();
+    }
+
+    #[test]
+    fn proof_operation_bridge_validates_declaration_function_and_outcomes() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+        let source = format!("{SOURCE}fn main() -> Int\n  1\n");
+        let operation = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::ProofEvaluate { proof: "ReleaseGate".into() },
+        };
+        execute_proof_construct_operation(&source, &operation, &[
+            "type_safety=proved".into(), "bounds=runtime_checked".into(),
+        ]).unwrap();
+        assert!(execute_proof_construct_operation(&source, &operation, &["type_safety=proved".into()]).is_err());
+        let unresolved = ConstructOperation { function: "missing".into(), kind: operation.kind.clone() };
+        assert!(matches!(execute_proof_construct_operation(&source, &unresolved, &[
+            "type_safety=proved".into(), "bounds=proved".into(),
+        ]), Err(NativeProofCompileError::InvalidOperation(_))));
+    }
+
+    #[test]
+    fn proof_operation_bridge_rejects_wrong_operation_kind_and_unresolved_policy() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+        let source = format!("{SOURCE}fn main() -> Int\n  1\n");
+        let wrong_kind = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::TraceEmit { trace: "T".into(), event: "build".into() },
+        };
+        assert!(matches!(execute_proof_construct_operation(&source, &wrong_kind, &[]),
+            Err(NativeProofCompileError::InvalidOperation(_))));
+        let unresolved = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::ProofEvaluate { proof: "Missing".into() },
+        };
+        assert!(execute_proof_construct_operation(&source, &unresolved, &[]).is_err());
     }
 
     #[test]
