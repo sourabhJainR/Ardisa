@@ -4878,7 +4878,7 @@ fn fact(n: Int) -> Int
 
     #[test]
     fn decoder_rejects_oversized_artifact_before_parsing_records() {
-        let input = format!("{}\n{}", ARTIFACT_MAGIC, "x".repeat(MAX_ARTIFACT_BYTES));
+        let input = format!("{}\\n{}", ARTIFACT_MAGIC, "x".repeat(MAX_ARTIFACT_BYTES));
         assert!(matches!(
             decode_program(&input),
             Err(NativeError::ResourceLimit(message)) if message.contains("artifact byte")
