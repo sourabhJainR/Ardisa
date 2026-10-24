@@ -23,6 +23,7 @@ pub enum NativePhaseCompileError {
     InvalidInitialState { phase: String, state: String },
     TooManyOperations,
     Native(native::NativeError),
+    InvalidOperation(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,11 +148,90 @@ pub fn execute_phase_artifact(artifact: &NativePhaseArtifact) -> Result<String, 
     }
 }
 
+
+/// Execute one validated PhaseTransition operation through the native artifact.
+/// This narrow adapter accepts a transition only when its declared `from` state
+/// equals the Phase's declared initial state; it never assumes hidden runtime state.
+pub fn execute_phase_construct_operation(
+    source: &str,
+    operation: &crate::construct_operations::ConstructOperation,
+) -> Result<String, NativePhaseCompileError> {
+    let module = crate::parse(source).map_err(NativePhaseCompileError::Parse)?;
+    crate::construct_operations::validate_module_operations(
+        &module,
+        std::slice::from_ref(operation),
+    ).map_err(|errors| NativePhaseCompileError::InvalidOperation(errors.join("; ")))?;
+
+    let (phase_name, from, to) = match &operation.kind {
+        crate::construct_operations::ConstructOperationKind::PhaseTransition { phase, from, to } =>
+            (phase.as_str(), from.as_str(), to.as_str()),
+        _ => return Err(NativePhaseCompileError::InvalidOperation(
+            "Phase runtime bridge requires a PhaseTransition operation".into(),
+        )),
+    };
+    let artifact = compile_declared_phase_source(source, phase_name, &[to.to_string()])?;
+    if artifact.initial_state != from {
+        return Err(NativePhaseCompileError::InvalidOperation(format!(
+            "transition starts at '{from}', but the declared initial state is '{}'",
+            artifact.initial_state
+        )));
+    }
+    execute_phase_artifact(&artifact)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SOURCE: &str = "module lifecycle\nphase Lifecycle\n  Ready -> Running\n  Running -> Done\n";
+
+
+    #[test]
+    fn phase_operation_bridge_executes_only_declared_initial_edge() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+        let source = "module lifecycle\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Running\\n  Running -> Done\\nfn main() -> Int\\n  1\\n";
+        let operation = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::PhaseTransition {
+                phase: "Lifecycle".into(), from: "Ready".into(), to: "Running".into(),
+            },
+        };
+        assert_eq!(execute_phase_construct_operation(source, &operation).unwrap(), "Running");
+        let wrong_start = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::PhaseTransition {
+                phase: "Lifecycle".into(), from: "Running".into(), to: "Done".into(),
+            },
+        };
+        assert!(matches!(
+            execute_phase_construct_operation(source, &wrong_start),
+            Err(NativePhaseCompileError::InvalidOperation(_))
+        ));
+    }
+
+    #[test]
+    fn phase_operation_bridge_rejects_wrong_kind_and_unresolved_function() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+        let source = "module lifecycle\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Running\\nfn main() -> Int\\n  1\\n";
+        let wrong_kind = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::ProofEvaluate { proof: "P".into() },
+        };
+        assert!(matches!(
+            execute_phase_construct_operation(source, &wrong_kind),
+            Err(NativePhaseCompileError::InvalidOperation(_))
+        ));
+        let unresolved = ConstructOperation {
+            function: "missing".into(),
+            kind: ConstructOperationKind::PhaseTransition {
+                phase: "Lifecycle".into(), from: "Ready".into(), to: "Running".into(),
+            },
+        };
+        assert!(matches!(
+            execute_phase_construct_operation(source, &unresolved),
+            Err(NativePhaseCompileError::InvalidOperation(_))
+        ));
+    }
 
     #[test]
     fn source_phase_lowers_to_deterministic_native_artifact_and_executes() {
