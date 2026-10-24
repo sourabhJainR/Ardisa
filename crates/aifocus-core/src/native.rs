@@ -503,8 +503,8 @@ pub fn lower_cell_construct_operation(
         )))?;
     let initial = match &expression.kind {
         crate::ast::ExprKind::Int(value) => *value,
-        crate::ast::ExprKind::Group(inner) => match inner.kind {
-            crate::ast::ExprKind::Int(value) => value,
+        crate::ast::ExprKind::Group(inner) => match &inner.kind {
+            crate::ast::ExprKind::Int(value) => *value,
             _ => return Err(NativeError::InvalidProgram(
                 "Cell expression lowering supports only integer literals or grouped integer literals".into(),
             )),
