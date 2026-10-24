@@ -4878,7 +4878,7 @@ fn fact(n: Int) -> Int
 
     #[test]
     fn decoder_rejects_oversized_artifact_before_parsing_records() {
-        let input = format!("{}\\n{}", ARTIFACT_MAGIC, "x".repeat(MAX_ARTIFACT_BYTES));
+        let input = format!("{}\n{}", ARTIFACT_MAGIC, "x".repeat(MAX_ARTIFACT_BYTES));
         assert!(matches!(
             decode_program(&input),
             Err(NativeError::ResourceLimit(message)) if message.contains("artifact byte")
@@ -6491,28 +6491,28 @@ mod canonical_construct_lowering_tests {
 
     #[test]
     fn canonical_dispatch_lowers_self_contained_declarations() {
-        let phase = lower("module phase_dispatch\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Running\\n").unwrap();
+        let phase = lower("module phase_dispatch\nphase Lifecycle\n  initial: Ready\n  Ready -> Running\n").unwrap();
         assert!(matches!(phase, NativeInstr::PhaseStart { .. }));
 
-        let proof = lower("module proof_dispatch\\nproof Safety\\n  requires: bounds\\n  ensures: true\\n  on_unknown: reject\\n  required: true\\n").unwrap();
+        let proof = lower("module proof_dispatch\nproof Safety\n  requires: bounds\n  ensures: true\n  on_unknown: reject\n  required: true\n").unwrap();
         assert!(matches!(proof, NativeInstr::ProofCheck { .. }));
 
-        let trace = lower("module trace_dispatch\\ntrace Audit\\n  signature: ed25519\\n").unwrap();
+        let trace = lower("module trace_dispatch\ntrace Audit\n  signature: ed25519\n").unwrap();
         assert!(matches!(trace, NativeInstr::TracePrepare { name } if name == "Audit"));
     }
 
     #[test]
     fn canonical_dispatch_requires_explicit_cell_and_vault_operation_context() {
-        let cell = lower("module cell_dispatch\\ncell State\\n  value: Int\\n  invariant: value >= 0\\n");
+        let cell = lower("module cell_dispatch\ncell State\n  value: Int\n  invariant: value >= 0\n");
         assert!(matches!(cell, Err(NativeError::InvalidProgram(message)) if message.contains("explicit initializer")));
 
-        let vault = lower("module vault_dispatch\\nvault Access\\n  capabilities: filesystem_read\\n");
+        let vault = lower("module vault_dispatch\nvault Access\n  capabilities: filesystem_read\n");
         assert!(matches!(vault, Err(NativeError::InvalidProgram(message)) if message.contains("requested capability")));
     }
 
     #[test]
     fn canonical_dispatch_rejects_invalid_declarations() {
-        let invalid = lower("module bad_phase_dispatch\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Ready\\n");
+        let invalid = lower("module bad_phase_dispatch\nphase Lifecycle\n  initial: Ready\n  Ready -> Ready\n");
         assert!(matches!(invalid, Err(NativeError::InvalidProgram(_))));
     }
 }
