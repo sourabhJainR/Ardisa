@@ -22,6 +22,7 @@ pub enum NativeTraceCompileError {
     UnsupportedConfiguration { trace: String, detail: String },
     Native(native::NativeError),
     Runtime(TraceRuntimeError),
+    InvalidOperation(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +116,43 @@ pub fn execute_trace_event<S: TraceSigner, V: TraceVerifier>(
         .map_err(NativeTraceCompileError::Runtime)
 }
 
+/// Execute a validated TraceEmit operation through the native event validator and
+/// the trusted host signing/verifying boundary. The operation's event label must
+/// match the structured runtime event; this adapter never fabricates missing fields.
+pub fn execute_trace_construct_operation<S: TraceSigner, V: TraceVerifier>(
+    source: &str,
+    operation: &crate::construct_operations::ConstructOperation,
+    runtime: &mut TraceRuntimeSet,
+    event: TraceEventInput,
+    signer: &S,
+    verifier: &V,
+) -> Result<(), NativeTraceCompileError> {
+    let module = crate::parse(source).map_err(NativeTraceCompileError::Parse)?;
+    crate::construct_operations::validate_module_operations(
+        &module,
+        std::slice::from_ref(operation),
+    ).map_err(|errors| NativeTraceCompileError::InvalidOperation(errors.join("; ")))?;
+
+    let trace_name = match &operation.kind {
+        crate::construct_operations::ConstructOperationKind::TraceEmit { trace, event: declared_event } => {
+            if declared_event.trim().is_empty() {
+                return Err(NativeTraceCompileError::InvalidOperation("Trace event label must not be empty".into()));
+            }
+            if declared_event != &event.event_kind {
+                return Err(NativeTraceCompileError::InvalidOperation(
+                    "Trace operation event label does not match the structured event kind".into(),
+                ));
+            }
+            trace.as_str()
+        }
+        _ => return Err(NativeTraceCompileError::InvalidOperation(
+            "Trace runtime bridge requires a TraceEmit operation".into(),
+        )),
+    };
+    let artifact = compile_trace_source(source, trace_name)?;
+    execute_trace_event(&artifact, runtime, event, signer, verifier)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,6 +197,52 @@ mod tests {
         runtime.verify("Build", &TestSigner).unwrap();
         assert_eq!(runtime.receipts("Build").unwrap().len(), 1);
         assert_eq!(artifact.artifact, compile_trace_source(SOURCE, "Build").unwrap().artifact);
+    }
+
+    #[test]
+    fn trace_construct_operation_binds_event_label_and_commits_only_verified_receipt() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+        let operation = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::TraceEmit { trace: "Build".into(), event: "build".into() },
+        };
+        let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
+        execute_trace_construct_operation(SOURCE, &operation, &mut runtime, event(), &TestSigner, &TestSigner).unwrap();
+        assert_eq!(runtime.receipts("Build").unwrap().len(), 1);
+        runtime.verify("Build", &TestSigner).unwrap();
+
+        let mismatch = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::TraceEmit { trace: "Build".into(), event: "release".into() },
+        };
+        assert!(matches!(
+            execute_trace_construct_operation(SOURCE, &mismatch, &mut runtime, event(), &TestSigner, &TestSigner),
+            Err(NativeTraceCompileError::InvalidOperation(message)) if message.contains("does not match")
+        ));
+        assert_eq!(runtime.receipts("Build").unwrap().len(), 1, "mismatched event must not append a receipt");
+    }
+
+    #[test]
+    fn trace_operation_rejects_wrong_operation_kind_and_unresolved_function() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+        let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
+        let wrong_kind = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::ProofEvaluate { proof: "P".into() },
+        };
+        assert!(matches!(
+            execute_trace_construct_operation(SOURCE, &wrong_kind, &mut runtime, event(), &TestSigner, &TestSigner),
+            Err(NativeTraceCompileError::InvalidOperation(_))
+        ));
+        let unresolved = ConstructOperation {
+            function: "missing".into(),
+            kind: ConstructOperationKind::TraceEmit { trace: "Build".into(), event: "build".into() },
+        };
+        assert!(matches!(
+            execute_trace_construct_operation(SOURCE, &unresolved, &mut runtime, event(), &TestSigner, &TestSigner),
+            Err(NativeTraceCompileError::InvalidOperation(_))
+        ));
+        assert!(runtime.receipts("Build").unwrap().is_empty());
     }
 
     #[test]
