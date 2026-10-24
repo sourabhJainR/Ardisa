@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn proof_operation_bridge_validates_declaration_function_and_outcomes() {
         use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
-        let source = format!("{SOURCE}fn main() -> Int\\n  1\\n");
+        let source = format!("{SOURCE}fn main() -> Int\n  1\n");
         let operation = ConstructOperation {
             function: "main".into(),
             kind: ConstructOperationKind::ProofEvaluate { proof: "ReleaseGate".into() },
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn proof_operation_bridge_rejects_wrong_operation_kind_and_unresolved_policy() {
         use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
-        let source = format!("{SOURCE}fn main() -> Int\\n  1\\n");
+        let source = format!("{SOURCE}fn main() -> Int\n  1\n");
         let wrong_kind = ConstructOperation {
             function: "main".into(),
             kind: ConstructOperationKind::TraceEmit { trace: "T".into(), event: "build".into() },
