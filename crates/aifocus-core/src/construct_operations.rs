@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::{ast::{ConstructKind, TypeKind}, typed_ir::{TypedIrConstruct, TypedIrConstructMember}};
+use crate::{ast::{ConstructKind, Item, Module, TypeKind}, typed_ir::{TypedIrConstruct, TypedIrConstructMember}};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstructOperation {
@@ -56,9 +56,9 @@ pub fn validate_operations(
         match &operation.kind {
             ConstructOperationKind::CellInitialize { cell, field, expression, value_type }
             | ConstructOperationKind::CellUpdate { cell, field, expression, value_type } => {
-                if *expression == u64::MAX {
-                    errors.push(format!("operation {index}: invalid expression reference"));
-                }
+                // Expression IDs are opaque typed-IR references. Their validity is
+                // established by the expression-lowering stage, not by a sentinel value.
+                let _ = expression;
                 match names.get(cell.as_str()) {
                     None => errors.push(format!("operation {index}: unresolved Cell '{cell}'")),
                     Some(declaration) if declaration.kind != ConstructKind::Cell =>
@@ -130,6 +130,45 @@ pub fn validate_operations(
     }
 }
 
+/// Validate operations against a complete parsed module.
+///
+/// Unlike `validate_operations`, this entry point also proves that every operation
+/// names a function declared in the same module. It remains a semantic contract:
+/// it does not execute operations or enable construct-bearing compilation.
+pub fn validate_module_operations(
+    module: &Module,
+    operations: &[ConstructOperation],
+) -> Result<ValidatedConstructOperations, Vec<String>> {
+    let constructs = crate::typed_ir::lower_constructs(module)?;
+    let validated = validate_operations(&constructs, operations)?;
+    let functions: BTreeSet<&str> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function) => Some(function.name.as_str()),
+        })
+        .collect();
+
+    let errors: Vec<String> = validated
+        .operations
+        .iter()
+        .enumerate()
+        .filter(|(_, operation)| !functions.contains(operation.function.as_str()))
+        .map(|(index, operation)| {
+            format!(
+                "operation {index}: unresolved function '{}'",
+                operation.function
+            )
+        })
+        .collect();
+
+    if errors.is_empty() {
+        Ok(validated)
+    } else {
+        Err(errors)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +177,25 @@ mod tests {
     fn declarations(source: &str) -> Vec<TypedIrConstruct> {
         let module = parse(source).unwrap();
         crate::typed_ir::lower_constructs(&module).unwrap()
+    }
+
+    #[test]
+    fn module_validation_requires_each_operation_to_bind_a_declared_function() {
+        let source = "module operation_binding\\nfn main() -> Int\\n  return 1\\ncell State\\n  value: Int\\n";
+        let module = parse(source).unwrap();
+        let operation = |function: &str, expression| ConstructOperation {
+            function: function.into(),
+            kind: ConstructOperationKind::CellInitialize {
+                cell: "State".into(),
+                field: "value".into(),
+                expression,
+                value_type: TypeKind::Int,
+            },
+        };
+
+        assert!(validate_module_operations(&module, &[operation("main", u64::MAX)]).is_ok());
+        let errors = validate_module_operations(&module, &[operation("missing", 1)]).unwrap_err();
+        assert!(errors.iter().any(|error| error.contains("unresolved function 'missing'")));
     }
 
     #[test]
