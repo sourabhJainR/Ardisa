@@ -157,7 +157,7 @@ pub fn execute_trace_construct_operation<S: TraceSigner, V: TraceVerifier>(
 mod tests {
     use super::*;
 
-    const SOURCE: &str = "module traces\ntrace Build\n  signature: required\n";
+    const SOURCE: &str = "module traces\ntrace Build\n  signature: required\nfn main() -> Int\n  1\n";
 
     struct TestSigner;
     impl TraceSigner for TestSigner {
