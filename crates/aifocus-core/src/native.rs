@@ -362,6 +362,45 @@ pub enum NativeInstr {
 /// This is a focused lowering API for compiler integration and testing. It does not
 /// enable source declarations in `pipeline::compile_source`; the full source compiler
 /// remains fail-closed until calls/operations are represented and checked end to end.
+/// Lower a declaration through the canonical native adapter dispatcher.
+///
+/// Only declarations that are self-contained can be lowered here. Cell requires
+/// an explicit initializer at the source operation site, and Vault requires the
+/// capability requested by a protected operation; this dispatcher never invents
+/// either value. TracePrepare validates/prepares an event but does not create a
+/// trusted signature or receipt.
+pub fn lower_construct_declaration(
+    construct: &crate::typed_ir::TypedIrConstruct,
+) -> Result<NativeInstr, NativeError> {
+    crate::typed_ir::validate_construct_metadata(std::slice::from_ref(construct))
+        .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
+
+    match construct.kind {
+        crate::ast::ConstructKind::Phase => phase_start_instruction(construct),
+        crate::ast::ConstructKind::Proof => proof_check_instruction(construct),
+        crate::ast::ConstructKind::Trace => {
+            if construct.members.iter().any(|member| !matches!(
+                member,
+                crate::typed_ir::TypedIrConstructMember::Clause { name, .. } if name == "signature"
+            )) {
+                return Err(NativeError::InvalidProgram(format!(
+                    "Trace '{}' contains unsupported members",
+                    construct.name
+                )));
+            }
+            Ok(NativeInstr::TracePrepare { name: construct.name.clone() })
+        }
+        crate::ast::ConstructKind::Cell => Err(NativeError::InvalidProgram(format!(
+            "Cell '{}' requires an explicit initializer before native lowering",
+            construct.name
+        ))),
+        crate::ast::ConstructKind::Vault => Err(NativeError::InvalidProgram(format!(
+            "Vault '{}' requires an explicit requested capability at the protected operation",
+            construct.name
+        ))),
+    }
+}
+
 pub fn phase_start_instruction(
     construct: &crate::typed_ir::TypedIrConstruct,
 ) -> Result<NativeInstr, NativeError> {
@@ -6434,5 +6473,46 @@ mod native_cell_state_tests {
             ]);
             assert!(run_program(&program, "main", &[]).is_err(), "invalid value accepted for {invariant}");
         }
+    }
+}
+
+
+#[cfg(test)]
+mod canonical_construct_lowering_tests {
+    use super::*;
+
+    fn lower(source: &str) -> Result<NativeInstr, NativeError> {
+        let module = crate::parse(source)
+            .map_err(|errors| NativeError::InvalidProgram(format!("parse failed: {errors:?}")))?;
+        let constructs = crate::typed_ir::lower_constructs(&module)
+            .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
+        lower_construct_declaration(&constructs[0])
+    }
+
+    #[test]
+    fn canonical_dispatch_lowers_self_contained_declarations() {
+        let phase = lower("module phase_dispatch\nphase Lifecycle\n  initial: Ready\n  Ready -> Running\n").unwrap();
+        assert!(matches!(phase, NativeInstr::PhaseStart { .. }));
+
+        let proof = lower("module proof_dispatch\nproof Safety\n  requires: bounds\n  ensures: true\n  on_unknown: reject\n  required: true\n").unwrap();
+        assert!(matches!(proof, NativeInstr::ProofCheck { .. }));
+
+        let trace = lower("module trace_dispatch\ntrace Audit\n  signature: ed25519\n").unwrap();
+        assert!(matches!(trace, NativeInstr::TracePrepare { name } if name == "Audit"));
+    }
+
+    #[test]
+    fn canonical_dispatch_requires_explicit_cell_and_vault_operation_context() {
+        let cell = lower("module cell_dispatch\ncell State\n  value: Int\n  invariant: value >= 0\n");
+        assert!(matches!(cell, Err(NativeError::InvalidProgram(message)) if message.contains("explicit initializer")));
+
+        let vault = lower("module vault_dispatch\nvault Access\n  capabilities: filesystem_read\n");
+        assert!(matches!(vault, Err(NativeError::InvalidProgram(message)) if message.contains("requested capability")));
+    }
+
+    #[test]
+    fn canonical_dispatch_rejects_invalid_declarations() {
+        let invalid = lower("module bad_phase_dispatch\nphase Lifecycle\n  initial: Ready\n  Ready -> Ready\n");
+        assert!(matches!(invalid, Err(NativeError::InvalidProgram(_))));
     }
 }
