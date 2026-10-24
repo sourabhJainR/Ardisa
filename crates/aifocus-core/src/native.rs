@@ -401,6 +401,62 @@ pub fn lower_construct_declaration(
     }
 }
 
+/// Lower a validated construct operation to the native instruction that enforces it.
+///
+/// This is an integration seam, not permission to compile construct-bearing source.
+/// The caller must provide the runtime operands required by the instruction (for
+/// example, a PhaseState and target for PhaseTransition, or evidence results for
+/// ProofCheck). Cell operations remain blocked until typed expressions are lowered
+/// to native values, and TraceEmit remains blocked until the executable trace
+/// instruction carries the event rather than silently discarding it.
+pub fn lower_construct_operation(
+    module: &crate::ast::Module,
+    operation: &crate::construct_operations::ConstructOperation,
+) -> Result<NativeInstr, NativeError> {
+    crate::construct_operations::validate_module_operations(
+        module,
+        std::slice::from_ref(operation),
+    )
+    .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
+
+    let constructs = crate::typed_ir::lower_constructs(module)
+        .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
+    let construct_by_name = |name: &str| {
+        constructs
+            .iter()
+            .find(|construct| construct.name == name)
+            .ok_or_else(|| NativeError::InvalidProgram(format!("unresolved construct '{name}'")))
+    };
+
+    match &operation.kind {
+        crate::construct_operations::ConstructOperationKind::PhaseTransition { phase, .. } => {
+            let construct = construct_by_name(phase)?;
+            let _ = phase_start_instruction(construct)?;
+            Ok(NativeInstr::PhaseTransition)
+        }
+        crate::construct_operations::ConstructOperationKind::VaultAuthorize { vault, capability } => {
+            let capability = NativeVaultCapability::parse(capability).ok_or_else(|| {
+                NativeError::InvalidProgram(format!("unknown Vault capability '{capability}'"))
+            })?;
+            vault_authorize_instruction(construct_by_name(vault)?, capability)
+        }
+        crate::construct_operations::ConstructOperationKind::ProofEvaluate { proof } => {
+            proof_check_instruction(construct_by_name(proof)?)
+        }
+        crate::construct_operations::ConstructOperationKind::CellInitialize { cell, .. }
+        | crate::construct_operations::ConstructOperationKind::CellUpdate { cell, .. } => {
+            Err(NativeError::InvalidProgram(format!(
+                "Cell operation for '{cell}' cannot be lowered until its typed expression is lowered to a native value"
+            )))
+        }
+        crate::construct_operations::ConstructOperationKind::TraceEmit { trace, .. } => {
+            Err(NativeError::InvalidProgram(format!(
+                "Trace operation for '{trace}' cannot be lowered until the executable trace instruction carries the event"
+            )))
+        }
+    }
+}
+
 pub fn phase_start_instruction(
     construct: &crate::typed_ir::TypedIrConstruct,
 ) -> Result<NativeInstr, NativeError> {
@@ -6234,6 +6290,73 @@ mod typed_propagation_v2_tests {
 #[cfg(test)]
 mod native_phase_state_tests {
     use super::*;
+
+    #[test]
+    fn validated_construct_operations_lower_only_when_native_semantics_are_preserved() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+
+        let source = "module operation_native_lowering\nphase Lifecycle\n  initial: Ready\n  Ready -> Running\nvault Files\n  capabilities: filesystem_read\nproof Safety\n  requires: bounds\n  ensures: true\n  on_unknown: reject\n  required: true\ntrace Audit\n  signature: sha256\ncell State\n  value: Int\n  invariant: value >= 0\nfn main() -> Int\n  return 1\n";
+        let module = crate::parse(source).expect("construct operation fixture parses");
+        let phase = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::PhaseTransition {
+                phase: "Lifecycle".into(), from: "Ready".into(), to: "Running".into(),
+            },
+        };
+        assert_eq!(
+            lower_construct_operation(&module, &phase).expect("declared Phase edge lowers"),
+            NativeInstr::PhaseTransition
+        );
+
+        let vault = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::VaultAuthorize {
+                vault: "Files".into(), capability: "filesystem_read".into(),
+            },
+        };
+        assert!(matches!(
+            lower_construct_operation(&module, &vault).expect("declared capability lowers"),
+            NativeInstr::VaultAuthorize { .. }
+        ));
+
+        let proof = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::ProofEvaluate { proof: "Safety".into() },
+        };
+        assert!(matches!(
+            lower_construct_operation(&module, &proof).expect("conservative Proof policy lowers"),
+            NativeInstr::ProofCheck { .. }
+        ));
+
+        let expression = match &module.items[0] {
+            crate::ast::Item::Function(function) => match &function.body.stmts[0].kind {
+                crate::ast::StmtKind::Return(Some(value)) => value.id.0,
+                other => panic!("expected return expression, got {other:?}"),
+            },
+        };
+        let cell = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::CellInitialize {
+                cell: "State".into(), field: "value".into(), expression,
+                value_type: crate::ast::TypeKind::Int,
+            },
+        };
+        assert!(matches!(
+            lower_construct_operation(&module, &cell),
+            Err(NativeError::InvalidProgram(message)) if message.contains("typed expression")
+        ));
+
+        let trace = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::TraceEmit {
+                trace: "Audit".into(), event: "cell.updated".into(),
+            },
+        };
+        assert!(matches!(
+            lower_construct_operation(&module, &trace),
+            Err(NativeError::InvalidProgram(message)) if message.contains("carries the event")
+        ));
+    }
 
     fn graph() -> NativePhaseGraph {
         NativePhaseGraph {
