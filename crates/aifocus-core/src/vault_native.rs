@@ -19,6 +19,7 @@ pub enum NativeVaultCompileError {
     UnknownVault(String),
     UnsupportedCapability(String),
     Native(native::NativeError),
+    InvalidOperation(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,11 +88,96 @@ pub fn execute_vault_operation<T>(
     Ok(operation())
 }
 
+
+/// Validate a VaultAuthorize operation against source declarations, then authorize
+/// through the native artifact before invoking the protected host operation.
+/// This adapter does not grant ambient capabilities or provide an OS sandbox.
+pub fn execute_vault_construct_operation<T>(
+    source: &str,
+    operation: &crate::construct_operations::ConstructOperation,
+    host_operation: impl FnOnce() -> T,
+) -> Result<T, NativeVaultCompileError> {
+    let module = crate::parse(source).map_err(NativeVaultCompileError::Parse)?;
+    crate::construct_operations::validate_module_operations(
+        &module,
+        std::slice::from_ref(operation),
+    ).map_err(|errors| NativeVaultCompileError::InvalidOperation(errors.join("; ")))?;
+
+    let (vault_name, capability) = match &operation.kind {
+        crate::construct_operations::ConstructOperationKind::VaultAuthorize { vault, capability } => {
+            if vault.trim().is_empty() || capability.trim().is_empty() {
+                return Err(NativeVaultCompileError::InvalidOperation(
+                    "Vault name and capability must not be empty".into(),
+                ));
+            }
+            (vault.as_str(), capability.as_str())
+        }
+        _ => return Err(NativeVaultCompileError::InvalidOperation(
+            "Vault runtime bridge requires a VaultAuthorize operation".into(),
+        )),
+    };
+    execute_vault_operation(source, vault_name, capability, host_operation)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SOURCE: &str = "module vaults\nvault ReadOnly\n  capabilities: filesystem_read clock\n  denies: network\n";
+
+
+    #[test]
+    fn vault_operation_bridge_validates_operation_before_host_effect() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+        let source = format!("{SOURCE}fn main() -> Int\\n  1\\n");
+        let operation = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::VaultAuthorize {
+                vault: "ReadOnly".into(),
+                capability: "filesystem_read".into(),
+            },
+        };
+        let called = std::cell::Cell::new(false);
+        let result = execute_vault_construct_operation(&source, &operation, || called.set(true));
+        assert!(result.is_ok());
+        assert!(called.get());
+
+        let denied = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::VaultAuthorize {
+                vault: "ReadOnly".into(),
+                capability: "network".into(),
+            },
+        };
+        called.set(false);
+        assert!(execute_vault_construct_operation(&source, &denied, || called.set(true)).is_err());
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn vault_operation_bridge_rejects_wrong_kind_and_unresolved_function() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+        let source = format!("{SOURCE}fn main() -> Int\\n  1\\n");
+        let wrong_kind = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::ProofEvaluate { proof: "P".into() },
+        };
+        assert!(matches!(
+            execute_vault_construct_operation(&source, &wrong_kind, || ()),
+            Err(NativeVaultCompileError::InvalidOperation(_))
+        ));
+        let unresolved = ConstructOperation {
+            function: "missing".into(),
+            kind: ConstructOperationKind::VaultAuthorize {
+                vault: "ReadOnly".into(),
+                capability: "filesystem_read".into(),
+            },
+        };
+        assert!(matches!(
+            execute_vault_construct_operation(&source, &unresolved, || ()),
+            Err(NativeVaultCompileError::InvalidOperation(_))
+        ));
+    }
 
     #[test]
     fn source_vault_authorization_round_trips_and_is_deterministic() {
