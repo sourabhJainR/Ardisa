@@ -457,6 +457,121 @@ pub fn lower_construct_operation(
     }
 }
 
+/// Lower the deliberately small, fail-closed integer Cell operation subset.
+///
+/// Initializers accept only an integer literal (optionally grouped). Updates emit
+/// the value before CellUpdate; the caller must have the existing CellState on the
+/// VM stack. No variable lookup, arithmetic, or implicit value is synthesized.
+pub fn lower_cell_construct_operation(
+    module: &crate::ast::Module,
+    operation: &crate::construct_operations::ConstructOperation,
+) -> Result<Vec<NativeInstr>, NativeError> {
+    crate::construct_operations::validate_module_operations(
+        module,
+        std::slice::from_ref(operation),
+    )
+    .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
+
+    let (cell_name, field, expression_id, value_type, initialize) = match &operation.kind {
+        crate::construct_operations::ConstructOperationKind::CellInitialize {
+            cell, field, expression, value_type,
+        } => (cell, field, *expression, value_type, true),
+        crate::construct_operations::ConstructOperationKind::CellUpdate {
+            cell, field, expression, value_type,
+        } => (cell, field, *expression, value_type, false),
+        _ => return Err(NativeError::InvalidProgram(
+            "Cell lowering requires a CellInitialize or CellUpdate operation".into(),
+        )),
+    };
+    if field != "value" || *value_type != crate::ast::TypeKind::Int {
+        return Err(NativeError::InvalidProgram(
+            "native Cell lowering currently supports only value: Int".into(),
+        ));
+    }
+
+    let function = module.items.iter().find_map(|item| match item {
+        crate::ast::Item::Function(function) if function.name == operation.function => Some(function),
+        _ => None,
+    }).ok_or_else(|| NativeError::InvalidProgram(format!(
+        "unresolved function '{}'", operation.function
+    )))?;
+    let expression = function.body.stmts.iter()
+        .find_map(|stmt| find_cell_expression_in_stmt(stmt, expression_id))
+        .ok_or_else(|| NativeError::InvalidProgram(format!(
+            "Cell expression reference {expression_id} is not present in function '{}'",
+            operation.function
+        )))?;
+    let initial = match &expression.kind {
+        crate::ast::ExprKind::Int(value) => *value,
+        crate::ast::ExprKind::Group(inner) => match &inner.kind {
+            crate::ast::ExprKind::Int(value) => *value,
+            _ => return Err(NativeError::InvalidProgram(
+                "Cell expression lowering supports only integer literals or grouped integer literals".into(),
+            )),
+        },
+        _ => return Err(NativeError::InvalidProgram(
+            "Cell expression lowering supports only integer literals or grouped integer literals".into(),
+        )),
+    };
+
+    let constructs = crate::typed_ir::lower_constructs(module)
+        .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
+    let construct = constructs.iter().find(|construct| construct.name == *cell_name)
+        .ok_or_else(|| NativeError::InvalidProgram(format!("unresolved Cell '{cell_name}'")))?;
+    if initialize {
+        Ok(vec![cell_start_instruction(construct, initial)?])
+    } else {
+        Ok(vec![NativeInstr::PushInt(initial), NativeInstr::CellUpdate])
+    }
+}
+
+fn find_cell_expression_in_stmt<'a>(
+    stmt: &'a crate::ast::Stmt,
+    id: u64,
+) -> Option<&'a crate::ast::Expr> {
+    use crate::ast::StmtKind;
+    match &stmt.kind {
+        StmtKind::Let { value, .. } | StmtKind::Set { value, .. }
+        | StmtKind::Expr(value) => find_cell_expression(value, id),
+        StmtKind::SetIndex { collection, index, value } =>
+            find_cell_expression(collection, id)
+                .or_else(|| find_cell_expression(index, id))
+                .or_else(|| find_cell_expression(value, id)),
+        StmtKind::Return(value) => value.as_ref().and_then(|value| find_cell_expression(value, id)),
+        StmtKind::Scope { body } => body.stmts.iter().find_map(|stmt| find_cell_expression_in_stmt(stmt, id)),
+        StmtKind::Spawn { call, .. } => find_cell_expression(call, id),
+        StmtKind::While { condition, body } =>
+            find_cell_expression(condition, id).or_else(|| body.stmts.iter().find_map(|stmt| find_cell_expression_in_stmt(stmt, id))),
+        StmtKind::For { iterable, body, .. } =>
+            find_cell_expression(iterable, id).or_else(|| body.stmts.iter().find_map(|stmt| find_cell_expression_in_stmt(stmt, id))),
+        StmtKind::Join { .. } | StmtKind::Cancel { .. } => None,
+    }
+}
+
+fn find_cell_expression<'a>(expr: &'a crate::ast::Expr, id: u64) -> Option<&'a crate::ast::Expr> {
+    use crate::ast::ExprKind;
+    if expr.id.0 == id { return Some(expr); }
+    match &expr.kind {
+        ExprKind::Binary { left, right, .. } =>
+            find_cell_expression(left, id).or_else(|| find_cell_expression(right, id)),
+        ExprKind::Call { callee, args } =>
+            find_cell_expression(callee, id).or_else(|| args.iter().find_map(|arg| find_cell_expression(arg, id))),
+        ExprKind::Group(inner) => find_cell_expression(inner, id),
+        ExprKind::List(items) => items.iter().find_map(|item| find_cell_expression(item, id)),
+        ExprKind::Index { collection, index } =>
+            find_cell_expression(collection, id).or_else(|| find_cell_expression(index, id)),
+        ExprKind::Slice { collection, start, end } =>
+            find_cell_expression(collection, id)
+                .or_else(|| find_cell_expression(start, id))
+                .or_else(|| find_cell_expression(end, id)),
+        ExprKind::If { condition, then_branch, else_branch } =>
+            find_cell_expression(condition, id)
+                .or_else(|| then_branch.stmts.iter().find_map(|stmt| find_cell_expression_in_stmt(stmt, id)))
+                .or_else(|| else_branch.as_ref().and_then(|block| block.stmts.iter().find_map(|stmt| find_cell_expression_in_stmt(stmt, id)))),
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::String(_) | ExprKind::Name(_) => None,
+    }
+}
+
 pub fn phase_start_instruction(
     construct: &crate::typed_ir::TypedIrConstruct,
 ) -> Result<NativeInstr, NativeError> {
@@ -6356,6 +6471,48 @@ mod native_phase_state_tests {
             lower_construct_operation(&module, &trace),
             Err(NativeError::InvalidProgram(message)) if message.contains("carries the event")
         ));
+    }
+
+    #[test]
+    fn cell_operations_lower_literal_values_and_reject_unsupported_expressions() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+
+        let source = "module cell_literal_lowering\ncell Counter\n  value: Int\n  invariant: value >= 0\nfn main() -> Int\n  let initial = 7\n  return 3\n";
+        let module = crate::parse(source).expect("Cell fixture parses");
+        let function = match &module.items[0] {
+            crate::ast::Item::Function(function) => function,
+        };
+        let init_expr = match &function.body.stmts[0].kind {
+            crate::ast::StmtKind::Let { value, .. } => value.id.0,
+            other => panic!("expected initializer, got {other:?}"),
+        };
+        let init = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::CellInitialize {
+                cell: "Counter".into(), field: "value".into(), expression: init_expr,
+                value_type: crate::ast::TypeKind::Int,
+            },
+        };
+        assert!(matches!(
+            lower_cell_construct_operation(&module, &init).expect("literal initializer lowers").as_slice(),
+            [NativeInstr::CellStart { spec }] if spec.initial == 7
+        ));
+
+        let update_expr = match &function.body.stmts[1].kind {
+            crate::ast::StmtKind::Return(Some(value)) => value.id.0,
+            other => panic!("expected return expression, got {other:?}"),
+        };
+        let update = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::CellUpdate {
+                cell: "Counter".into(), field: "value".into(), expression: update_expr,
+                value_type: crate::ast::TypeKind::Int,
+            },
+        };
+        assert_eq!(
+            lower_cell_construct_operation(&module, &update).expect("literal update lowers"),
+            vec![NativeInstr::PushInt(3), NativeInstr::CellUpdate]
+        );
     }
 
     fn graph() -> NativePhaseGraph {
