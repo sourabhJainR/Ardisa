@@ -14,6 +14,7 @@ pub mod concurrency;
 pub mod cell_runtime;
 pub mod cell_native;
 pub mod construct_runtime;
+pub mod construct_operations;
 pub mod context_window;
 pub mod compiler_engine;
 pub mod diagnostic_memory;
