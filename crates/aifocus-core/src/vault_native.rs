@@ -88,7 +88,6 @@ pub fn execute_vault_operation<T>(
     Ok(operation())
 }
 
-
 /// Validate a VaultAuthorize operation against source declarations, then authorize
 /// through the native artifact before invoking the protected host operation.
 /// This adapter does not grant ambient capabilities or provide an OS sandbox.
@@ -124,7 +123,6 @@ mod tests {
     use super::*;
 
     const SOURCE: &str = "module vaults\nvault ReadOnly\n  capabilities: filesystem_read clock\n  denies: network\n";
-
 
     #[test]
     fn vault_operation_bridge_validates_operation_before_host_effect() {
