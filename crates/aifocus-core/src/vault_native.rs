@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn vault_operation_bridge_validates_operation_before_host_effect() {
         use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
-        let source = format!("{SOURCE}fn main() -> Int\\n  1\\n");
+        let source = format!("{}fn main() -> Int\n  1\n", SOURCE.replace("capabilities: filesystem_read clock", "capabilities: filesystem_read, clock"));
         let operation = ConstructOperation {
             function: "main".into(),
             kind: ConstructOperationKind::VaultAuthorize {
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn vault_operation_bridge_rejects_wrong_kind_and_unresolved_function() {
         use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
-        let source = format!("{SOURCE}fn main() -> Int\\n  1\\n");
+        let source = format!("{}fn main() -> Int\n  1\n", SOURCE.replace("capabilities: filesystem_read clock", "capabilities: filesystem_read, clock"));
         let wrong_kind = ConstructOperation {
             function: "main".into(),
             kind: ConstructOperationKind::ProofEvaluate { proof: "P".into() },
