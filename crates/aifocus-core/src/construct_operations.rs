@@ -149,23 +149,120 @@ pub fn validate_module_operations(
         })
         .collect();
 
-    let errors: Vec<String> = validated
-        .operations
+    let function_map: std::collections::BTreeMap<&str, &crate::ast::Function> = module
+        .items
         .iter()
-        .enumerate()
-        .filter(|(_, operation)| !functions.contains(operation.function.as_str()))
-        .map(|(index, operation)| {
-            format!(
-                "operation {index}: unresolved function '{}'",
-                operation.function
-            )
+        .filter_map(|item| match item {
+            Item::Function(function) => Some((function.name.as_str(), function)),
         })
         .collect();
+    let mut errors = Vec::new();
+
+    for (index, operation) in validated.operations.iter().enumerate() {
+        let Some(function) = function_map.get(operation.function.as_str()) else {
+            errors.push(format!(
+                "operation {index}: unresolved function '{}'",
+                operation.function
+            ));
+            continue;
+        };
+
+        if let ConstructOperationKind::CellInitialize { expression, .. }
+            | ConstructOperationKind::CellUpdate { expression, .. } = &operation.kind
+        {
+            let mut expression_ids = BTreeSet::new();
+            collect_block_expression_ids(&function.body, &mut expression_ids);
+            if !expression_ids.contains(expression) {
+                errors.push(format!(
+                    "operation {index}: expression reference {expression} does not belong to function '{}'",
+                    operation.function
+                ));
+            }
+        }
+    }
 
     if errors.is_empty() {
         Ok(validated)
     } else {
         Err(errors)
+    }
+}
+
+/// Collect expression node IDs from a function body. These IDs are opaque outside
+/// the AST, so a module-bound operation must prove that its reference belongs to
+/// the function it names before later typed lowering can resolve its type/value.
+fn collect_block_expression_ids(
+    block: &crate::ast::Block,
+    ids: &mut BTreeSet<u64>,
+) {
+    use crate::ast::{Expr, ExprKind, StmtKind};
+
+    fn visit_expr(expr: &Expr, ids: &mut BTreeSet<u64>) {
+        ids.insert(expr.id.0);
+        match &expr.kind {
+            ExprKind::Binary { left, right, .. } => {
+                visit_expr(left, ids);
+                visit_expr(right, ids);
+            }
+            ExprKind::Call { callee, args } => {
+                visit_expr(callee, ids);
+                for arg in args {
+                    visit_expr(arg, ids);
+                }
+            }
+            ExprKind::Group(inner) => visit_expr(inner, ids),
+            ExprKind::List(elements) => {
+                for element in elements {
+                    visit_expr(element, ids);
+                }
+            }
+            ExprKind::Index { collection, index } => {
+                visit_expr(collection, ids);
+                visit_expr(index, ids);
+            }
+            ExprKind::Slice { collection, start, end } => {
+                visit_expr(collection, ids);
+                visit_expr(start, ids);
+                visit_expr(end, ids);
+            }
+            ExprKind::If { condition, then_branch, else_branch } => {
+                visit_expr(condition, ids);
+                collect_block_expression_ids(then_branch, ids);
+                if let Some(branch) = else_branch {
+                    collect_block_expression_ids(branch, ids);
+                }
+            }
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_)
+            | ExprKind::String(_) | ExprKind::Name(_) => {}
+        }
+    }
+
+    for stmt in &block.stmts {
+        match &stmt.kind {
+            StmtKind::Let { value, .. } | StmtKind::Set { value, .. }
+            | StmtKind::Expr(value) => visit_expr(value, ids),
+            StmtKind::SetIndex { collection, index, value } => {
+                visit_expr(collection, ids);
+                visit_expr(index, ids);
+                visit_expr(value, ids);
+            }
+            StmtKind::Return(value) => {
+                if let Some(value) = value {
+                    visit_expr(value, ids);
+                }
+            }
+            StmtKind::Scope { body } => collect_block_expression_ids(body, ids),
+            StmtKind::Spawn { call, .. } => visit_expr(call, ids),
+            StmtKind::While { condition, body } => {
+                visit_expr(condition, ids);
+                collect_block_expression_ids(body, ids);
+            }
+            StmtKind::For { iterable, body, .. } => {
+                visit_expr(iterable, ids);
+                collect_block_expression_ids(body, ids);
+            }
+            StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
+        }
     }
 }
 
@@ -193,8 +290,18 @@ mod tests {
             },
         };
 
-        assert!(validate_module_operations(&module, &[operation("main", u64::MAX)]).is_ok());
-        let errors = validate_module_operations(&module, &[operation("missing", 1)]).unwrap_err();
+        let expression_id = match &module.items[0] {
+            Item::Function(function) => match &function.body.stmts[0].kind {
+                crate::ast::StmtKind::Return(Some(expression)) => expression.id.0,
+                other => panic!("expected return expression, got {other:?}"),
+            },
+        };
+        assert!(validate_module_operations(&module, &[operation("main", expression_id)]).is_ok());
+
+        let errors = validate_module_operations(&module, &[operation("main", u64::MAX)]).unwrap_err();
+        assert!(errors.iter().any(|error| error.contains("does not belong to function 'main'")));
+
+        let errors = validate_module_operations(&module, &[operation("missing", expression_id)]).unwrap_err();
         assert!(errors.iter().any(|error| error.contains("unresolved function 'missing'")));
     }
 
