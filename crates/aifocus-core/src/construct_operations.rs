@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn module_validation_requires_each_operation_to_bind_a_declared_function() {
-        let source = "module operation_binding\nfn main() -> Int\n  return 1\ncell State\n  value: Int\n";
+        let source = "module operation_binding\nfn main() -> Int\n  return 1\ncell State\n  value: Int\n  invariant: value >= 0\n";
         let module = parse(source).unwrap();
         let operation = |function: &str, expression| ConstructOperation {
             function: function.into(),
