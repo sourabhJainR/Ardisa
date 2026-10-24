@@ -632,8 +632,20 @@ fn optimize_value(value: &mut TypedValue) {
 }
 
 
-pub fn to_legacy_ir(module: &TypedIrModule) -> crate::ir::IrModule {
-    crate::ir::IrModule {
+/// Convert typed function IR to the legacy IR only when no source constructs
+/// would be lost. The legacy representation has no construct declarations or
+/// runtime operations, so silently dropping them would create an unsafe artifact.
+pub fn to_legacy_ir(module: &TypedIrModule) -> Result<crate::ir::IrModule, Vec<String>> {
+    if !module.constructs.is_empty() {
+        return Err(module.constructs.iter().map(|construct| {
+            format!(
+                "{}: legacy IR cannot represent {:?} construct declarations; lowering would discard runtime semantics",
+                construct.name, construct.kind
+            )
+        }).collect());
+    }
+
+    Ok(crate::ir::IrModule {
         name: module.name.clone(),
         functions: module.functions.iter().map(|function| crate::ir::IrFunction {
             name: function.name.clone(),
@@ -641,7 +653,7 @@ pub fn to_legacy_ir(module: &TypedIrModule) -> crate::ir::IrModule {
             return_type: Some(function.return_type.clone()),
             ops: flatten_cfg(function),
         }).collect(),
-    }
+    })
 }
 
 fn flatten_cfg(function: &TypedIrFunction) -> Vec<crate::ir::IrOp> {
@@ -999,5 +1011,22 @@ fn main() -> TokenizerState
             && matches!(args[1].kind, TypedValueKind::Int(4))
             && matches!(args[2].kind, TypedValueKind::Int(16))
             && matches!(args[3].kind, TypedValueKind::Int(0))));
+    }
+
+    #[test]
+    fn legacy_ir_conversion_rejects_constructs_instead_of_dropping_them() {
+        let module = crate::parse(r#"module construct_legacy_ir_guard
+cell State
+  value: Int
+  invariant: value >= 0
+fn main() -> Int
+  0
+"#).expect("construct source parses");
+        let typed = lower_cfg(&module).expect("construct metadata lowers to typed IR");
+        assert_eq!(typed.constructs.len(), 1);
+        let errors = to_legacy_ir(&typed)
+            .expect_err("legacy IR must not silently discard source constructs");
+        assert!(errors.iter().any(|error| error.contains("State")), "{errors:?}");
+        assert!(errors.iter().any(|error| error.contains("runtime semantics")), "{errors:?}");
     }
 }
