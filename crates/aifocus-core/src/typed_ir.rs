@@ -330,7 +330,7 @@ fn decode_metadata_atom(value: &str) -> Result<String, String> {
 }
 
 fn parse_metadata_type(source: &str) -> Result<crate::ast::TypeKind, String> {
-    use crate::ast::{NodeId, Span, Type, TypeKind};
+    use crate::ast::{NodeId, Type, TypeKind};
 
     let source = source.trim();
     match source {
