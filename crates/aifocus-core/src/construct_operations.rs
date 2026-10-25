@@ -150,6 +150,19 @@ pub fn validate_module_operations(
         .collect();
     let mut errors = Vec::new();
 
+    // Analyze the function bodies without construct declarations: ordinary semantic
+    // analysis intentionally emits AIF610 for construct-bearing modules. This still
+    // gives us authoritative inferred expression types without weakening that gate.
+    let function_only_module = Module {
+        constructs: Vec::new(),
+        ..module.clone()
+    };
+    let semantic = crate::sema::analyze(&function_only_module).map_err(|errors| {
+        errors.into_iter()
+            .map(|error| format!("function semantic validation {}: {}", error.code, error.message))
+            .collect::<Vec<_>>()
+    })?;
+
     for (index, operation) in validated.operations.iter().enumerate() {
         let Some(function) = function_map.get(operation.function.as_str()) else {
             errors.push(format!(
@@ -168,6 +181,19 @@ pub fn validate_module_operations(
                 errors.push(format!(
                     "operation {index}: expression reference {expression} does not belong to function '{}'",
                     operation.function
+                ));
+                continue;
+            }
+            let Some(inferred) = semantic.inferred_types.get(&crate::ast::NodeId(*expression)) else {
+                errors.push(format!(
+                    "operation {index}: expression reference {expression} has no inferred type"
+                ));
+                continue;
+            };
+            if &inferred.kind != value_type {
+                errors.push(format!(
+                    "operation {index}: expression reference {expression} has type {:?}, expected {:?}",
+                    inferred.kind, value_type
                 ));
             }
         }
