@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn phase_operation_bridge_executes_only_declared_initial_edge() {
         use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
-        let source = "module lifecycle\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Running\\n  Running -> Done\\nfn main() -> Int\\n  1\\n";
+        let source = "module lifecycle\nphase Lifecycle\n  initial: Ready\n  Ready -> Running\n  Running -> Done\nfn main() -> Int\n  1\n";
         let operation = ConstructOperation {
             function: "main".into(),
             kind: ConstructOperationKind::PhaseTransition {
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn phase_operation_bridge_rejects_wrong_kind_and_unresolved_function() {
         use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
-        let source = "module lifecycle\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Running\\nfn main() -> Int\\n  1\\n";
+        let source = "module lifecycle\nphase Lifecycle\n  initial: Ready\n  Ready -> Running\nfn main() -> Int\n  1\n";
         let wrong_kind = ConstructOperation {
             function: "main".into(),
             kind: ConstructOperationKind::ProofEvaluate { proof: "P".into() },
