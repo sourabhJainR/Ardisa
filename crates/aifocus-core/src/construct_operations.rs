@@ -94,10 +94,13 @@ pub fn validate_operations(
                     Some(declaration) => {
                         let declared = declaration.members.iter().find_map(|member| match member {
                             TypedIrConstructMember::Clause { name, value, .. } if name == "capabilities" =>
-                                Some(value.split(',').map(str::trim).collect::<BTreeSet<_>>()),
+                                Some(parse_declared_capabilities(value)),
                             _ => None,
                         });
-                        if capability.trim().is_empty() || !declared.is_some_and(|set| set.contains(capability.trim())) {
+                        let capability_is_declared = declared
+                            .and_then(|result| result.ok())
+                            .is_some_and(|set| set.contains(capability.trim()));
+                        if capability.trim().is_empty() || !capability_is_declared {
                             errors.push(format!("operation {index}: capability '{capability}' is not explicitly declared by Vault '{vault}'"));
                         }
                     }
@@ -128,6 +131,25 @@ pub fn validate_operations(
     } else {
         Err(errors)
     }
+}
+
+
+/// Parse declared capabilities without guessing intent. Commas and whitespace
+/// separate names, but empty comma-delimited entries fail closed.
+fn parse_declared_capabilities(value: &str) -> Result<BTreeSet<String>, String> {
+    let comma_parts: Vec<&str> = value.split(',').collect();
+    if comma_parts.iter().any(|part| part.trim().is_empty()) {
+        return Err("Vault capabilities contain an empty list entry".into());
+    }
+    let capabilities: BTreeSet<String> = comma_parts
+        .iter()
+        .flat_map(|part| part.split_whitespace())
+        .map(str::to_owned)
+        .collect();
+    if capabilities.is_empty() {
+        return Err("Vault capabilities must not be empty".into());
+    }
+    Ok(capabilities)
 }
 
 /// Validate operations against a complete parsed module.
@@ -375,6 +397,25 @@ mod tests {
             vault: "Files".into(), capability: "admin".into(),
         }};
         assert!(validate_operations(&constructs, &[bad]).unwrap_err().iter().any(|e| e.contains("not explicitly declared")));
+    }
+
+
+    #[test]
+    fn vault_capabilities_accept_comma_or_whitespace_separators_and_reject_empty_entries() {
+        let whitespace = declarations("module vault_spaces\nvault Files\n  capabilities: filesystem_read clock\n");
+        let comma = declarations("module vault_commas\nvault Files\n  capabilities: filesystem_read, clock\n");
+        let operation = |capability: &str| ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::VaultAuthorize {
+                vault: "Files".into(),
+                capability: capability.into(),
+            },
+        };
+        assert!(validate_operations(&whitespace, &[operation("filesystem_read"), operation("clock")]).is_ok());
+        assert!(validate_operations(&comma, &[operation("filesystem_read"), operation("clock")]).is_ok());
+
+        let malformed = declarations("module vault_bad_list\nvault Files\n  capabilities: filesystem_read,,clock\n");
+        assert!(validate_operations(&malformed, &[operation("filesystem_read")]).is_err());
     }
 
     #[test]
