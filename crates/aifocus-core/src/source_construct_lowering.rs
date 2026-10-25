@@ -255,17 +255,17 @@ fn main() -> Int
         let operations = lower_source_operations(&module).unwrap();
         assert_eq!(operations.len(), 6);
         assert_eq!(operations[0].function, "main");
-        assert!(matches!(operations[0].kind, ConstructOperationKind::CellInitialize {
-            ref cell, ref field, expression, value_type: TypeKind::Int
-        } if cell == "Counter" && field == "value" && expression != 0));
-        assert!(matches!(operations[1].kind, ConstructOperationKind::PhaseTransition { ref phase, ref from, ref to }
+        assert!(matches!(&operations[0].kind, ConstructOperationKind::CellInitialize {
+            cell, field, expression, value_type: TypeKind::Int
+        } if cell == "Counter" && field == "value" && *expression != 0));
+        assert!(matches!(&operations[1].kind, ConstructOperationKind::PhaseTransition { phase, from, to }
             if phase == "Job" && from == "todo" && to == "running"));
-        assert!(matches!(operations[2].kind, ConstructOperationKind::VaultAuthorize { ref vault, ref capability }
+        assert!(matches!(&operations[2].kind, ConstructOperationKind::VaultAuthorize { vault, capability }
             if vault == "Local" && capability == "filesystem_read"));
-        assert!(matches!(operations[3].kind, ConstructOperationKind::ProofEvaluate { ref proof } if proof == "ReleaseGate"));
-        assert!(matches!(operations[4].kind, ConstructOperationKind::TraceEmit { ref trace, ref event }
+        assert!(matches!(&operations[3].kind, ConstructOperationKind::ProofEvaluate { proof } if proof == "ReleaseGate"));
+        assert!(matches!(&operations[4].kind, ConstructOperationKind::TraceEmit { trace, event }
             if trace == "Build" && event == "compile"));
-        assert!(matches!(operations[5].kind, ConstructOperationKind::CellUpdate { .. }));
+        assert!(matches!(&operations[5].kind, ConstructOperationKind::CellUpdate { .. }));
     }
 
     #[test]
