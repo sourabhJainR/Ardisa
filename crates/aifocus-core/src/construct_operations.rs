@@ -150,6 +150,19 @@ pub fn validate_module_operations(
         .collect();
     let mut errors = Vec::new();
 
+    // Analyze the function bodies without construct declarations: ordinary semantic
+    // analysis intentionally emits AIF610 for construct-bearing modules. This still
+    // gives us authoritative inferred expression types without weakening that gate.
+    let function_only_module = Module {
+        constructs: Vec::new(),
+        ..module.clone()
+    };
+    let semantic = crate::sema::analyze(&function_only_module).map_err(|errors| {
+        errors.into_iter()
+            .map(|error| format!("function semantic validation {}: {}", error.code, error.message))
+            .collect::<Vec<_>>()
+    })?;
+
     for (index, operation) in validated.operations.iter().enumerate() {
         let Some(function) = function_map.get(operation.function.as_str()) else {
             errors.push(format!(
@@ -159,8 +172,8 @@ pub fn validate_module_operations(
             continue;
         };
 
-        if let ConstructOperationKind::CellInitialize { expression, .. }
-            | ConstructOperationKind::CellUpdate { expression, .. } = &operation.kind
+        if let ConstructOperationKind::CellInitialize { expression, value_type, .. }
+            | ConstructOperationKind::CellUpdate { expression, value_type, .. } = &operation.kind
         {
             let mut expression_ids = BTreeSet::new();
             collect_block_expression_ids(&function.body, &mut expression_ids);
@@ -168,6 +181,19 @@ pub fn validate_module_operations(
                 errors.push(format!(
                     "operation {index}: expression reference {expression} does not belong to function '{}'",
                     operation.function
+                ));
+                continue;
+            }
+            let Some(inferred) = semantic.inferred_types.get(&crate::ast::NodeId(*expression)) else {
+                errors.push(format!(
+                    "operation {index}: expression reference {expression} has no inferred type"
+                ));
+                continue;
+            };
+            if &inferred.kind != value_type {
+                errors.push(format!(
+                    "operation {index}: expression reference {expression} has type {:?}, expected {:?}",
+                    inferred.kind, value_type
                 ));
             }
         }
@@ -295,6 +321,29 @@ mod tests {
 
         let errors = validate_module_operations(&module, &[operation("missing", expression_id)]).unwrap_err();
         assert!(errors.iter().any(|error| error.contains("unresolved function 'missing'")));
+    }
+
+    #[test]
+    fn module_validation_rejects_expression_type_mismatch_even_when_field_type_matches() {
+        let source = "module operation_type_binding\ncell State\n  value: Int\n  invariant: value >= 0\nfn main() -> Int\n  let flag = true\n  return 1\n";
+        let module = parse(source).unwrap();
+        let expression_id = match &module.items[0] {
+            Item::Function(function) => match &function.body.stmts[0].kind {
+                crate::ast::StmtKind::Let { value, .. } => value.id.0,
+                other => panic!("expected let expression, got {other:?}"),
+            },
+        };
+        let operation = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::CellInitialize {
+                cell: "State".into(),
+                field: "value".into(),
+                expression: expression_id,
+                value_type: TypeKind::Int,
+            },
+        };
+        let errors = validate_module_operations(&module, &[operation]).unwrap_err();
+        assert!(errors.iter().any(|error| error.contains("has type Bool, expected Int")));
     }
 
     #[test]
