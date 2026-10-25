@@ -371,7 +371,7 @@ fn parse_metadata_type_depth(source: &str, depth: usize) -> Result<crate::ast::T
     let mut start = 0usize;
     for (index, ch) in inner.char_indices() {
         match ch {
-            '<' => depth += 1,
+            '<' => generic_depth += 1,
             '>' => {
                 if generic_depth == 0 {
                     return Err("unbalanced generic field type".into());
