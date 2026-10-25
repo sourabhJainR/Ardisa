@@ -402,8 +402,8 @@ mod tests {
 
     #[test]
     fn vault_capabilities_accept_comma_or_whitespace_separators_and_reject_empty_entries() {
-        let whitespace = declarations("module vault_spaces\\nvault Files\\n  capabilities: filesystem_read clock\\n");
-        let comma = declarations("module vault_commas\\nvault Files\\n  capabilities: filesystem_read, clock\\n");
+        let whitespace = declarations("module vault_spaces\nvault Files\\n  capabilities: filesystem_read clock\\n");
+        let comma = declarations("module vault_commas\nvault Files\\n  capabilities: filesystem_read, clock\\n");
         let operation = |capability: &str| ConstructOperation {
             function: "main".into(),
             kind: ConstructOperationKind::VaultAuthorize {
@@ -414,7 +414,7 @@ mod tests {
         assert!(validate_operations(&whitespace, &[operation("filesystem_read"), operation("clock")]).is_ok());
         assert!(validate_operations(&comma, &[operation("filesystem_read"), operation("clock")]).is_ok());
 
-        let malformed = declarations("module vault_bad_list\\nvault Files\\n  capabilities: filesystem_read,,clock\\n");
+        let malformed = declarations("module vault_bad_list\nvault Files\\n  capabilities: filesystem_read,,clock\\n");
         assert!(validate_operations(&malformed, &[operation("filesystem_read")]).is_err());
     }
 
