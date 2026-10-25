@@ -367,25 +367,25 @@ fn parse_metadata_type_depth(source: &str, depth: usize) -> Result<crate::ast::T
     }
     let inner = &source[open + 1..source.len() - 1];
     let mut args = Vec::new();
-    let mut depth = 0usize;
+    let mut generic_depth = 0usize;
     let mut start = 0usize;
     for (index, ch) in inner.char_indices() {
         match ch {
             '<' => depth += 1,
             '>' => {
-                if depth == 0 {
+                if generic_depth == 0 {
                     return Err("unbalanced generic field type".into());
                 }
-                depth -= 1;
+                generic_depth -= 1;
             }
-            ',' if depth == 0 => {
+            ',' if generic_depth == 0 => {
                 args.push(inner[start..index].trim());
                 start = index + ch.len_utf8();
             }
             _ => {}
         }
     }
-    if depth != 0 {
+    if generic_depth != 0 {
         return Err("unbalanced generic field type".into());
     }
     args.push(inner[start..].trim());
