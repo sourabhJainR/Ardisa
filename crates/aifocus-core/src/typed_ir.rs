@@ -301,6 +301,9 @@ pub fn decode_construct_metadata(input: &str) -> Result<Vec<TypedIrConstruct>, V
         }
     }
 
+    if constructs.is_empty() {
+        return invalid("construct metadata must contain at least one declaration".into());
+    }
     if let Err(errors) = validate_construct_metadata(&constructs) {
         return Err(errors);
     }
@@ -330,8 +333,16 @@ fn decode_metadata_atom(value: &str) -> Result<String, String> {
 }
 
 fn parse_metadata_type(source: &str) -> Result<crate::ast::TypeKind, String> {
+    parse_metadata_type_depth(source, 0)
+}
+
+fn parse_metadata_type_depth(source: &str, depth: usize) -> Result<crate::ast::TypeKind, String> {
     use crate::ast::{NodeId, Type, TypeKind};
 
+    const MAX_TYPE_DEPTH: usize = 64;
+    if depth > MAX_TYPE_DEPTH {
+        return Err("field type nesting limit exceeded".into());
+    }
     let source = source.trim();
     match source {
         "Int" => return Ok(TypeKind::Int),
@@ -386,7 +397,7 @@ fn parse_metadata_type(source: &str) -> Result<crate::ast::TypeKind, String> {
         parsed.push(Type {
             id: NodeId(0),
             span: Span::new(0, 0),
-            kind: parse_metadata_type(arg)?,
+            kind: parse_metadata_type_depth(arg, depth + 1)?,
         });
     }
     match (name, parsed.len()) {
@@ -1018,6 +1029,7 @@ mod tests {
     fn construct_metadata_decoder_rejects_malformed_and_noncanonical_records() {
         for input in [
             "BAD-HEADER\n",
+            "ARDISA-CONSTRUCT-META-V1\n",
             "ARDISA-CONSTRUCT-META-V1\nK|Unknown|41\n",
             "ARDISA-CONSTRUCT-META-V1\nK|Cell|0\n",
             "ARDISA-CONSTRUCT-META-V1\nF|76616c7565|496e74\n",
@@ -1036,6 +1048,8 @@ mod tests {
         );
         assert!(parse_metadata_type("List<Int").is_err());
         assert!(parse_metadata_type("Result<Int,>").is_err());
+        let deeply_nested = format!("{}Int{}", "List<".repeat(66), ">".repeat(66));
+        assert!(parse_metadata_type(&deeply_nested).is_err());
     }
 
     #[test]
