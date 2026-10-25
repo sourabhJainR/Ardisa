@@ -172,8 +172,8 @@ pub fn validate_module_operations(
             continue;
         };
 
-        if let ConstructOperationKind::CellInitialize { expression, .. }
-            | ConstructOperationKind::CellUpdate { expression, .. } = &operation.kind
+        if let ConstructOperationKind::CellInitialize { expression, value_type, .. }
+            | ConstructOperationKind::CellUpdate { expression, value_type, .. } = &operation.kind
         {
             let mut expression_ids = BTreeSet::new();
             collect_block_expression_ids(&function.body, &mut expression_ids);
@@ -321,6 +321,29 @@ mod tests {
 
         let errors = validate_module_operations(&module, &[operation("missing", expression_id)]).unwrap_err();
         assert!(errors.iter().any(|error| error.contains("unresolved function 'missing'")));
+    }
+
+    #[test]
+    fn module_validation_rejects_expression_type_mismatch_even_when_field_type_matches() {
+        let source = "module operation_type_binding\\ncell State\\n  value: Int\\n  invariant: value >= 0\\nfn main() -> Int\\n  let flag = true\\n  return 1\\n";
+        let module = parse(source).unwrap();
+        let expression_id = match &module.items[0] {
+            Item::Function(function) => match &function.body.stmts[0].kind {
+                crate::ast::StmtKind::Let { value, .. } => value.id.0,
+                other => panic!("expected let expression, got {other:?}"),
+            },
+        };
+        let operation = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::CellInitialize {
+                cell: "State".into(),
+                field: "value".into(),
+                expression: expression_id,
+                value_type: TypeKind::Int,
+            },
+        };
+        let errors = validate_module_operations(&module, &[operation]).unwrap_err();
+        assert!(errors.iter().any(|error| error.contains("has type Bool, expected Int")));
     }
 
     #[test]
