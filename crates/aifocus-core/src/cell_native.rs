@@ -262,7 +262,8 @@ mod construct_operation_tests {
     fn source_cell_operation_sequence_rejects_missing_initializer_and_reinitialization() {
         let mut ops = operations();
         assert!(compile_cell_construct_operations(SOURCE, &ops[1..]).is_err());
-        ops.push(ops[0].clone());
+        let initializer = ops[0].clone();
+        ops.push(initializer);
         assert!(compile_cell_construct_operations(SOURCE, &ops).is_err());
     }
 
