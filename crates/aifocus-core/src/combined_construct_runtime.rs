@@ -55,13 +55,14 @@ impl CombinedConstructPlan {
     }
 
     /// Dispatch the complete ordered batch exactly once, after validation.
+    /// Atomicity is provided by the executor, not by this dispatch wrapper.
     ///
     /// The executor is the transaction boundary: it must stage effects and state
     /// changes and commit only when every operation succeeds. On any executor
     /// error it must leave externally visible state unchanged. The closure is
     /// deliberately passed the full batch rather than called once per operation,
     /// avoiding accidental partial execution by this dispatcher.
-    pub fn execute_atomically<T, F>(&self, executor: F) -> Result<T, CombinedConstructError>
+    pub fn dispatch_validated_batch<T, F>(&self, executor: F) -> Result<T, CombinedConstructError>
     where
         F: FnOnce(&[ConstructOperation]) -> Result<T, String>,
     {
@@ -120,7 +121,7 @@ fn main() -> Int
         assert_eq!(plan.operations(), operations.as_slice());
 
         let mut calls = 0;
-        let returned = plan.execute_atomically(|batch| {
+        let returned = plan.dispatch_validated_batch(|batch| {
             calls += 1;
             assert_eq!(batch, operations.as_slice());
             Ok(batch.len())
