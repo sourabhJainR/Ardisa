@@ -180,7 +180,7 @@ fn main() -> Int
 
     #[test]
     fn malformed_construct_declaration_rejects_before_dispatch() {
-        let source = SOURCE.replace("signature: required", "signature: unsupported");
+        let source = SOURCE.replace("  signature: required\n", "");
         assert!(matches!(
             CombinedConstructPlan::validate(&source, &[]),
             Err(CombinedConstructError::Validation(_))
