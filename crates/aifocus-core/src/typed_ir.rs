@@ -181,6 +181,225 @@ fn encode_metadata_atom(value: &str) -> String {
     encoded
 }
 
+
+/// Decode and validate the canonical construct-metadata representation.
+///
+/// This format carries declaration metadata only; it is not an executable artifact
+/// and does not authorize runtime effects. Decoded source spans are zeroed because
+/// source locations are intentionally excluded from the stable wire representation.
+pub fn decode_construct_metadata(input: &str) -> Result<Vec<TypedIrConstruct>, Vec<String>> {
+    const HEADER: &str = "ARDISA-CONSTRUCT-META-V1";
+    const MAX_BYTES: usize = 1_048_576;
+    const MAX_CONSTRUCTS: usize = 4096;
+    const MAX_MEMBERS: usize = 16_384;
+
+    let invalid = |message: String| Err(vec![message]);
+    if input.len() > MAX_BYTES {
+        return invalid("construct metadata byte limit exceeded".into());
+    }
+    let mut lines = input.split_terminator('\n');
+    if lines.next() != Some(HEADER) {
+        return invalid("invalid construct metadata header".into());
+    }
+
+    let mut constructs: Vec<TypedIrConstruct> = Vec::new();
+    let mut member_count = 0usize;
+    for (line_index, line) in lines.enumerate() {
+        if line.is_empty() {
+            return invalid(format!("construct metadata line {} is empty", line_index + 2));
+        }
+        let parts: Vec<&str> = line.split('|').collect();
+        match parts.as_slice() {
+            ["K", kind, name] => {
+                let kind = match *kind {
+                    "Trace" => crate::ast::ConstructKind::Trace,
+                    "Cell" => crate::ast::ConstructKind::Cell,
+                    "Vault" => crate::ast::ConstructKind::Vault,
+                    "Proof" => crate::ast::ConstructKind::Proof,
+                    "Phase" => crate::ast::ConstructKind::Phase,
+                    _ => return invalid(format!("construct metadata line {} has unknown kind", line_index + 2)),
+                };
+                let name = match decode_metadata_atom(name) {
+                    Ok(name) => name,
+                    Err(error) => return invalid(format!("construct metadata line {}: {error}", line_index + 2)),
+                };
+                if constructs.len() >= MAX_CONSTRUCTS {
+                    return invalid("construct metadata declaration limit exceeded".into());
+                }
+                constructs.push(TypedIrConstruct {
+                    kind,
+                    name,
+                    members: Vec::new(),
+                    span: Span::new(0, 0),
+                });
+            }
+            ["F", name, ty] => {
+                let Some(construct) = constructs.last_mut() else {
+                    return invalid(format!("construct metadata line {} has a member before a declaration", line_index + 2));
+                };
+                let name = match decode_metadata_atom(name) {
+                    Ok(value) => value,
+                    Err(error) => return invalid(format!("construct metadata line {}: {error}", line_index + 2)),
+                };
+                let ty_text = match decode_metadata_atom(ty) {
+                    Ok(value) => value,
+                    Err(error) => return invalid(format!("construct metadata line {}: {error}", line_index + 2)),
+                };
+                let ty = match parse_metadata_type(&ty_text) {
+                    Ok(value) => value,
+                    Err(error) => return invalid(format!("construct metadata line {}: {error}", line_index + 2)),
+                };
+                construct.members.push(TypedIrConstructMember::Field {
+                    name,
+                    ty,
+                    span: Span::new(0, 0),
+                });
+                member_count += 1;
+            }
+            ["C", name, value] => {
+                let Some(construct) = constructs.last_mut() else {
+                    return invalid(format!("construct metadata line {} has a member before a declaration", line_index + 2));
+                };
+                let name = match decode_metadata_atom(name) {
+                    Ok(value) => value,
+                    Err(error) => return invalid(format!("construct metadata line {}: {error}", line_index + 2)),
+                };
+                let value = match decode_metadata_atom(value) {
+                    Ok(value) => value,
+                    Err(error) => return invalid(format!("construct metadata line {}: {error}", line_index + 2)),
+                };
+                construct.members.push(TypedIrConstructMember::Clause {
+                    name,
+                    value,
+                    span: Span::new(0, 0),
+                });
+                member_count += 1;
+            }
+            ["T", from, to] => {
+                let Some(construct) = constructs.last_mut() else {
+                    return invalid(format!("construct metadata line {} has a member before a declaration", line_index + 2));
+                };
+                let from = match decode_metadata_atom(from) {
+                    Ok(value) => value,
+                    Err(error) => return invalid(format!("construct metadata line {}: {error}", line_index + 2)),
+                };
+                let to = match decode_metadata_atom(to) {
+                    Ok(value) => value,
+                    Err(error) => return invalid(format!("construct metadata line {}: {error}", line_index + 2)),
+                };
+                construct.members.push(TypedIrConstructMember::Transition {
+                    from,
+                    to,
+                    span: Span::new(0, 0),
+                });
+                member_count += 1;
+            }
+            _ => return invalid(format!("construct metadata line {} has an invalid record", line_index + 2)),
+        }
+        if member_count > MAX_MEMBERS {
+            return invalid("construct metadata member limit exceeded".into());
+        }
+    }
+
+    if let Err(errors) = validate_construct_metadata(&constructs) {
+        return Err(errors);
+    }
+    let canonical = encode_construct_metadata(&constructs)?;
+    if canonical != input {
+        return invalid("construct metadata is not canonically encoded".into());
+    }
+    Ok(constructs)
+}
+
+fn decode_metadata_atom(value: &str) -> Result<String, String> {
+    if value.len() % 2 != 0 {
+        return Err("metadata atom has odd-length hex encoding".into());
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for pair in value.as_bytes().chunks_exact(2) {
+        let digit = |byte: u8| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        };
+        let high = digit(pair[0]).ok_or_else(|| "metadata atom has invalid hex encoding".to_string())?;
+        let low = digit(pair[1]).ok_or_else(|| "metadata atom has invalid hex encoding".to_string())?;
+        bytes.push((high << 4) | low);
+    }
+    String::from_utf8(bytes).map_err(|_| "metadata atom is not valid UTF-8".into())
+}
+
+fn parse_metadata_type(source: &str) -> Result<crate::ast::TypeKind, String> {
+    use crate::ast::{NodeId, Span, Type, TypeKind};
+
+    let source = source.trim();
+    match source {
+        "Int" => return Ok(TypeKind::Int),
+        "Bool" => return Ok(TypeKind::Bool),
+        "String" => return Ok(TypeKind::String),
+        "()" => return Ok(TypeKind::Unit),
+        "" => return Err("field type must not be empty".into()),
+        _ => {}
+    }
+    let Some(open) = source.find('<') else {
+        if source.contains('>') || source.chars().any(char::is_whitespace) {
+            return Err("invalid named field type".into());
+        }
+        return Ok(TypeKind::Named(source.into()));
+    };
+    if !source.ends_with('>') {
+        return Err("unterminated generic field type".into());
+    }
+    let name = source[..open].trim();
+    if name.is_empty() || name.chars().any(char::is_whitespace) {
+        return Err("invalid generic field type name".into());
+    }
+    let inner = &source[open + 1..source.len() - 1];
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, ch) in inner.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                if depth == 0 {
+                    return Err("unbalanced generic field type".into());
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => {
+                args.push(inner[start..index].trim());
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err("unbalanced generic field type".into());
+    }
+    args.push(inner[start..].trim());
+    if args.iter().any(|arg| arg.is_empty()) {
+        return Err("generic field type has an empty argument".into());
+    }
+    let mut parsed = Vec::with_capacity(args.len());
+    for arg in args {
+        parsed.push(Type {
+            id: NodeId(0),
+            span: Span::new(0, 0),
+            kind: parse_metadata_type(arg)?,
+        });
+    }
+    match (name, parsed.len()) {
+        ("List", 1) => Ok(TypeKind::List(Box::new(parsed.remove(0)))),
+        ("Result", 2) => {
+            let err = parsed.pop().expect("two parsed arguments");
+            let ok = parsed.pop().expect("two parsed arguments");
+            Ok(TypeKind::Result(Box::new(ok), Box::new(err)))
+        }
+        _ => Ok(TypeKind::Generic(name.into(), parsed)),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedIrFunction {
     pub name: String,
