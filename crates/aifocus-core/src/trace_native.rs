@@ -38,10 +38,16 @@ pub fn compile_trace_source(
 ) -> Result<NativeTraceArtifact, NativeTraceCompileError> {
     let module = crate::parse(source).map_err(NativeTraceCompileError::Parse)?;
     let constructs = typed_ir::lower_constructs(&module).map_err(NativeTraceCompileError::TypedIr)?;
-    if constructs.len() != 1 || constructs[0].kind != ConstructKind::Trace {
+    // This focused artifact path may consume a combined module, but it requires
+    // exactly one Trace declaration. Other construct metadata is validated and
+    // retained by the source pipeline; this artifact executes only Trace policy.
+    let traces: Vec<_> = constructs.iter()
+        .filter(|item| item.kind == ConstructKind::Trace)
+        .collect();
+    if traces.len() != 1 {
         return Err(NativeTraceCompileError::ExpectedSingleTrace);
     }
-    let construct = constructs.iter().find(|item| item.name == trace_name)
+    let construct = traces.iter().copied().find(|item| item.name == trace_name)
         .ok_or_else(|| NativeTraceCompileError::UnknownTrace(trace_name.to_string()))?;
     let mut signature = None;
     for member in &construct.members {
@@ -271,15 +277,16 @@ mod tests {
     }
 
     #[test]
-    fn trace_compilation_fails_closed_for_optional_or_mixed_policies() {
+    fn trace_compilation_fails_closed_for_optional_policy_and_duplicate_traces() {
         assert!(compile_trace_source(
             "module t\ntrace T\n  signature: optional\n", "T"
         ).is_err());
-        assert!(matches!(
-            compile_trace_source(
-                "module t\ntrace T\n  signature: required\ncell C\n  value: Int\n  invariant: value >= 0\n", "T"
-            ),
+        let mixed = "module t\ntrace T\n  signature: required\ncell C\n  value: Int\n  invariant: value >= 0\nfn main() -> Int\n  1\n";
+        assert!(compile_trace_source(mixed, "T").is_ok());
+        let duplicate = format!("{mixed}trace Other\n  signature: required\n");
+        assert_eq!(
+            compile_trace_source(&duplicate, "T"),
             Err(NativeTraceCompileError::ExpectedSingleTrace)
-        ));
+        );
     }
 }
