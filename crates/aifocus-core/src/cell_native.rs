@@ -210,3 +210,72 @@ pub fn compile_cell_construct_operations(
         update_count: operations.len() - 1,
     })
 }
+
+
+#[cfg(test)]
+mod construct_operation_tests {
+    use super::*;
+    use crate::ast::StmtKind;
+    use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+
+    const SOURCE: &str = "module cells\ncell Counter\n  value: Int\n  invariant: value >= 0\nfn main() -> Int\n  let initial = 2\n  let next = 5\n  return next\n";
+
+    fn operations() -> Vec<ConstructOperation> {
+        let module = crate::parse(SOURCE).unwrap();
+        let function = module.items.iter().find_map(|item| match item {
+            crate::ast::Item::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        }).unwrap();
+        let expression_id = |name: &str| function.body.stmts.iter().find_map(|stmt| match &stmt.kind {
+            StmtKind::Let { name: binding, value } if binding == name => Some(value.id.0),
+            _ => None,
+        }).unwrap();
+        vec![
+            ConstructOperation {
+                function: "main".into(),
+                kind: ConstructOperationKind::CellInitialize {
+                    cell: "Counter".into(), field: "value".into(),
+                    expression: expression_id("initial"), value_type: crate::ast::TypeKind::Int,
+                },
+            },
+            ConstructOperation {
+                function: "main".into(),
+                kind: ConstructOperationKind::CellUpdate {
+                    cell: "Counter".into(), field: "value".into(),
+                    expression: expression_id("next"), value_type: crate::ast::TypeKind::Int,
+                },
+            },
+        ]
+    }
+
+    #[test]
+    fn ordered_source_cell_operations_execute_through_serialized_native_artifact() {
+        let artifact = compile_cell_construct_operations(SOURCE, &operations()).unwrap();
+        assert_eq!(artifact.initial_value, 2);
+        assert_eq!(artifact.update_count, 1);
+        assert_eq!(execute_cell_artifact(&artifact).unwrap(), 5);
+        let repeat = compile_cell_construct_operations(SOURCE, &operations()).unwrap();
+        assert_eq!(artifact.artifact, repeat.artifact);
+    }
+
+    #[test]
+    fn source_cell_operation_sequence_rejects_missing_initializer_and_reinitialization() {
+        let mut ops = operations();
+        assert!(compile_cell_construct_operations(SOURCE, &ops[1..]).is_err());
+        ops.push(ops[0].clone());
+        assert!(compile_cell_construct_operations(SOURCE, &ops).is_err());
+    }
+
+    #[test]
+    fn source_cell_operation_sequence_rejects_cross_cell_updates() {
+        let source = SOURCE.replace("cell Counter", "cell Counter").replace(
+            "invariant: value >= 0\nfn main()",
+            "invariant: value >= 0\ncell Other\n  value: Int\n  invariant: value >= 0\nfn main()"
+        );
+        let mut ops = operations();
+        if let ConstructOperationKind::CellUpdate { cell, .. } = &mut ops[1].kind {
+            *cell = "Other".into();
+        }
+        assert!(compile_cell_construct_operations(&source, &ops).is_err());
+    }
+}
