@@ -40,10 +40,16 @@ pub fn compile_vault_source(
         .ok_or_else(|| NativeVaultCompileError::UnsupportedCapability(required_capability.to_string()))?;
     let module = crate::parse(source).map_err(NativeVaultCompileError::Parse)?;
     let constructs = typed_ir::lower_constructs(&module).map_err(NativeVaultCompileError::TypedIr)?;
-    if constructs.len() != 1 || constructs[0].kind != ConstructKind::Vault {
+    // A focused Vault adapter may consume a combined module, but exactly one
+    // Vault declaration is allowed in this artifact path. Other construct metadata
+    // is validated by typed_ir::lower_constructs and is not executed by this adapter.
+    let vaults: Vec<_> = constructs.iter()
+        .filter(|item| item.kind == ConstructKind::Vault)
+        .collect();
+    if vaults.len() != 1 {
         return Err(NativeVaultCompileError::ExpectedSingleVault);
     }
-    let construct = constructs.iter().find(|item| item.name == vault_name)
+    let construct = vaults.iter().copied().find(|item| item.name == vault_name)
         .ok_or_else(|| NativeVaultCompileError::UnknownVault(vault_name.to_string()))?;
     let authorize = native::vault_authorize_instruction(construct, required)
         .map_err(NativeVaultCompileError::Native)?;
@@ -215,14 +221,23 @@ mod tests {
     }
 
     #[test]
-    fn mixed_constructs_and_unknown_vault_names_are_rejected() {
+    fn mixed_construct_modules_allow_focused_vault_authorization() {
         assert!(matches!(
             compile_vault_source(SOURCE, "Missing", "clock"),
             Err(NativeVaultCompileError::UnknownVault(_))
         ));
-        let mixed = format!("{SOURCE}cell Counter\n  value: Int\n  invariant: value >= 0\n");
+        let mixed = format!(
+            "{SOURCE}cell Counter\n  value: Int\n  invariant: value >= 0\nfn main() -> Int\n  1\n"
+        );
+        let artifact = compile_vault_source(&mixed, "ReadOnly", "clock")
+            .expect("a focused Vault adapter can consume a validated mixed module");
+        execute_vault_authorization(&artifact)
+            .expect("the selected Vault capability remains enforceable");
+        let duplicate_vaults = format!(
+            "{mixed}vault Another\n  capabilities: clock\n"
+        );
         assert_eq!(
-            compile_vault_source(&mixed, "ReadOnly", "clock"),
+            compile_vault_source(&duplicate_vaults, "ReadOnly", "clock"),
             Err(NativeVaultCompileError::ExpectedSingleVault)
         );
     }
