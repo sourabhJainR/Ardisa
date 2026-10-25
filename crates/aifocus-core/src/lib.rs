@@ -15,6 +15,7 @@ pub mod cell_runtime;
 pub mod cell_native;
 pub mod construct_runtime;
 pub mod construct_operations;
+pub mod source_construct_lowering;
 pub mod combined_construct_runtime;
 pub mod context_window;
 pub mod compiler_engine;
