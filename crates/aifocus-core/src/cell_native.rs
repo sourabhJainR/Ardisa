@@ -131,3 +131,152 @@ mod tests {
         assert!(compile_cell_source(&mixed, "Counter", 1, &[]).is_err());
     }
 }
+
+
+/// Compile a source-backed sequence of typed Cell operations into one native artifact.
+///
+/// The first operation must initialize exactly one integer Cell. Subsequent operations
+/// must update that same Cell. Each expression is resolved against its named function
+/// and lowered by the shared, fail-closed literal subset; no value is inferred from
+/// operation metadata. The artifact is validated before it is returned.
+pub fn compile_cell_construct_operations(
+    source: &str,
+    operations: &[crate::construct_operations::ConstructOperation],
+) -> Result<NativeCellArtifact, NativeCellCompileError> {
+    use crate::construct_operations::ConstructOperationKind;
+
+    if operations.is_empty() {
+        return Err(NativeCellCompileError::ExpectedSingleCell);
+    }
+    if operations.len() > MAX_CELL_UPDATES + 1 {
+        return Err(NativeCellCompileError::TooManyUpdates);
+    }
+
+    let module = crate::parse(source).map_err(NativeCellCompileError::Parse)?;
+    crate::construct_operations::validate_module_operations(&module, operations)
+        .map_err(NativeCellCompileError::TypedIr)?;
+
+    let (cell_name, initial_instructions) = match &operations[0].kind {
+        ConstructOperationKind::CellInitialize { cell, .. } => {
+            (cell.clone(), crate::native::lower_cell_construct_operation(&module, &operations[0])
+                .map_err(NativeCellCompileError::Native)?)
+        }
+        _ => return Err(NativeCellCompileError::TypedIr(vec![
+            "the first Cell operation must initialize the Cell".into(),
+        ])),
+    };
+    let initial_value = match initial_instructions.first() {
+        Some(NativeInstr::CellStart { spec }) => spec.initial,
+        _ => return Err(NativeCellCompileError::Native(native::NativeError::InvalidProgram(
+            "Cell initializer did not lower to CellStart".into(),
+        ))),
+    };
+    let mut code = initial_instructions;
+
+    for operation in operations.iter().skip(1) {
+        match &operation.kind {
+            ConstructOperationKind::CellUpdate { cell, .. } if *cell == cell_name => {
+                code.extend(crate::native::lower_cell_construct_operation(&module, operation)
+                    .map_err(NativeCellCompileError::Native)?);
+            }
+            ConstructOperationKind::CellUpdate { cell, .. } => {
+                return Err(NativeCellCompileError::TypedIr(vec![format!(
+                    "Cell update targets '{cell}', but this artifact initialized '{cell_name}'"
+                )]));
+            }
+            ConstructOperationKind::CellInitialize { .. } => {
+                return Err(NativeCellCompileError::TypedIr(vec![
+                    "a Cell may be initialized only once per native operation sequence".into(),
+                ]));
+            }
+            _ => return Err(NativeCellCompileError::TypedIr(vec![
+                "Cell operation sequence contains a non-Cell operation".into(),
+            ])),
+        }
+    }
+
+    code.push(NativeInstr::CellCurrent);
+    code.push(NativeInstr::Return);
+    let mut functions = BTreeMap::new();
+    functions.insert("main".to_string(), NativeFunction { params: Vec::new(), code });
+    let artifact = native::encode_program(&NativeProgram { functions });
+    let decoded = native::decode_program(&artifact).map_err(NativeCellCompileError::Native)?;
+    native::ValidatedNativeProgram::try_new(decoded).map_err(NativeCellCompileError::Native)?;
+
+    Ok(NativeCellArtifact {
+        artifact,
+        cell_name,
+        initial_value,
+        update_count: operations.len() - 1,
+    })
+}
+
+
+#[cfg(test)]
+mod construct_operation_tests {
+    use super::*;
+    use crate::ast::StmtKind;
+    use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+
+    const SOURCE: &str = "module cells\ncell Counter\n  value: Int\n  invariant: value >= 0\nfn main() -> Int\n  let initial = 2\n  let next = 5\n  return next\n";
+
+    fn operations() -> Vec<ConstructOperation> {
+        let module = crate::parse(SOURCE).unwrap();
+        let function = module.items.iter().find_map(|item| match item {
+            crate::ast::Item::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        }).unwrap();
+        let expression_id = |name: &str| function.body.stmts.iter().find_map(|stmt| match &stmt.kind {
+            StmtKind::Let { name: binding, value } if binding == name => Some(value.id.0),
+            _ => None,
+        }).unwrap();
+        vec![
+            ConstructOperation {
+                function: "main".into(),
+                kind: ConstructOperationKind::CellInitialize {
+                    cell: "Counter".into(), field: "value".into(),
+                    expression: expression_id("initial"), value_type: crate::ast::TypeKind::Int,
+                },
+            },
+            ConstructOperation {
+                function: "main".into(),
+                kind: ConstructOperationKind::CellUpdate {
+                    cell: "Counter".into(), field: "value".into(),
+                    expression: expression_id("next"), value_type: crate::ast::TypeKind::Int,
+                },
+            },
+        ]
+    }
+
+    #[test]
+    fn ordered_source_cell_operations_execute_through_serialized_native_artifact() {
+        let artifact = compile_cell_construct_operations(SOURCE, &operations()).unwrap();
+        assert_eq!(artifact.initial_value, 2);
+        assert_eq!(artifact.update_count, 1);
+        assert_eq!(execute_cell_artifact(&artifact).unwrap(), 5);
+        let repeat = compile_cell_construct_operations(SOURCE, &operations()).unwrap();
+        assert_eq!(artifact.artifact, repeat.artifact);
+    }
+
+    #[test]
+    fn source_cell_operation_sequence_rejects_missing_initializer_and_reinitialization() {
+        let mut ops = operations();
+        assert!(compile_cell_construct_operations(SOURCE, &ops[1..]).is_err());
+        let initializer = ops[0].clone();
+        ops.push(initializer);
+        assert!(compile_cell_construct_operations(SOURCE, &ops).is_err());
+    }
+
+    #[test]
+    fn source_cell_operation_sequence_rejects_cross_cell_updates() {
+        let source = SOURCE.replace("cell Counter", "cell Counter").replace(
+            "invariant: value >= 0\nfn main()",
+            "invariant: value >= 0\ncell Other\n  value: Int\n  invariant: value >= 0\nfn main()"
+        );
+        let mut ops = operations();
+        if let ConstructOperationKind::CellUpdate { cell, .. } = &mut ops[1].kind {
+            *cell = "Other".into();
+        }
+        assert!(compile_cell_construct_operations(&source, &ops).is_err());
+    }
+}
