@@ -6439,6 +6439,31 @@ mod native_phase_state_tests {
             ]
         );
 
+        let mut executable = lower_construct_operation(&module, &phase).unwrap();
+        executable.push(NativeInstr::PhaseCurrent);
+        executable.push(NativeInstr::ReturnTyped("String".into()));
+        let program = NativeProgram {
+            functions: [("main".into(), NativeFunction { params: vec![], code: executable })]
+                .into_iter()
+                .collect(),
+        };
+        let decoded = decode_program(&encode_program(&program)).expect("combined Phase sequence round-trips");
+        assert_eq!(
+            run_program(&decoded, "main", &[]).unwrap(),
+            NativeValue::String("Running".into())
+        );
+
+        let later_edge = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::PhaseTransition {
+                phase: "Lifecycle".into(), from: "Running".into(), to: "Done".into(),
+            },
+        };
+        assert!(
+            lower_construct_operation(&module, &later_edge).is_err(),
+            "later edges require a carried PhaseState token and must not restart at the initial state"
+        );
+
         let vault = ConstructOperation {
             function: "main".into(),
             kind: ConstructOperationKind::VaultAuthorize {
