@@ -171,7 +171,7 @@ fn main() -> Int
         })];
         let plan = CombinedConstructPlan::validate(SOURCE, &operations).unwrap();
         let mut calls = 0;
-        let result = plan.execute_atomically(|_| {
+        let result = plan.dispatch_validated_batch(|_| {
             calls += 1;
             Err::<(), _>("staged operation rejected".into())
         });
