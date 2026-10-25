@@ -75,6 +75,46 @@ pub fn execute_proof_construct_operation(
     execute_proof_artifact(&artifact, outcomes)
 }
 
+/// A proof outcome paired with opaque evidence whose authenticity is checked by an
+/// explicitly supplied trust verifier. The bytes are intentionally not interpreted
+/// by Ardisa; the verifier owns signature/key/certificate policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProofOutcomeEvidence {
+    pub outcome: String,
+    pub attestation: Vec<u8>,
+}
+
+/// Execute a ProofEvaluate operation only after every supplied outcome has passed
+/// the caller's explicit evidence verifier. This makes the trust boundary visible:
+/// the closure must be backed by the application's configured trust roots. Empty
+/// attestations and failed verification reject before native execution. The native
+/// proof policy still enforces required outcomes and rejects unknown/failed results.
+pub fn execute_proof_construct_operation_with_evidence<F>(
+    source: &str,
+    operation: &crate::construct_operations::ConstructOperation,
+    evidence: &[ProofOutcomeEvidence],
+    verify_evidence: F,
+) -> Result<(), NativeProofCompileError>
+where
+    F: Fn(&str, &[u8]) -> bool,
+{
+    if evidence.is_empty() {
+        return Err(NativeProofCompileError::InvalidOperation(
+            "proof evidence set must not be empty".into(),
+        ));
+    }
+    let mut outcomes = Vec::with_capacity(evidence.len());
+    for (index, item) in evidence.iter().enumerate() {
+        if item.attestation.is_empty() || !verify_evidence(&item.outcome, &item.attestation) {
+            return Err(NativeProofCompileError::InvalidOperation(format!(
+                "proof evidence item {index} failed authenticity verification"
+            )));
+        }
+        outcomes.push(item.outcome.clone());
+    }
+    execute_proof_construct_operation(source, operation, &outcomes)
+}
+
 /// Execute the artifact with explicit runtime outcome records.
 pub fn execute_proof_artifact(
     artifact: &NativeProofArtifact,
@@ -137,6 +177,38 @@ mod tests {
             kind: ConstructOperationKind::ProofEvaluate { proof: "Missing".into() },
         };
         assert!(execute_proof_construct_operation(&source, &unresolved, &[]).is_err());
+    }
+
+    #[test]
+    fn proof_evidence_bridge_requires_nonempty_verified_attestations() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+        let source = format!("{SOURCE}fn main() -> Int\n  1\n");
+        let operation = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::ProofEvaluate { proof: "ReleaseGate".into() },
+        };
+        let evidence = vec![
+            ProofOutcomeEvidence { outcome: "type_safety=proved".into(), attestation: vec![1, 2, 3] },
+            ProofOutcomeEvidence { outcome: "bounds=runtime_checked".into(), attestation: vec![4, 5, 6] },
+        ];
+        assert!(execute_proof_construct_operation_with_evidence(
+            &source, &operation, &evidence, |outcome, bytes| {
+                !bytes.is_empty() && (outcome.starts_with("type_safety=") || outcome.starts_with("bounds="))
+            }
+        ).is_ok());
+        assert!(execute_proof_construct_operation_with_evidence(
+            &source, &operation, &evidence, |_outcome, _bytes| false
+        ).is_err());
+        let empty_attestation = vec![
+            ProofOutcomeEvidence { outcome: "type_safety=proved".into(), attestation: vec![] },
+            evidence[1].clone(),
+        ];
+        assert!(execute_proof_construct_operation_with_evidence(
+            &source, &operation, &empty_attestation, |_outcome, _bytes| true
+        ).is_err());
+        assert!(execute_proof_construct_operation_with_evidence(
+            &source, &operation, &[], |_outcome, _bytes| true
+        ).is_err());
     }
 
     #[test]
