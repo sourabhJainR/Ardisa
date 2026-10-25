@@ -1017,12 +1017,12 @@ mod tests {
     #[test]
     fn construct_metadata_decoder_rejects_malformed_and_noncanonical_records() {
         for input in [
-            "BAD-HEADER\\n",
-            "ARDISA-CONSTRUCT-META-V1\\nK|Unknown|41\\n",
-            "ARDISA-CONSTRUCT-META-V1\\nK|Cell|0\\n",
-            "ARDISA-CONSTRUCT-META-V1\\nF|76616c7565|496e74\\n",
-            "ARDISA-CONSTRUCT-META-V1\\nX|invalid|record\\n",
-            "ARDISA-CONSTRUCT-META-V1\\nK|Cell|5374617465\\nF|76616c7565|496e74\\nC|696e76617269616e74|76616c6964\\n\\n",
+            "BAD-HEADER\n",
+            "ARDISA-CONSTRUCT-META-V1\nK|Unknown|41\n",
+            "ARDISA-CONSTRUCT-META-V1\nK|Cell|0\n",
+            "ARDISA-CONSTRUCT-META-V1\nF|76616c7565|496e74\n",
+            "ARDISA-CONSTRUCT-META-V1\nX|invalid|record\n",
+            "ARDISA-CONSTRUCT-META-V1\nK|Cell|5374617465\nF|76616c7565|496e74\nC|696e76617269616e74|76616c6964\n\n",
         ] {
             assert!(decode_construct_metadata(input).is_err(), "accepted malformed input: {input:?}");
         }
