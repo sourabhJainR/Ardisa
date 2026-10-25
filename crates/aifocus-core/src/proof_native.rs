@@ -98,6 +98,20 @@ pub fn execute_proof_construct_operation_with_evidence<F>(
 where
     F: Fn(&str, &[u8]) -> bool,
 {
+    // Validate source and operation before invoking the caller-supplied verifier.
+    // A verifier may be expensive or stateful, so malformed requests must not reach it.
+    let module = crate::parse(source).map_err(NativeProofCompileError::Parse)?;
+    crate::construct_operations::validate_module_operations(
+        &module,
+        std::slice::from_ref(operation),
+    ).map_err(|errors| NativeProofCompileError::InvalidOperation(errors.join("; ")))?;
+    let proof_name = match &operation.kind {
+        crate::construct_operations::ConstructOperationKind::ProofEvaluate { proof } => proof.as_str(),
+        _ => return Err(NativeProofCompileError::InvalidOperation(
+            "Proof runtime bridge requires a ProofEvaluate operation".into(),
+        )),
+    };
+    let artifact = compile_proof_source(source, proof_name)?;
     if evidence.is_empty() {
         return Err(NativeProofCompileError::InvalidOperation(
             "proof evidence set must not be empty".into(),
@@ -112,7 +126,7 @@ where
         }
         outcomes.push(item.outcome.clone());
     }
-    execute_proof_construct_operation(source, operation, &outcomes)
+    execute_proof_artifact(&artifact, &outcomes)
 }
 
 /// Execute the artifact with explicit runtime outcome records.
@@ -209,6 +223,21 @@ mod tests {
         assert!(execute_proof_construct_operation_with_evidence(
             &source, &operation, &[], |_outcome, _bytes| true
         ).is_err());
+
+        // Invalid source operations must reject before the caller-supplied verifier
+        // runs; verifiers can be expensive or stateful trust-boundary adapters.
+        let invalid = ConstructOperation {
+            function: "missing".into(),
+            kind: operation.kind.clone(),
+        };
+        let verifier_called = std::cell::Cell::new(false);
+        assert!(execute_proof_construct_operation_with_evidence(
+            &source, &invalid, &evidence, |_outcome, _bytes| {
+                verifier_called.set(true);
+                true
+            }
+        ).is_err());
+        assert!(!verifier_called.get());
     }
 
     #[test]
