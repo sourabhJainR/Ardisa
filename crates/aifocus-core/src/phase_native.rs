@@ -369,3 +369,64 @@ pub fn execute_phase_construct_operations(
     }
     execute_phase_artifact(&artifact)
 }
+
+
+#[cfg(test)]
+mod phase_operation_sequence_tests {
+    use super::*;
+    use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+
+    const SOURCE: &str = "module lifecycle\nphase Lifecycle\n  initial: Ready\n  Ready -> Running\n  Running -> Done\n  Ready -> Failed\nfn main() -> Int\n  1\n";
+
+    fn transition(from: &str, to: &str) -> ConstructOperation {
+        ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::PhaseTransition {
+                phase: "Lifecycle".into(),
+                from: from.into(),
+                to: to.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn ordered_phase_operations_execute_as_one_state_machine_run() {
+        let result = execute_phase_construct_operations(
+            SOURCE,
+            &[transition("Ready", "Running"), transition("Running", "Done")],
+        ).unwrap();
+        assert_eq!(result, "Done");
+    }
+
+    #[test]
+    fn phase_operation_sequence_rejects_discontinuous_or_wrong_initial_state() {
+        assert!(execute_phase_construct_operations(
+            SOURCE,
+            &[transition("Ready", "Running"), transition("Ready", "Failed")],
+        ).is_err());
+        assert!(execute_phase_construct_operations(
+            SOURCE,
+            &[transition("Running", "Done")],
+        ).is_err());
+        assert!(execute_phase_construct_operations(SOURCE, &[]).is_err());
+    }
+
+    #[test]
+    fn phase_operation_sequence_rejects_mixed_phase_and_wrong_operation_kind() {
+        let mixed = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::PhaseTransition {
+                phase: "Other".into(), from: "Ready".into(), to: "Done".into(),
+            },
+        };
+        assert!(execute_phase_construct_operations(
+            SOURCE,
+            &[transition("Ready", "Running"), mixed],
+        ).is_err());
+        let wrong = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::ProofEvaluate { proof: "P".into() },
+        };
+        assert!(execute_phase_construct_operations(SOURCE, &[wrong]).is_err());
+    }
+}
