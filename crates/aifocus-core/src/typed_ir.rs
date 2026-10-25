@@ -995,7 +995,7 @@ mod tests {
     #[test]
     fn construct_metadata_decoder_round_trips_validated_declarations() {
         let module = crate::parse(
-            "module constructs\\ncell State\\n  value: Int\\n  invariant: valid\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Done\\n",
+            "module constructs\ncell State\n  value: Int\n  invariant: valid\nphase Lifecycle\n  initial: Ready\n  Ready -> Done\n",
         ).unwrap();
         let constructs = lower_constructs(&module).unwrap();
         let encoded = encode_construct_metadata(&constructs).unwrap();
