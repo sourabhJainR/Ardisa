@@ -355,12 +355,16 @@ pub fn execute_phase_construct_operations(
         targets.push(to.to_string());
     }
 
-    let phase_name = phase_name.expect("non-empty operations established a Phase name");
+    let phase_name = phase_name.ok_or_else(|| NativePhaseCompileError::InvalidOperation(
+        "Phase operation sequence did not resolve a Phase name".into(),
+    ))?;
     let artifact = compile_declared_phase_source(source, phase_name, &targets)?;
     let declared_initial = artifact.initial_state.as_str();
-    let first_from = match &operations[0].kind {
-        crate::construct_operations::ConstructOperationKind::PhaseTransition { from, .. } => from.as_str(),
-        _ => unreachable!("operation kind checked above"),
+    let first_from = match operations.first().map(|operation| &operation.kind) {
+        Some(crate::construct_operations::ConstructOperationKind::PhaseTransition { from, .. }) => from.as_str(),
+        _ => return Err(NativePhaseCompileError::InvalidOperation(
+            "first operation is not a PhaseTransition".into(),
+        )),
     };
     if first_from != declared_initial {
         return Err(NativePhaseCompileError::InvalidOperation(format!(
