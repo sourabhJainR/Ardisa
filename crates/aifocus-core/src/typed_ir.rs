@@ -993,6 +993,52 @@ mod tests {
     }
 
     #[test]
+    fn construct_metadata_decoder_round_trips_validated_declarations() {
+        let module = crate::parse(
+            "module constructs\\ncell State\\n  value: Int\\n  invariant: valid\\nphase Lifecycle\\n  initial: Ready\\n  Ready -> Done\\n",
+        ).unwrap();
+        let constructs = lower_constructs(&module).unwrap();
+        let encoded = encode_construct_metadata(&constructs).unwrap();
+        let decoded = decode_construct_metadata(&encoded).unwrap();
+        assert_eq!(encode_construct_metadata(&decoded).unwrap(), encoded);
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0].kind, crate::ast::ConstructKind::Cell);
+        assert_eq!(decoded[0].name, "State");
+        assert!(matches!(
+            decoded[0].members.first(),
+            Some(TypedIrConstructMember::Field { name, ty: TypeKind::Int, .. }) if name == "value"
+        ));
+        assert!(matches!(
+            decoded[1].members.iter().find(|member| matches!(member, TypedIrConstructMember::Transition { .. })),
+            Some(TypedIrConstructMember::Transition { from, to, .. }) if from == "Ready" && to == "Done"
+        ));
+    }
+
+    #[test]
+    fn construct_metadata_decoder_rejects_malformed_and_noncanonical_records() {
+        for input in [
+            "BAD-HEADER\\n",
+            "ARDISA-CONSTRUCT-META-V1\\nK|Unknown|41\\n",
+            "ARDISA-CONSTRUCT-META-V1\\nK|Cell|0\\n",
+            "ARDISA-CONSTRUCT-META-V1\\nF|76616c7565|496e74\\n",
+            "ARDISA-CONSTRUCT-META-V1\\nX|invalid|record\\n",
+            "ARDISA-CONSTRUCT-META-V1\\nK|Cell|5374617465\\nF|76616c7565|496e74\\nC|696e76617269616e74|76616c6964\\n\\n",
+        ] {
+            assert!(decode_construct_metadata(input).is_err(), "accepted malformed input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn construct_metadata_decoder_handles_nested_field_types() {
+        assert_eq!(
+            parse_metadata_type("List<Result<Int, String>>").unwrap().display_name(),
+            "List<Result<Int, String>>"
+        );
+        assert!(parse_metadata_type("List<Int").is_err());
+        assert!(parse_metadata_type("Result<Int,>").is_err());
+    }
+
+    #[test]
     fn construct_metadata_rejects_duplicate_members_before_encoding() {
         let module = crate::parse(
             "module constructs\ncell State\n  value: Int\n  invariant: valid\n",
