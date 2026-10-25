@@ -179,8 +179,8 @@ fn main() -> Int
     }
 
     #[test]
-    fn malformed_construct_declaration_rejects_before_dispatch() {
-        let source = SOURCE.replace("  signature: required\n", "");
+    fn duplicate_construct_declaration_rejects_before_dispatch() {
+        let source = SOURCE.replace("cell Counter\n", "trace Build\n  signature: ed25519\ncell Counter\n");
         assert!(matches!(
             CombinedConstructPlan::validate(&source, &[]),
             Err(CombinedConstructError::Validation(_))
