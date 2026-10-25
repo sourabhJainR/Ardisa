@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn module_validation_rejects_expression_type_mismatch_even_when_field_type_matches() {
-        let source = "module operation_type_binding\\ncell State\\n  value: Int\\n  invariant: value >= 0\\nfn main() -> Int\\n  let flag = true\\n  return 1\\n";
+        let source = "module operation_type_binding\ncell State\n  value: Int\n  invariant: value >= 0\nfn main() -> Int\n  let flag = true\n  return 1\n";
         let module = parse(source).unwrap();
         let expression_id = match &module.items[0] {
             Item::Function(function) => match &function.body.stmts[0].kind {
