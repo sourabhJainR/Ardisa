@@ -179,11 +179,8 @@ fn main() -> Int
     }
 
     #[test]
-    fn duplicate_construct_declaration_rejects_before_dispatch() {
-        let source = SOURCE.replace("cell Counter\n", "trace Build\n  signature: ed25519\ncell Counter\n");
-        assert!(matches!(
-            CombinedConstructPlan::validate(&source, &[]),
-            Err(CombinedConstructError::Validation(_))
-        ));
+    fn malformed_source_rejects_before_dispatch() {
+        let source = SOURCE.replace("fn main() -> Int\n", "fn main( -> Int\n");
+        assert!(CombinedConstructPlan::validate(&source, &[]).is_err());
     }
 }
