@@ -301,3 +301,71 @@ mod tests {
         assert!(execute_phase_artifact(&artifact).is_err());
     }
 }
+
+
+/// Execute an ordered sequence of source-bound PhaseTransition operations as one
+/// native state-machine invocation. Every operation must target the same Phase,
+/// each from state must equal the state produced by the preceding transition, and
+/// the initial state comes from the source declaration rather than caller inference.
+pub fn execute_phase_construct_operations(
+    source: &str,
+    operations: &[crate::construct_operations::ConstructOperation],
+) -> Result<String, NativePhaseCompileError> {
+    if operations.is_empty() {
+        return Err(NativePhaseCompileError::InvalidOperation(
+            "Phase operation sequence must not be empty".into(),
+        ));
+    }
+    let module = crate::parse(source).map_err(NativePhaseCompileError::Parse)?;
+    crate::construct_operations::validate_module_operations(&module, operations)
+        .map_err(|errors| NativePhaseCompileError::InvalidOperation(errors.join("; ")))?;
+
+    let mut phase_name: Option<&str> = None;
+    let mut targets = Vec::with_capacity(operations.len());
+    let mut expected_from: Option<String> = None;
+
+    for (index, operation) in operations.iter().enumerate() {
+        let (phase, from, to) = match &operation.kind {
+            crate::construct_operations::ConstructOperationKind::PhaseTransition { phase, from, to } =>
+                (phase.as_str(), from.as_str(), to.as_str()),
+            _ => return Err(NativePhaseCompileError::InvalidOperation(format!(
+                "operation {index} is not a PhaseTransition"
+            ))),
+        };
+        if let Some(first_phase) = phase_name {
+            if phase != first_phase {
+                return Err(NativePhaseCompileError::InvalidOperation(format!(
+                    "operation {index} targets Phase '{phase}', expected '{first_phase}'"
+                )));
+            }
+        } else {
+            phase_name = Some(phase);
+        }
+
+        if let Some(expected) = expected_from.as_deref() {
+            if from != expected {
+                return Err(NativePhaseCompileError::InvalidOperation(format!(
+                    "operation {index} starts at '{from}', but the preceding transition ends at '{expected}'"
+                )));
+            }
+        } else {
+            expected_from = Some(from.to_string());
+        }
+        expected_from = Some(to.to_string());
+        targets.push(to.to_string());
+    }
+
+    let phase_name = phase_name.expect("non-empty operations established a Phase name");
+    let artifact = compile_declared_phase_source(source, phase_name, &targets)?;
+    let declared_initial = artifact.initial_state.as_str();
+    let first_from = match &operations[0].kind {
+        crate::construct_operations::ConstructOperationKind::PhaseTransition { from, .. } => from.as_str(),
+        _ => unreachable!("operation kind checked above"),
+    };
+    if first_from != declared_initial {
+        return Err(NativePhaseCompileError::InvalidOperation(format!(
+            "first transition starts at '{first_from}', but the declared initial state is '{declared_initial}'"
+        )));
+    }
+    execute_phase_artifact(&artifact)
+}
