@@ -246,25 +246,27 @@ fn sanitize_operation_calls_in_block(block: &mut crate::ast::Block) {
     use crate::ast::{Expr, ExprKind, StmtKind};
 
     fn visit_expr(expr: &mut Expr) {
-        if let ExprKind::Call { callee, args } = &expr.kind {
-            if let ExprKind::Name(name) = &callee.kind {
-                if matches!(
-                    name.as_str(),
-                    "cell_initialize" | "cell_update" | "phase_transition"
-                        | "vault_authorize" | "proof_evaluate" | "trace_emit"
-                ) {
-                    if matches!(name.as_str(), "cell_initialize" | "cell_update") && args.len() == 3 {
-                        let value = args[2].clone();
-                        expr.kind = ExprKind::Group(Box::new(value));
-                        if let ExprKind::Group(inner) = &mut expr.kind {
-                            visit_expr(inner);
-                        }
-                    } else {
-                        expr.kind = ExprKind::Int(0);
-                    }
-                    return;
-                }
+        let operation = match &expr.kind {
+            ExprKind::Call { callee, args } => match &callee.kind {
+                ExprKind::Name(name)
+                    if matches!(
+                        name.as_str(),
+                        "cell_initialize" | "cell_update" | "phase_transition"
+                            | "vault_authorize" | "proof_evaluate" | "trace_emit"
+                    ) => Some((name.clone(), args.len(), args.get(2).cloned())),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((name, arity, value)) = operation {
+            if matches!(name.as_str(), "cell_initialize" | "cell_update") && arity == 3 {
+                let mut value = value.expect("third Cell operation argument exists at arity three");
+                visit_expr(&mut value);
+                expr.kind = ExprKind::Group(Box::new(value));
+            } else {
+                expr.kind = ExprKind::Int(0);
             }
+            return;
         }
 
         match &mut expr.kind {
