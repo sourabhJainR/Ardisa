@@ -41,7 +41,17 @@ pub fn prepare_source_constructs(
         .map_err(SourceConstructPipelineError::SourceLowering)?;
     let validated = crate::construct_operations::validate_module_operations(&module, &operations)
         .map_err(SourceConstructPipelineError::OperationValidation)?;
-    let typed_module = typed_ir::lower_cfg(&module)
+    // Lower the ordinary function CFG without asking the general compiler to
+    // bless construct syntax. Reserved operation calls become inert placeholders
+    // in this private clone; the separately validated operation list is the only
+    // source of construct dispatch data. Reattach validated typed declarations for
+    // inspection, while compile_source continues to reject the untouched source.
+    let mut typed_source = module.clone();
+    typed_source.constructs.clear();
+    crate::construct_operations::sanitize_operation_calls_in_module(&mut typed_source);
+    let mut typed_module = typed_ir::lower_cfg(&typed_source)
+        .map_err(SourceConstructPipelineError::TypedLowering)?;
+    typed_module.constructs = typed_ir::lower_constructs(&module)
         .map_err(SourceConstructPipelineError::TypedLowering)?;
 
     Ok(PreparedSourceConstructs {
