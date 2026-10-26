@@ -184,10 +184,7 @@ pub fn validate_module_operations(
     // semantic-analysis clone. Keep Cell value expressions in the tree so inferred
     // types remain available; ordinary compile_source still sees the untouched AST
     // and retains AIF610.
-    for item in &mut function_only_module.items {
-        let Item::Function(function) = item;
-        sanitize_operation_calls_in_block(&mut function.body);
-    }
+    sanitize_operation_calls_in_module(&mut function_only_module);
     let semantic = crate::sema::analyze(&function_only_module).map_err(|errors| {
         errors.into_iter()
             .map(|error| format!("function semantic validation {}: {}", error.code, error.message))
@@ -237,6 +234,15 @@ pub fn validate_module_operations(
     }
 }
 
+
+/// Sanitize reserved source-operation calls in a caller-owned AST clone.
+/// The caller must remove construct declarations before ordinary semantic analysis.
+pub(crate) fn sanitize_operation_calls_in_module(module: &mut Module) {
+    for item in &mut module.items {
+        let Item::Function(function) = item;
+        sanitize_operation_calls_in_block(&mut function.body);
+    }
+}
 
 /// Replace reserved source-operation calls only in the validator's cloned AST.
 /// Cell operation values remain as child expressions so semantic type inference can
