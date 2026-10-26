@@ -175,10 +175,16 @@ pub fn validate_module_operations(
     // Analyze the function bodies without construct declarations: ordinary semantic
     // analysis intentionally emits AIF610 for construct-bearing modules. This still
     // gives us authoritative inferred expression types without weakening that gate.
-    let function_only_module = Module {
+    let mut function_only_module = Module {
         constructs: Vec::new(),
         ..module.clone()
     };
+    // The source-operation extractor owns these reserved call forms. They are not
+    // ordinary function calls, so erase their dispatch nodes only in this private
+    // semantic-analysis clone. Keep Cell value expressions in the tree so inferred
+    // types remain available; ordinary compile_source still sees the untouched AST
+    // and retains AIF610.
+    sanitize_operation_calls_in_module(&mut function_only_module);
     let semantic = crate::sema::analyze(&function_only_module).map_err(|errors| {
         errors.into_iter()
             .map(|error| format!("function semantic validation {}: {}", error.code, error.message))
@@ -225,6 +231,103 @@ pub fn validate_module_operations(
         Ok(validated)
     } else {
         Err(errors)
+    }
+}
+
+
+/// Sanitize reserved source-operation calls in a caller-owned AST clone.
+/// The caller must remove construct declarations before ordinary semantic analysis.
+pub(crate) fn sanitize_operation_calls_in_module(module: &mut Module) {
+    for item in &mut module.items {
+        let Item::Function(function) = item;
+        sanitize_operation_calls_in_block(&mut function.body);
+    }
+}
+
+/// Replace reserved source-operation calls only in the validator's cloned AST.
+/// Cell operation values remain as child expressions so semantic type inference can
+/// validate the value against the declared Cell field. All other operation calls
+/// become inert integer placeholders; this function never executes an operation.
+fn sanitize_operation_calls_in_block(block: &mut crate::ast::Block) {
+    use crate::ast::{Expr, ExprKind, StmtKind};
+
+    fn visit_expr(expr: &mut Expr) {
+        let operation = match &expr.kind {
+            ExprKind::Call { callee, args } => match &callee.kind {
+                ExprKind::Name(name)
+                    if matches!(
+                        name.as_str(),
+                        "cell_initialize" | "cell_update" | "phase_transition"
+                            | "vault_authorize" | "proof_evaluate" | "trace_emit"
+                    ) => Some((name.clone(), args.len(), args.get(2).cloned())),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((name, arity, value)) = operation {
+            if matches!(name.as_str(), "cell_initialize" | "cell_update") && arity == 3 {
+                let mut value = value.expect("third Cell operation argument exists at arity three");
+                visit_expr(&mut value);
+                expr.kind = ExprKind::Group(Box::new(value));
+            } else {
+                expr.kind = ExprKind::Int(0);
+            }
+            return;
+        }
+
+        match &mut expr.kind {
+            ExprKind::Binary { left, right, .. } => {
+                visit_expr(left);
+                visit_expr(right);
+            }
+            ExprKind::Call { callee, args } => {
+                visit_expr(callee);
+                for arg in args { visit_expr(arg); }
+            }
+            ExprKind::Group(inner) => visit_expr(inner),
+            ExprKind::List(items) => for item in items { visit_expr(item); },
+            ExprKind::Index { collection, index } => {
+                visit_expr(collection);
+                visit_expr(index);
+            }
+            ExprKind::Slice { collection, start, end } => {
+                visit_expr(collection);
+                visit_expr(start);
+                visit_expr(end);
+            }
+            ExprKind::If { condition, then_branch, else_branch } => {
+                visit_expr(condition);
+                sanitize_operation_calls_in_block(then_branch);
+                if let Some(branch) = else_branch {
+                    sanitize_operation_calls_in_block(branch);
+                }
+            }
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_)
+            | ExprKind::String(_) | ExprKind::Name(_) => {}
+        }
+    }
+
+    for stmt in &mut block.stmts {
+        match &mut stmt.kind {
+            StmtKind::Let { value, .. } | StmtKind::Set { value, .. }
+            | StmtKind::Return(Some(value)) | StmtKind::Expr(value) => visit_expr(value),
+            StmtKind::SetIndex { collection, index, value } => {
+                visit_expr(collection);
+                visit_expr(index);
+                visit_expr(value);
+            }
+            StmtKind::Scope { body } => sanitize_operation_calls_in_block(body),
+            StmtKind::Spawn { call, .. } => visit_expr(call),
+            StmtKind::While { condition, body } => {
+                visit_expr(condition);
+                sanitize_operation_calls_in_block(body);
+            }
+            StmtKind::For { iterable, body, .. } => {
+                visit_expr(iterable);
+                sanitize_operation_calls_in_block(body);
+            }
+            StmtKind::Return(None) | StmtKind::Join { .. } | StmtKind::Cancel { .. } => {}
+        }
     }
 }
 
