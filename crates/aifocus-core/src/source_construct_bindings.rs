@@ -5,7 +5,8 @@
 //! normal compiler continues to reject construct-bearing source with AIF610.
 
 use crate::{
-    ast::{Block, Expr, ExprKind, Item, Module, NodeId, Span, StmtKind},
+    ast::{Block, Expr, ExprKind, Item, Module, NodeId, StmtKind},
+    source::Span,
     construct_operations::{self, ConstructOperation},
 };
 
