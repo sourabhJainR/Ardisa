@@ -7,7 +7,8 @@
 use crate::{
     ast::{Block, Expr, ExprKind, Item, Module, NodeId, StmtKind},
     source::Span,
-    construct_operations::{self, ConstructOperation},
+    construct_operations::ConstructOperation,
+    source_construct_lowering,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +25,7 @@ pub struct SourceConstructOperationBinding {
 pub fn bind_source_operations(
     module: &Module,
 ) -> Result<Vec<SourceConstructOperationBinding>, Vec<String>> {
-    let operations = construct_operations::lower_source_operations(module)?;
+    let operations = source_construct_lowering::lower_source_operations(module)?;
     let mut sites = Vec::new();
     for item in &module.items {
         let Item::Function(function) = item;
