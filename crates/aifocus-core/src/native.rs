@@ -474,6 +474,40 @@ pub fn lower_construct_operation(
 /// Initializers accept only an integer literal (optionally grouped). Updates emit
 /// the value before CellUpdate; the caller must have the existing CellState on the
 /// VM stack. No variable lookup, arithmetic, or implicit value is synthesized.
+
+/// Evaluate the deliberately bounded compile-time integer subset accepted by the
+/// current Cell native lowering. Checked arithmetic rejects overflow, division by
+/// zero, and the signed-minimum / -1 edge instead of wrapping or guessing.
+fn evaluate_cell_integer_constant(
+    expression: &crate::ast::Expr,
+) -> Result<i64, NativeError> {
+    use crate::ast::{BinaryOp, ExprKind};
+    match &expression.kind {
+        ExprKind::Int(value) => Ok(*value),
+        ExprKind::Group(inner) => evaluate_cell_integer_constant(inner),
+        ExprKind::Binary { op, left, right } => {
+            let left = evaluate_cell_integer_constant(left)?;
+            let right = evaluate_cell_integer_constant(right)?;
+            let value = match op {
+                BinaryOp::Add => left.checked_add(right),
+                BinaryOp::Sub => left.checked_sub(right),
+                BinaryOp::Mul => left.checked_mul(right),
+                BinaryOp::Div => left.checked_div(right),
+                BinaryOp::Mod => left.checked_rem(right),
+                _ => return Err(NativeError::InvalidProgram(
+                    "Cell constant expression supports only integer arithmetic".into(),
+                )),
+            };
+            value.ok_or_else(|| NativeError::InvalidProgram(
+                "Cell constant expression overflows or divides by zero".into(),
+            ))
+        }
+        _ => Err(NativeError::InvalidProgram(
+            "Cell expression lowering requires a compile-time integer constant; local and effectful expressions are unsupported".into(),
+        )),
+    }
+}
+
 pub fn lower_cell_construct_operation(
     module: &crate::ast::Module,
     operation: &crate::construct_operations::ConstructOperation,
@@ -513,18 +547,7 @@ pub fn lower_cell_construct_operation(
             "Cell expression reference {expression_id} is not present in function '{}'",
             operation.function
         )))?;
-    let initial = match &expression.kind {
-        crate::ast::ExprKind::Int(value) => *value,
-        crate::ast::ExprKind::Group(inner) => match &inner.kind {
-            crate::ast::ExprKind::Int(value) => *value,
-            _ => return Err(NativeError::InvalidProgram(
-                "Cell expression lowering supports only integer literals or grouped integer literals".into(),
-            )),
-        },
-        _ => return Err(NativeError::InvalidProgram(
-            "Cell expression lowering supports only integer literals or grouped integer literals".into(),
-        )),
-    };
+    let initial = evaluate_cell_integer_constant(expression)?;
 
     let constructs = crate::typed_ir::lower_constructs(module)
         .map_err(|errors| NativeError::InvalidProgram(errors.join("; ")))?;
@@ -6837,3 +6860,59 @@ mod canonical_construct_lowering_tests {
         assert!(matches!(invalid, Err(NativeError::InvalidProgram(_))));
     }
 }
+
+#[cfg(test)]
+mod cell_constant_expression_lowering_tests {
+    use super::*;
+
+    fn cell_operation(source: &str) -> (crate::ast::Module, crate::construct_operations::ConstructOperation) {
+        let module = crate::parse(source).expect("source parses");
+        let expression_id = match &module.items[0] {
+            crate::ast::Item::Function(function) => match &function.body.stmts[0].kind {
+                crate::ast::StmtKind::Return(Some(expression)) => expression.id.0,
+                other => panic!("expected return expression, got {other:?}"),
+            },
+        };
+        let operation = crate::construct_operations::ConstructOperation {
+            function: "main".into(),
+            kind: crate::construct_operations::ConstructOperationKind::CellInitialize {
+                cell: "Counter".into(),
+                field: "value".into(),
+                expression: expression_id,
+                value_type: crate::ast::TypeKind::Int,
+            },
+        };
+        (module, operation)
+    }
+
+    #[test]
+    fn cell_constant_expression_lowering_supports_checked_arithmetic() {
+        let source = r#"module cell_constant_arithmetic
+cell Counter
+  value: Int
+  invariant: value >= 0
+fn main() -> Int
+  return (6 + 4) * 2
+"#;
+        let (module, operation) = cell_operation(source);
+        let lowered = lower_cell_construct_operation(&module, &operation).unwrap();
+        assert!(matches!(&lowered[..], [NativeInstr::CellStart { spec }] if spec.initial == 20));
+    }
+
+    #[test]
+    fn cell_constant_expression_lowering_rejects_overflow_and_division_by_zero() {
+        for expression in [
+            "9223372036854775807 + 1",
+            "7 / 0",
+            "7 % 0",
+            "(0 - 9223372036854775807 - 1) / (0 - 1)",
+        ] {
+            let source = format!(
+                "module cell_bad_constant\ncell Counter\n  value: Int\n  invariant: value >= 0\nfn main() -> Int\n  return {expression}\n"
+            );
+            let (module, operation) = cell_operation(&source);
+            assert!(lower_cell_construct_operation(&module, &operation).is_err(), "must reject {expression}");
+        }
+    }
+}
+
