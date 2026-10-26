@@ -8,7 +8,7 @@
 
 use crate::{
     ast::Module,
-    construct_operations::{ConstructOperation, ValidatedConstructOperations},
+    construct_operations::ValidatedConstructOperations,
     source_construct_lowering,
     typed_ir::{self, TypedIrModule},
 };
@@ -91,11 +91,11 @@ fn main() -> Int
         assert_eq!(prepared.typed_module.constructs.len(), 5);
         assert_eq!(prepared.operations.operations.len(), 6);
         assert!(matches!(
-            prepared.operations.operations[0].kind,
+            &prepared.operations.operations[0].kind,
             crate::construct_operations::ConstructOperationKind::CellInitialize { .. }
         ));
         assert!(matches!(
-            prepared.operations.operations[5].kind,
+            &prepared.operations.operations[5].kind,
             crate::construct_operations::ConstructOperationKind::CellUpdate { .. }
         ));
     }
