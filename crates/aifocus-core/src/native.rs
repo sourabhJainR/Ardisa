@@ -412,7 +412,7 @@ pub fn lower_construct_declaration(
 pub fn lower_construct_operation(
     module: &crate::ast::Module,
     operation: &crate::construct_operations::ConstructOperation,
-) -> Result<NativeInstr, NativeError> {
+) -> Result<Vec<NativeInstr>, NativeError> {
     crate::construct_operations::validate_module_operations(
         module,
         std::slice::from_ref(operation),
@@ -429,19 +429,31 @@ pub fn lower_construct_operation(
     };
 
     match &operation.kind {
-        crate::construct_operations::ConstructOperationKind::PhaseTransition { phase, .. } => {
+        crate::construct_operations::ConstructOperationKind::PhaseTransition { phase, from, to } => {
             let construct = construct_by_name(phase)?;
-            let _ = phase_start_instruction(construct)?;
-            Ok(NativeInstr::PhaseTransition)
+            let start = phase_start_instruction(construct)?;
+            let initial = match &start {
+                NativeInstr::PhaseStart { graph } => graph.initial.as_str(),
+                _ => unreachable!("phase_start_instruction returns PhaseStart"),
+            };
+            // This first executable slice supports one transition from the
+            // declared initial state. Later transitions need a carried state token.
+            if from != initial {
+                return Err(NativeError::InvalidProgram(format!(
+                    "Phase operation '{}' starts at '{}', but this lowering slice can only prove initial state '{}'",
+                    phase, from, initial
+                )));
+            }
+            Ok(vec![start, NativeInstr::PushString(to.clone()), NativeInstr::PhaseTransition])
         }
         crate::construct_operations::ConstructOperationKind::VaultAuthorize { vault, capability } => {
             let capability = NativeVaultCapability::parse(capability).ok_or_else(|| {
                 NativeError::InvalidProgram(format!("unknown Vault capability '{capability}'"))
             })?;
-            vault_authorize_instruction(construct_by_name(vault)?, capability)
+            Ok(vec![vault_authorize_instruction(construct_by_name(vault)?, capability)?])
         }
         crate::construct_operations::ConstructOperationKind::ProofEvaluate { proof } => {
-            proof_check_instruction(construct_by_name(proof)?)
+            Ok(vec![proof_check_instruction(construct_by_name(proof)?)?])
         }
         crate::construct_operations::ConstructOperationKind::CellInitialize { cell, .. }
         | crate::construct_operations::ConstructOperationKind::CellUpdate { cell, .. } => {
@@ -6419,8 +6431,37 @@ mod native_phase_state_tests {
             },
         };
         assert_eq!(
-            lower_construct_operation(&module, &phase).expect("declared Phase edge lowers"),
-            NativeInstr::PhaseTransition
+            lower_construct_operation(&module, &phase).expect("initial Phase edge lowers"),
+            vec![
+                phase_start_instruction(&crate::typed_ir::lower_constructs(&module).unwrap()[0]).unwrap(),
+                NativeInstr::PushString("Running".into()),
+                NativeInstr::PhaseTransition,
+            ]
+        );
+
+        let mut executable = lower_construct_operation(&module, &phase).unwrap();
+        executable.push(NativeInstr::PhaseCurrent);
+        executable.push(NativeInstr::ReturnTyped("String".into()));
+        let program = NativeProgram {
+            functions: [("main".into(), NativeFunction { params: vec![], code: executable })]
+                .into_iter()
+                .collect(),
+        };
+        let decoded = decode_program(&encode_program(&program)).expect("combined Phase sequence round-trips");
+        assert_eq!(
+            run_program(&decoded, "main", &[]).unwrap(),
+            NativeValue::String("Running".into())
+        );
+
+        let later_edge = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::PhaseTransition {
+                phase: "Lifecycle".into(), from: "Running".into(), to: "Done".into(),
+            },
+        };
+        assert!(
+            lower_construct_operation(&module, &later_edge).is_err(),
+            "later edges require a carried PhaseState token and must not restart at the initial state"
         );
 
         let vault = ConstructOperation {
@@ -6430,8 +6471,8 @@ mod native_phase_state_tests {
             },
         };
         assert!(matches!(
-            lower_construct_operation(&module, &vault).expect("declared capability lowers"),
-            NativeInstr::VaultAuthorize { .. }
+            lower_construct_operation(&module, &vault).expect("declared capability lowers").as_slice(),
+            [NativeInstr::VaultAuthorize { .. }]
         ));
 
         let proof = ConstructOperation {
@@ -6439,8 +6480,8 @@ mod native_phase_state_tests {
             kind: ConstructOperationKind::ProofEvaluate { proof: "Safety".into() },
         };
         assert!(matches!(
-            lower_construct_operation(&module, &proof).expect("conservative Proof policy lowers"),
-            NativeInstr::ProofCheck { .. }
+            lower_construct_operation(&module, &proof).expect("conservative Proof policy lowers").as_slice(),
+            [NativeInstr::ProofCheck { .. }]
         ));
 
         let expression = match &module.items[0] {
