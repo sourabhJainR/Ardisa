@@ -455,11 +455,13 @@ pub fn lower_construct_operation(
         crate::construct_operations::ConstructOperationKind::ProofEvaluate { proof } => {
             Ok(vec![proof_check_instruction(construct_by_name(proof)?)?])
         }
-        crate::construct_operations::ConstructOperationKind::CellInitialize { cell, .. }
-        | crate::construct_operations::ConstructOperationKind::CellUpdate { cell, .. } => {
-            Err(NativeError::InvalidProgram(format!(
-                "Cell operation for '{cell}' cannot be lowered until its typed expression is lowered to a native value"
-            )))
+        crate::construct_operations::ConstructOperationKind::CellInitialize { .. }
+        | crate::construct_operations::ConstructOperationKind::CellUpdate { .. } => {
+            // Reuse the dedicated checked integer-expression lowering path. This
+            // remains a deliberately bounded subset: non-constant expressions,
+            // unsupported field types, overflow, and invalid invariants still fail
+            // closed rather than producing a partial instruction sequence.
+            lower_cell_construct_operation(module, operation)
         }
         crate::construct_operations::ConstructOperationKind::TraceEmit { trace, .. } => {
             Err(NativeError::InvalidProgram(format!(
@@ -6440,6 +6442,53 @@ mod typed_propagation_v2_tests {
 #[cfg(test)]
 mod native_phase_state_tests {
     use super::*;
+
+    #[test]
+    fn unified_construct_dispatcher_lowers_validated_constant_cell_operations() {
+        use crate::construct_operations::{ConstructOperation, ConstructOperationKind};
+        let source = r#"module native_cell_dispatch
+cell Counter
+  value: Int
+  invariant: value >= 0
+fn main() -> Int
+  cell_initialize("Counter", "value", 2 + 3)
+  cell_update("Counter", "value", 7)
+  return 0
+"#;
+        let module = crate::parse(source).unwrap();
+        let statements = match &module.items[0] {
+            crate::ast::Item::Function(function) => &function.body.stmts,
+        };
+        let expression_id = |index: usize| match &statements[index].kind {
+            crate::ast::StmtKind::Expr(expr) => match &expr.kind {
+                crate::ast::ExprKind::Call { args, .. } => args[2].id.0,
+                other => panic!("expected operation call, got {other:?}"),
+            },
+            other => panic!("expected expression statement, got {other:?}"),
+        };
+        let init = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::CellInitialize {
+                cell: "Counter".into(), field: "value".into(),
+                expression: expression_id(0), value_type: crate::ast::TypeKind::Int,
+            },
+        };
+        let update = ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::CellUpdate {
+                cell: "Counter".into(), field: "value".into(),
+                expression: expression_id(1), value_type: crate::ast::TypeKind::Int,
+            },
+        };
+        assert!(matches!(
+            lower_construct_operation(&module, &init).unwrap().as_slice(),
+            [NativeInstr::CellStart { spec }] if spec.name == "Counter" && spec.initial == 5
+        ));
+        assert_eq!(
+            lower_construct_operation(&module, &update).unwrap(),
+            vec![NativeInstr::PushInt(7), NativeInstr::CellUpdate]
+        );
+    }
 
     #[test]
     fn validated_construct_operations_lower_only_when_native_semantics_are_preserved() {
