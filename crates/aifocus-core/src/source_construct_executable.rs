@@ -163,7 +163,7 @@ fn ensure_supported_declarations(
                 declaration.name
             )));
         }
-        match declaration.kind {
+        match &declaration.kind {
             ConstructKind::Cell => {
                 for member in &declaration.members {
                     match member {
@@ -184,8 +184,11 @@ fn ensure_supported_declarations(
                 }
             }
             ConstructKind::Phase => {
-                if declaration.members.iter().any(|member| !matches!(member,
-                    ConstructMember::Transition { .. } | ConstructMember::Clause { name, .. } if name == "initial")) {
+                if declaration.members.iter().any(|member| match member {
+                    ConstructMember::Transition { .. } => false,
+                    ConstructMember::Clause { name, .. } => name != "initial",
+                    ConstructMember::Field { .. } => true,
+                }) {
                     return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
                         "Phase '{}' contains unsupported members", declaration.name
                     )));
