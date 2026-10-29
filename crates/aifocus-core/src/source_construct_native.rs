@@ -84,7 +84,7 @@ fn main() -> Int
         assert!(first.iter().enumerate().all(|(index, item)| {
             item.binding.ordinal == index && item.binding.source_span.end > item.binding.source_span.start
         }));
-        assert!(matches!(first[0].binding.operation.kind, ConstructOperationKind::CellInitialize { .. }));
+        assert!(matches!(&first[0].binding.operation.kind, ConstructOperationKind::CellInitialize { .. }));
         assert!(matches!(first[0].instructions.as_slice(), [NativeInstr::CellStart { spec }] if spec.initial == 3));
         assert!(matches!(first[1].instructions.as_slice(), [
             NativeInstr::PhaseStart { .. },
