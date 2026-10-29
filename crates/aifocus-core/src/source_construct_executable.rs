@@ -389,8 +389,14 @@ fn main() -> Int
     }
 
     #[test]
-    fn standard_compiler_still_rejects_construct_source_with_aif610() {
-        assert!(matches!(crate::pipeline::compile_source(SOURCE),
-            Err(crate::pipeline::PipelineError::Semantic(diagnostics)) if diagnostics.iter().any(|d| d.code == "AIF610")));
+    fn standard_compiler_routes_supported_construct_source_to_combined_artifact() {
+        let compiled = crate::pipeline::compile_source(SOURCE)
+            .expect("standard compiler supports validated Cell/Phase/Vault modules");
+        assert!(compiled.artifact.starts_with(native::ARTIFACT_MAGIC));
+        assert_eq!(
+            run_combined_artifact(&compiled.artifact, "main", &[], native::ExecutionLimits::default()).unwrap(),
+            NativeValue::Int(7)
+        );
+        assert!(compiled.evidence.phase_order.contains(&"native_construct_placement"));
     }
 }
