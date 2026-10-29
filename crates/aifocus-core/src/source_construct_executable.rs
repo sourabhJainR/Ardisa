@@ -26,8 +26,8 @@ pub enum SourceConstructExecutableError {
     UnsupportedRuntimeBoundary(String),
     CompilerContract(Vec<String>),
 }
-fn native_error(error: impl std::fmt::Display) -> SourceConstructExecutableError {
-    SourceConstructExecutableError::Native(error.to_string())
+fn native_error(error: native::NativeError) -> SourceConstructExecutableError {
+    SourceConstructExecutableError::Native(format!("{error:?}"))
 }
 
 /// Compile Cell Int constants, validated Phase transitions, and Vault checks.
