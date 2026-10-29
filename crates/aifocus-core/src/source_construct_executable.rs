@@ -80,7 +80,7 @@ pub fn compile_source_with_constructs(source: &str) -> Result<CompiledArtifact, 
 
     let verified = ValidatedNativeProgram::try_new(program).map_err(native_error)?;
     let report = crate::compiler_engine::BackendReport::verify(verified.as_program())
-        .map_err(SourceConstructExecutableError::CompilerContract)?;
+        .map_err(|error| SourceConstructExecutableError::CompilerContract(vec![error]))?;
     let artifact = native::encode_program(verified.as_program());
     debug_assert_eq!(report.artifact_hash,
         crate::compiler_engine::BackendReport::verify(verified.as_program())
