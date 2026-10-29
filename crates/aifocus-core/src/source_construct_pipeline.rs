@@ -8,8 +8,8 @@
 
 use crate::{
     ast::Module,
-    construct_operations::ValidatedConstructOperations,
-    source_construct_lowering,
+    construct_operations::{ConstructOperation, ValidatedConstructOperations},
+    source_construct_bindings::{self, SourceConstructOperationBinding},
     typed_ir::{self, TypedIrModule},
 };
 
@@ -26,6 +26,7 @@ pub struct PreparedSourceConstructs {
     pub module: Module,
     pub typed_module: TypedIrModule,
     pub operations: ValidatedConstructOperations,
+    pub operation_bindings: Vec<SourceConstructOperationBinding>,
 }
 
 /// Prepare one source module through every available pre-execution compiler gate.
@@ -37,8 +38,12 @@ pub fn prepare_source_constructs(
     source: &str,
 ) -> Result<PreparedSourceConstructs, SourceConstructPipelineError> {
     let module = crate::parse(source).map_err(SourceConstructPipelineError::Parse)?;
-    let operations = source_construct_lowering::lower_source_operations(&module)
+    let operation_bindings = source_construct_bindings::bind_source_operations(&module)
         .map_err(SourceConstructPipelineError::SourceLowering)?;
+    let operations: Vec<ConstructOperation> = operation_bindings
+        .iter()
+        .map(|binding| binding.operation.clone())
+        .collect();
     let validated = crate::construct_operations::validate_module_operations(&module, &operations)
         .map_err(SourceConstructPipelineError::OperationValidation)?;
     // Lower the ordinary function CFG without asking the general compiler to
@@ -58,6 +63,7 @@ pub fn prepare_source_constructs(
         module,
         typed_module,
         operations: validated,
+        operation_bindings,
     })
 }
 
@@ -100,6 +106,10 @@ fn main() -> Int
         assert_eq!(prepared.typed_module.functions.len(), 1);
         assert_eq!(prepared.typed_module.constructs.len(), 5);
         assert_eq!(prepared.operations.operations.len(), 6);
+        assert_eq!(prepared.operation_bindings.len(), 6);
+        assert!(prepared.operation_bindings.iter().enumerate().all(|(index, binding)| {
+            binding.ordinal == index && binding.source_span.end > binding.source_span.start
+        }));
         assert!(matches!(
             &prepared.operations.operations[0].kind,
             crate::construct_operations::ConstructOperationKind::CellInitialize { .. }
