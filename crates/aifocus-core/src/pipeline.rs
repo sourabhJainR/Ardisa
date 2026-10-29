@@ -796,17 +796,12 @@ fn main() -> Int
   0
 "#;
 
-        let diagnostics = match compile_source(source) {
-            Err(PipelineError::Semantic(diagnostics)) => diagnostics,
-            other => panic!("AI Mode declarations must fail during semantic analysis: {other:?}"),
-        };
-        for name in ["Evidence", "State", "NoNetwork", "P", "Lifecycle"] {
-            assert!(
-                diagnostics.iter().any(|diagnostic| {
-                    diagnostic.code == "AIF610" && diagnostic.message.contains(name)
-                }),
-                "missing fail-closed AIF610 diagnostic for {name}: {diagnostics:?}"
-            );
-        }
+        let error = compile_source(source)
+            .expect_err("unsupported declarations must not be silently dropped into native code");
+        assert!(matches!(
+            error,
+            PipelineError::CompilerContract(ref diagnostics)
+                if diagnostics.iter().any(|diagnostic| diagnostic.contains("UnsupportedRuntimeBoundary"))
+        ), "unexpected construct gate result: {error:?}");
     }
 }
