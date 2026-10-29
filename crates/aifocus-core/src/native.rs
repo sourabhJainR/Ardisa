@@ -6570,8 +6570,8 @@ fn main() -> Int
             },
         };
         assert!(matches!(
-            lower_construct_operation(&module, &cell),
-            Err(NativeError::InvalidProgram(message)) if message.contains("typed expression")
+            lower_construct_operation(&module, &cell).expect("constant Cell value lowers"),
+            [NativeInstr::CellStart { spec }] if spec.name == "State" && spec.initial == 1
         ));
 
         let trace = ConstructOperation {
