@@ -179,10 +179,16 @@ fn ensure_supported_declarations(
                             }
                         }
                         ConstructMember::Clause { name, .. } if name == "invariant" => {}
-                        _ => return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
-                            "Cell '{}' contains a field or clause outside the executable subset",
-                            declaration.name
-                        ))),
+                        _ => {
+                            return Err(
+                                SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                                    format!(
+                                        "Cell '{}' contains a field or clause outside the executable subset",
+                                        declaration.name
+                                    ),
+                                ),
+                            );
+                        }
                     }
                 }
             }
