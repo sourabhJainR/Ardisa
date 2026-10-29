@@ -19,6 +19,7 @@ pub mod source_construct_lowering;
 pub mod source_construct_bindings;
 pub mod source_construct_native_plan;
 pub mod source_construct_pipeline;
+pub mod source_construct_executable;
 pub mod source_construct_native;
 pub mod combined_construct_runtime;
 pub mod context_window;
