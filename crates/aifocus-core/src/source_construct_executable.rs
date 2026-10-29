@@ -339,10 +339,22 @@ fn main() -> Int
     }
     #[test]
     fn failed_cell_invariant_stops_execution_before_following_instructions() {
-        let source = SOURCE.replace("cell_update(\"Counter\", \"value\", 2)", "cell_update(\"Counter\", \"value\", -1)");
+        let source = SOURCE.replace("cell_update(\"Counter\", \"value\", 2)", "cell_update(\"Counter\", \"value\", 0 - 1)");
         let compiled = compile_source_with_constructs(&source).expect("constant expression compiles");
         assert!(run_combined_artifact(&compiled.artifact, "main", &[], native::ExecutionLimits::default()).is_err());
     }
+    #[test]
+    fn undeclared_vault_capability_is_rejected_before_native_emission() {
+        let source = SOURCE.replace(
+            "vault_authorize(\"Local\", \"filesystem_read\")",
+            "vault_authorize(\"Local\", \"network\")",
+        );
+        assert!(matches!(
+            compile_source_with_constructs(&source),
+            Err(SourceConstructExecutableError::Preparation(_))
+        ));
+    }
+
     #[test]
     fn proof_and_trace_fail_closed_without_runtime_evidence_inputs() {
         let proof = SOURCE.replace("fn main() -> Int", "proof ReleaseGate\n  requires: bounds\n  ensures: true\n  on_unknown: reject\n  required: true\nfn main() -> Int")
