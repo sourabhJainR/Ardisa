@@ -6570,7 +6570,7 @@ fn main() -> Int
             },
         };
         assert!(matches!(
-            lower_construct_operation(&module, &cell).expect("constant Cell value lowers"),
+            lower_construct_operation(&module, &cell).expect("constant Cell value lowers").as_slice(),
             [NativeInstr::CellStart { spec }] if spec.name == "State" && spec.initial == 1
         ));
 
