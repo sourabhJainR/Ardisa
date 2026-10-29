@@ -2,9 +2,10 @@
 //!
 //! This gate wires parsing, source operation extraction, declaration/reference
 //! validation, expression type checking, and typed CFG lowering into one deterministic
-//! API. It intentionally does not produce ARDISA-EXEC-V1; pipeline::compile_source
-//! continues to reject construct-bearing modules with AIF610 until native operation
-//! placement and artifact semantics are implemented end-to-end.
+//! API. It does not itself produce ARDISA-EXEC-V1. The standard compiler currently
+//! routes the validated Cell/Phase/Vault executable subset through native operation
+//! placement; unsupported Proof/Trace runtime trust boundaries remain fail-closed
+//! until their evidence and signing contracts are integrated.
 
 use crate::{
     ast::Module,
