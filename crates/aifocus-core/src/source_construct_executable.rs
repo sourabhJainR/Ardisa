@@ -1,8 +1,10 @@
 //! Opt-in executable source-to-native integration for the supported AI-native construct subset.
 //!
-//! This entry point does not alter pipeline::compile_source or its AIF610 gate.
-//! Source operation calls are replaced with unique markers, compiled, then replaced
-//! by native instructions at the same bytecode positions. Jump targets are remapped.
+//! pipeline::compile_source routes declared construct modules through this path for
+//! the currently supported Cell(Int)/Phase/Vault subset. Unsupported declarations,
+//! operations, and runtime trust boundaries fail closed. Source operation calls are
+//! replaced with unique markers, compiled, then replaced by native instructions at
+//! the same bytecode positions. Jump targets are remapped.
 
 use std::collections::{BTreeMap, BTreeSet};
 use crate::{
@@ -32,7 +34,8 @@ fn native_error(error: native::NativeError) -> SourceConstructExecutableError {
 
 /// Compile Cell Int constants, validated Phase transitions, and Vault checks.
 /// Proof and Trace are rejected until their runtime evidence and signing inputs are
-/// explicit in the executable contract. The standard compile_source path is unchanged.
+/// explicit in the executable contract. The standard compiler calls this path only
+/// for declarations that pass the explicit supported-subset gate.
 pub fn compile_source_with_constructs(source: &str) -> Result<CompiledArtifact, SourceConstructExecutableError> {
     let tokens = crate::token::lex(source).map_err(SourceConstructExecutableError::Parse)?;
     let original = crate::parse(source).map_err(SourceConstructExecutableError::Parse)?;
