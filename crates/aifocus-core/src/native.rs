@@ -6488,6 +6488,23 @@ fn main() -> Int
             lower_construct_operation(&module, &update).unwrap(),
             vec![NativeInstr::PushInt(7), NativeInstr::CellUpdate]
         );
+
+        let mut code = lower_construct_operation(&module, &init).unwrap();
+        code.extend(lower_construct_operation(&module, &update).unwrap());
+        code.push(NativeInstr::CellCurrent);
+        code.push(NativeInstr::ReturnTyped("Int".into()));
+        let program = NativeProgram {
+            functions: [("main".into(), NativeFunction { params: vec![], code })]
+                .into_iter()
+                .collect(),
+        };
+        let artifact = encode_program(&program);
+        let decoded = decode_program(&artifact).expect("combined Cell artifact round-trips");
+        assert_eq!(artifact, encode_program(&decoded), "encoding is canonical");
+        assert_eq!(
+            run_program(&decoded, "main", &[]).expect("combined Cell operations execute"),
+            NativeValue::Int(7)
+        );
     }
 
     #[test]
