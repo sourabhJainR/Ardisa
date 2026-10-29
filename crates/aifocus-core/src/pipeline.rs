@@ -45,6 +45,26 @@ pub fn compile_source(source: &str) -> Result<CompiledArtifact, PipelineError> {
     let module = crate::parse(source).map_err(PipelineError::Parse)?;
     phase_order.push("parser_ast");
 
+    // Route declared AI-native constructs through the validated combined-artifact
+    // lowering path. Unsupported operations (notably Proof/Trace without trusted
+    // runtime evidence) remain fail-closed; ordinary programs keep the existing path.
+    if !module.constructs.is_empty() {
+        return crate::source_construct_executable::compile_source_with_constructs(source)
+            .map_err(|error| match error {
+                crate::source_construct_executable::SourceConstructExecutableError::Parse(errors) =>
+                    PipelineError::Parse(errors),
+                crate::source_construct_executable::SourceConstructExecutableError::Semantic(errors) =>
+                    PipelineError::Semantic(errors),
+                crate::source_construct_executable::SourceConstructExecutableError::Ownership(errors) =>
+                    PipelineError::Ownership(errors),
+                crate::source_construct_executable::SourceConstructExecutableError::Concurrency(errors) =>
+                    PipelineError::Concurrency(errors),
+                crate::source_construct_executable::SourceConstructExecutableError::TypedIr(errors) =>
+                    PipelineError::TypedIr(errors),
+                other => PipelineError::CompilerContract(vec![format!("AI-native construct compilation failed closed: {other:?}")]),
+            });
+    }
+
     let semantic = sema::analyze(&module).map_err(PipelineError::Semantic)?;
     phase_order.push("semantic_type");
 
