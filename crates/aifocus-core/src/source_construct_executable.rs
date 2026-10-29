@@ -38,6 +38,7 @@ pub fn compile_source_with_constructs(source: &str) -> Result<CompiledArtifact, 
     let original = crate::parse(source).map_err(SourceConstructExecutableError::Parse)?;
     let prepared = crate::source_construct_pipeline::prepare_source_constructs(source)
         .map_err(|error| SourceConstructExecutableError::Preparation(format!("{error:?}")))?;
+    ensure_supported_declarations(&original, &prepared.operation_bindings)?;
     for binding in &prepared.operation_bindings {
         match &binding.operation.kind {
             ConstructOperationKind::ProofEvaluate { proof } =>
@@ -112,6 +113,101 @@ pub fn run_combined_artifact(
     let decoded = native::decode_program(artifact).map_err(native_error)?;
     ValidatedNativeProgram::try_new(decoded).map_err(native_error)?
         .run_with_limits(entry, args, limits).map_err(native_error)
+}
+
+fn ensure_supported_declarations(
+    module: &Module,
+    bindings: &[SourceConstructOperationBinding],
+) -> Result<(), SourceConstructExecutableError> {
+    use crate::ast::{ConstructKind, ConstructMember, TypeKind};
+    if module.constructs.is_empty() {
+        return Ok(());
+    }
+    if bindings.is_empty() {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "construct declarations without executable source operations are not supported".into(),
+        ));
+    }
+
+    let mut used = BTreeSet::<String>::new();
+    let mut initialized_fields = BTreeSet::<(String, String)>::new();
+    for binding in bindings {
+        match &binding.operation.kind {
+            ConstructOperationKind::CellInitialize { cell, field, .. } => {
+                used.insert(cell.clone());
+                initialized_fields.insert((cell.clone(), field.clone()));
+            }
+            ConstructOperationKind::CellUpdate { cell, field, .. } => {
+                used.insert(cell.clone());
+                let _ = field;
+            }
+            ConstructOperationKind::PhaseTransition { phase, .. } => { used.insert(phase.clone()); }
+            ConstructOperationKind::VaultAuthorize { vault, .. } => { used.insert(vault.clone()); }
+            ConstructOperationKind::ProofEvaluate { proof } => {
+                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                    format!("Proof '{proof}' has no trusted per-invocation evidence runtime"),
+                ));
+            }
+            ConstructOperationKind::TraceEmit { trace, event } => {
+                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                    format!("Trace '{trace}' event '{event}' has no trusted signing runtime"),
+                ));
+            }
+        }
+    }
+
+    for declaration in &module.constructs {
+        if !used.contains(&declaration.name) {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                "construct '{}' is declared but not represented by an executable operation",
+                declaration.name
+            )));
+        }
+        match declaration.kind {
+            ConstructKind::Cell => {
+                for member in &declaration.members {
+                    match member {
+                        ConstructMember::Field { name, ty, .. } if ty.kind == TypeKind::Int => {
+                            if !initialized_fields.contains(&(declaration.name.clone(), name.clone())) {
+                                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                                    "Cell '{}.{}' requires an explicit initialization operation",
+                                    declaration.name, name
+                                )));
+                            }
+                        }
+                        ConstructMember::Clause { name, .. } if name == "invariant" => {}
+                        _ => return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                            "Cell '{}' contains a field or clause outside the executable subset",
+                            declaration.name
+                        ))),
+                    }
+                }
+            }
+            ConstructKind::Phase => {
+                if declaration.members.iter().any(|member| !matches!(member,
+                    ConstructMember::Transition { .. } | ConstructMember::Clause { name, .. } if name == "initial")) {
+                    return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                        "Phase '{}' contains unsupported members", declaration.name
+                    )));
+                }
+            }
+            ConstructKind::Vault => {
+                if declaration.members.iter().any(|member| !matches!(member,
+                    ConstructMember::Clause { name, .. } if name == "capabilities")) {
+                    return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                        "Vault '{}' contains deny rules or members outside the executable subset",
+                        declaration.name
+                    )));
+                }
+            }
+            ConstructKind::Proof | ConstructKind::Trace => {
+                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                    "{:?} '{}' requires a trusted runtime boundary", declaration.kind, declaration.name
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn ensure_direct_call_sites(module: &Module, bindings: &[SourceConstructOperationBinding])
