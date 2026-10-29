@@ -365,6 +365,30 @@ fn main() -> Int
         assert!(matches!(compile_source_with_constructs(&trace), Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(_))));
     }
     #[test]
+    fn unresolved_cell_field_is_rejected_before_artifact_emission() {
+        let source = SOURCE.replace(
+            "cell_update(\"Counter\", \"value\", 2)",
+            "cell_update(\"Counter\", \"missing\", 2)",
+        );
+        assert!(matches!(
+            compile_source_with_constructs(&source),
+            Err(SourceConstructExecutableError::Preparation(_))
+        ));
+    }
+
+    #[test]
+    fn invalid_phase_edge_is_rejected_before_artifact_emission() {
+        let source = SOURCE.replace(
+            "phase_transition(\"Job\", \"todo\", \"running\")",
+            "phase_transition(\"Job\", \"todo\", \"done\")",
+        );
+        assert!(matches!(
+            compile_source_with_constructs(&source),
+            Err(SourceConstructExecutableError::Preparation(_))
+        ));
+    }
+
+    #[test]
     fn standard_compiler_still_rejects_construct_source_with_aif610() {
         assert!(matches!(crate::pipeline::compile_source(SOURCE),
             Err(crate::pipeline::PipelineError::Semantic(diagnostics)) if diagnostics.iter().any(|d| d.code == "AIF610")));
