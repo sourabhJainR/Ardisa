@@ -367,8 +367,8 @@ fn main() -> Int
     #[test]
     fn unresolved_cell_field_is_rejected_before_artifact_emission() {
         let source = SOURCE.replace(
-            "cell_update(\\"Counter\\", \\"value\\", 2)",
-            "cell_update(\\"Counter\\", \\"missing\\", 2)",
+            "cell_update(\"Counter\", \"value\", 2)",
+            "cell_update(\"Counter\", \"missing\", 2)",
         );
         assert!(matches!(
             compile_source_with_constructs(&source),
@@ -379,8 +379,8 @@ fn main() -> Int
     #[test]
     fn invalid_phase_edge_is_rejected_before_artifact_emission() {
         let source = SOURCE.replace(
-            "phase_transition(\\"Job\\", \\"todo\\", \\"running\\")",
-            "phase_transition(\\"Job\\", \\"todo\\", \\"done\\")",
+            "phase_transition(\"Job\", \"todo\", \"running\")",
+            "phase_transition(\"Job\", \"todo\", \"done\")",
         );
         assert!(matches!(
             compile_source_with_constructs(&source),
