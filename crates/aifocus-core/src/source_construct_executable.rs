@@ -87,7 +87,6 @@ pub fn compile_source_with_constructs(source: &str) -> Result<CompiledArtifact, 
             .map(|item| item.artifact_hash).unwrap_or_default());
 
     Ok(CompiledArtifact {
-        artifact_bytes: artifact.len(),
         artifact: artifact.clone(),
         evidence: PipelineEvidence {
             lexer_tokens: tokens.len(),
@@ -136,11 +135,11 @@ fn is_reserved(expr: &Expr) -> bool {
 fn collect_direct_sites(block: &Block, sites: &mut BTreeSet<crate::ast::NodeId>) {
     for stmt in &block.stmts {
         match &stmt.kind {
-            StmtKind::Expr(expr) | StmtKind::Let { value: expr, .. } | StmtKind::Return(Some(expr)) => {
+            StmtKind::Expr(expr) => {
                 if is_reserved(expr) { sites.insert(expr.id); }
                 collect_nested_blocks(expr, sites);
             }
-            StmtKind::Set { value, .. } => collect_nested_blocks(value, sites),
+            StmtKind::Let { value, .. } | StmtKind::Return(Some(value)) | StmtKind::Set { value, .. } => collect_nested_blocks(value, sites),
             StmtKind::SetIndex { collection, index, value } => {
                 collect_nested_blocks(collection, sites); collect_nested_blocks(index, sites); collect_nested_blocks(value, sites);
             }
@@ -169,6 +168,15 @@ fn collect_nested_blocks(expr: &Expr, sites: &mut BTreeSet<crate::ast::NodeId>) 
 }
 fn mark_block(block: &mut Block, markers: &BTreeMap<crate::ast::NodeId, i64>, seen: &mut BTreeSet<crate::ast::NodeId>) {
     for stmt in &mut block.stmts {
+        if let StmtKind::Expr(expr) = &stmt.kind {
+            if let Some(marker) = markers.get(&expr.id) {
+                let mut value = expr.clone();
+                value.kind = ExprKind::Int(*marker);
+                seen.insert(value.id);
+                stmt.kind = StmtKind::Let { name: format!("__ardisa_operation_marker_{}", marker), value };
+                continue;
+            }
+        }
         match &mut stmt.kind {
             StmtKind::Let { value, .. } | StmtKind::Set { value, .. } | StmtKind::Expr(value) | StmtKind::Return(Some(value)) => mark_expr(value, markers, seen),
             StmtKind::SetIndex { collection, index, value } => { mark_expr(collection, markers, seen); mark_expr(index, markers, seen); mark_expr(value, markers, seen); }
@@ -261,6 +269,19 @@ fn inject_at_markers(
     let expected = markers.values().copied().collect::<BTreeSet<_>>();
     for (function_name, function) in &mut program.functions {
         let replacements = injections.get(function_name);
+        let mut marker_counts = BTreeMap::<i64, usize>::new();
+        for instruction in &function.code {
+            if let NativeInstr::PushInt(marker) = instruction {
+                if expected.contains(marker) { *marker_counts.entry(*marker).or_default() += 1; }
+            }
+        }
+        for marker in expected.iter().filter(|marker| replacements.and_then(|map| map.get(marker)).is_some()) {
+            if marker_counts.get(marker).copied().unwrap_or(0) != 1 {
+                return Err(SourceConstructExecutableError::InstructionPlacement(format!(
+                    "source marker {marker} must compile to exactly one native instruction in '{function_name}'"
+                )));
+            }
+        }
         let mut offsets = vec![0usize; function.code.len() + 1];
         for (index, instruction) in function.code.iter().enumerate() {
             let length = match instruction {
