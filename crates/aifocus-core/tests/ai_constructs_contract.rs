@@ -26,7 +26,7 @@ fn valid_ai_constructs_reach_typed_metadata_but_not_executable_codegen() {
     let error = compile_source(source)
         .expect_err("construct declarations must not be silently ignored by executable codegen");
     let diagnostics = format!("{error:?}");
-    assert!(diagnostics.contains("AIF610"), "executable path must remain fail-closed until runtime semantics exist: {diagnostics}");
+    assert!(diagnostics.contains("UnsupportedRuntimeBoundary"), "declarations without executable operations or trusted Proof/Trace runtime evidence must remain fail-closed: {diagnostics}");
 }
 
 #[test]
@@ -70,8 +70,8 @@ fn each_ai_construct_kind_is_individually_blocked_from_native_codegen() {
         };
         let diagnostics = format!("{error:?}");
         assert!(
-            diagnostics.contains("AIF610"),
-            "{kind} must fail closed with AIF610 until its executable semantics are implemented; got {diagnostics}"
+            diagnostics.contains("UnsupportedRuntimeBoundary"),
+            "{kind} must fail closed at the unsupported runtime boundary until its executable contract is implemented; got {diagnostics}"
         );
     }
 }

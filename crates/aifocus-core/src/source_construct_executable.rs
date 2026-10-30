@@ -1,8 +1,10 @@
 //! Opt-in executable source-to-native integration for the supported AI-native construct subset.
 //!
-//! This entry point does not alter pipeline::compile_source or its AIF610 gate.
-//! Source operation calls are replaced with unique markers, compiled, then replaced
-//! by native instructions at the same bytecode positions. Jump targets are remapped.
+//! pipeline::compile_source routes declared construct modules through this path for
+//! the currently supported Cell(Int)/Phase/Vault subset. Unsupported declarations,
+//! operations, and runtime trust boundaries fail closed. Source operation calls are
+//! replaced with unique markers, compiled, then replaced by native instructions at
+//! the same bytecode positions. Jump targets are remapped.
 
 use std::collections::{BTreeMap, BTreeSet};
 use crate::{
@@ -32,12 +34,14 @@ fn native_error(error: native::NativeError) -> SourceConstructExecutableError {
 
 /// Compile Cell Int constants, validated Phase transitions, and Vault checks.
 /// Proof and Trace are rejected until their runtime evidence and signing inputs are
-/// explicit in the executable contract. The standard compile_source path is unchanged.
+/// explicit in the executable contract. The standard compiler calls this path only
+/// for declarations that pass the explicit supported-subset gate.
 pub fn compile_source_with_constructs(source: &str) -> Result<CompiledArtifact, SourceConstructExecutableError> {
     let tokens = crate::token::lex(source).map_err(SourceConstructExecutableError::Parse)?;
     let original = crate::parse(source).map_err(SourceConstructExecutableError::Parse)?;
     let prepared = crate::source_construct_pipeline::prepare_source_constructs(source)
         .map_err(|error| SourceConstructExecutableError::Preparation(format!("{error:?}")))?;
+    ensure_supported_declarations(&original, &prepared.operation_bindings)?;
     for binding in &prepared.operation_bindings {
         match &binding.operation.kind {
             ConstructOperationKind::ProofEvaluate { proof } =>
@@ -112,6 +116,110 @@ pub fn run_combined_artifact(
     let decoded = native::decode_program(artifact).map_err(native_error)?;
     ValidatedNativeProgram::try_new(decoded).map_err(native_error)?
         .run_with_limits(entry, args, limits).map_err(native_error)
+}
+
+fn ensure_supported_declarations(
+    module: &Module,
+    bindings: &[SourceConstructOperationBinding],
+) -> Result<(), SourceConstructExecutableError> {
+    use crate::ast::{ConstructKind, ConstructMember, TypeKind};
+    if module.constructs.is_empty() {
+        return Ok(());
+    }
+    if bindings.is_empty() {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "construct declarations without executable source operations are not supported".into(),
+        ));
+    }
+
+    let mut used = BTreeSet::<String>::new();
+    let mut initialized_fields = BTreeSet::<(String, String)>::new();
+    for binding in bindings {
+        match &binding.operation.kind {
+            ConstructOperationKind::CellInitialize { cell, field, .. } => {
+                used.insert(cell.clone());
+                initialized_fields.insert((cell.clone(), field.clone()));
+            }
+            ConstructOperationKind::CellUpdate { cell, field, .. } => {
+                used.insert(cell.clone());
+                let _ = field;
+            }
+            ConstructOperationKind::PhaseTransition { phase, .. } => { used.insert(phase.clone()); }
+            ConstructOperationKind::VaultAuthorize { vault, .. } => { used.insert(vault.clone()); }
+            ConstructOperationKind::ProofEvaluate { proof } => {
+                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                    format!("Proof '{proof}' has no trusted per-invocation evidence runtime"),
+                ));
+            }
+            ConstructOperationKind::TraceEmit { trace, event } => {
+                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                    format!("Trace '{trace}' event '{event}' has no trusted signing runtime"),
+                ));
+            }
+        }
+    }
+
+    for declaration in &module.constructs {
+        if !used.contains(&declaration.name) {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                "construct '{}' is declared but not represented by an executable operation",
+                declaration.name
+            )));
+        }
+        match &declaration.kind {
+            ConstructKind::Cell => {
+                for member in &declaration.members {
+                    match member {
+                        ConstructMember::Field { name, ty, .. } if ty.kind == TypeKind::Int => {
+                            if !initialized_fields.contains(&(declaration.name.clone(), name.clone())) {
+                                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                                    "Cell '{}.{}' requires an explicit initialization operation",
+                                    declaration.name, name
+                                )));
+                            }
+                        }
+                        ConstructMember::Clause { name, .. } if name == "invariant" => {}
+                        _ => {
+                            return Err(
+                                SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                                    format!(
+                                        "Cell '{}' contains a field or clause outside the executable subset",
+                                        declaration.name
+                                    ),
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            ConstructKind::Phase => {
+                if declaration.members.iter().any(|member| match member {
+                    ConstructMember::Transition { .. } => false,
+                    ConstructMember::Clause { name, .. } => name != "initial",
+                    ConstructMember::Field { .. } => true,
+                }) {
+                    return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                        "Phase '{}' contains unsupported members", declaration.name
+                    )));
+                }
+            }
+            ConstructKind::Vault => {
+                if declaration.members.iter().any(|member| !matches!(member,
+                    ConstructMember::Clause { name, .. } if name == "capabilities")) {
+                    return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                        "Vault '{}' contains deny rules or members outside the executable subset",
+                        declaration.name
+                    )));
+                }
+            }
+            ConstructKind::Proof | ConstructKind::Trace => {
+                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                    "{:?} '{}' requires a trusted runtime boundary", declaration.kind, declaration.name
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn ensure_direct_call_sites(module: &Module, bindings: &[SourceConstructOperationBinding])
@@ -389,8 +497,14 @@ fn main() -> Int
     }
 
     #[test]
-    fn standard_compiler_still_rejects_construct_source_with_aif610() {
-        assert!(matches!(crate::pipeline::compile_source(SOURCE),
-            Err(crate::pipeline::PipelineError::Semantic(diagnostics)) if diagnostics.iter().any(|d| d.code == "AIF610")));
+    fn standard_compiler_routes_supported_construct_source_to_combined_artifact() {
+        let compiled = crate::pipeline::compile_source(SOURCE)
+            .expect("standard compiler supports validated Cell/Phase/Vault modules");
+        assert!(compiled.artifact.starts_with(native::ARTIFACT_MAGIC));
+        assert_eq!(
+            run_combined_artifact(&compiled.artifact, "main", &[], native::ExecutionLimits::default()).unwrap(),
+            NativeValue::Int(7)
+        );
+        assert!(compiled.evidence.phase_order.contains(&"native_construct_placement"));
     }
 }

@@ -45,6 +45,26 @@ pub fn compile_source(source: &str) -> Result<CompiledArtifact, PipelineError> {
     let module = crate::parse(source).map_err(PipelineError::Parse)?;
     phase_order.push("parser_ast");
 
+    // Route declared AI-native constructs through the validated combined-artifact
+    // lowering path. Unsupported operations (notably Proof/Trace without trusted
+    // runtime evidence) remain fail-closed; ordinary programs keep the existing path.
+    if !module.constructs.is_empty() {
+        return crate::source_construct_executable::compile_source_with_constructs(source)
+            .map_err(|error| match error {
+                crate::source_construct_executable::SourceConstructExecutableError::Parse(errors) =>
+                    PipelineError::Parse(errors),
+                crate::source_construct_executable::SourceConstructExecutableError::Semantic(errors) =>
+                    PipelineError::Semantic(errors),
+                crate::source_construct_executable::SourceConstructExecutableError::Ownership(errors) =>
+                    PipelineError::Ownership(errors),
+                crate::source_construct_executable::SourceConstructExecutableError::Concurrency(errors) =>
+                    PipelineError::Concurrency(errors),
+                crate::source_construct_executable::SourceConstructExecutableError::TypedIr(errors) =>
+                    PipelineError::TypedIr(errors),
+                other => PipelineError::CompilerContract(vec![format!("AI-native construct compilation failed closed: {other:?}")]),
+            });
+    }
+
     let semantic = sema::analyze(&module).map_err(PipelineError::Semantic)?;
     phase_order.push("semantic_type");
 
@@ -776,17 +796,12 @@ fn main() -> Int
   0
 "#;
 
-        let diagnostics = match compile_source(source) {
-            Err(PipelineError::Semantic(diagnostics)) => diagnostics,
-            other => panic!("AI Mode declarations must fail during semantic analysis: {other:?}"),
-        };
-        for name in ["Evidence", "State", "NoNetwork", "P", "Lifecycle"] {
-            assert!(
-                diagnostics.iter().any(|diagnostic| {
-                    diagnostic.code == "AIF610" && diagnostic.message.contains(name)
-                }),
-                "missing fail-closed AIF610 diagnostic for {name}: {diagnostics:?}"
-            );
-        }
+        let error = compile_source(source)
+            .expect_err("unsupported declarations must not be silently dropped into native code");
+        assert!(matches!(
+            error,
+            PipelineError::CompilerContract(ref diagnostics)
+                if diagnostics.iter().any(|diagnostic| diagnostic.contains("UnsupportedRuntimeBoundary"))
+        ), "unexpected construct gate result: {error:?}");
     }
 }
