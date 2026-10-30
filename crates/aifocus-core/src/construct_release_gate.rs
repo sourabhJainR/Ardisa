@@ -95,6 +95,6 @@ mod tests {
     fn general_compiler_stays_fail_closed_until_constructs_are_integrated_into_its_pipeline() {
         let source = "module release\ntrace Build\n  signature: required\nfn main() -> Int\n  1\n";
         let result = compile_source(source);
-        assert!(matches!(result, Err(PipelineError::Semantic(errors)) if errors.iter().any(|error| error.code == "AIF610")));
+        assert!(matches!(result, Err(PipelineError::CompilerContract(diagnostics)) if diagnostics.iter().any(|diagnostic| diagnostic.contains("UnsupportedRuntimeBoundary"))));
     }
 }
