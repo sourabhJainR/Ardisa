@@ -7,10 +7,10 @@ Status terms: Parsed means represented in the AST; partially validated means onl
 | Feature | Syntax / AST | Semantic checks in this phase | Typed IR | ARDISA-EXEC-V1 runtime | Evidence status |
 |---|---|---|---|---|---|
 | Trace | Declaration, fields, clauses | Duplicate declarations/members; clause-kind validation | Not represented | Not represented | Fail-closed; AIF610 |
-| Cell | Declaration, fields, clauses | Duplicate declarations/members; clause-kind validation | Not represented | Not represented | Fail-closed; AIF610 |
-| Vault | Declaration, fields, capability/deny clauses | Duplicate declarations/members; clause-kind validation | Not represented | No effect-boundary enforcement from declarations | Fail-closed; AIF610 |
+| Cell (bounded Int subset) | `cell` declaration plus explicit initialize/update source operations | Integer field and supported invariant validation; explicit initialization; update rejection preserves prior state | Typed operation bindings retain the declared Cell/field and expression references | Deterministic native Cell initialization/update instructions; invariant checks execute before state commit | Supported bounded subset through standard `compile_source` after PR #371; general field types and arbitrary invariant expressions remain unsupported |
+| Vault (bounded authorization subset) | `vault` declaration with explicit capabilities and source authorization operations | Capability must be explicitly declared; unsupported deny clauses and members reject | Typed operation bindings retain Vault identity and requested capability | Native authorization instruction checks the declared capability before the associated operation | Supported bounded authorization subset through standard `compile_source` after PR #371; not an OS sandbox and does not automatically intercept arbitrary host effects |
 | Proof | Declaration, fields, proof clauses | Duplicate declarations/members; clause-kind validation | Not represented | No proof-obligation execution from declarations | Fail-closed; AIF610 |
-| Phase | Declaration and transition edges | Duplicate edges; self-transition rejection; field/clause-kind rejection | Not represented | No phase-transition runtime enforcement | Fail-closed; AIF610 |
+| Phase (bounded transition subset) | `phase` declaration with explicit initial state and transition edges | Transition graph validation; explicit initial state; only declared transitions are accepted | Typed construct metadata and operation bindings preserve transition identity/edge | Deterministic native phase-start/transition instructions validate current state and reject invalid edges | Supported bounded transition subset through standard `compile_source` after PR #371; no general workflow engine semantics implied |
 | Probabilistic<T> | Generic type syntax | Existing general function type checks only; no uncertainty semantics | Generic type can appear in signatures | No dedicated native representation established | End-to-end support not evidenced |
 | Guaranteed<T> | Generic type syntax | Existing general function type checks only; no guarantee semantics | Generic type can appear in signatures | No proof/guarantee enforcement established | End-to-end support not evidenced |
 | MoERouter (bounded built-in subset) | `moe_router(expert_count, top_k)` and `moe_route(router, logits, mask)` calls | Expert count 1..=256; top-k 1..=32 and <= expert count; homogeneous logits/mask types; runtime exact-length, finite-logit, and all-masked checks | Nominal `MoERouter` identity and route call preserved | `MakeMoERouter` / `MoERoute` in ARDISA-EXEC-V1; stable top-k ordering and normalized selected weights | Supported bounded built-in subset after exact-head CI/Native Phases gates; generic `MoERouter<EXPERTS, TOP_K>` syntax and hardware acceleration remain unsupported |
@@ -33,12 +33,12 @@ Status terms: Parsed means represented in the AST; partially validated means onl
 - AIF615: phase self-transition.
 - AIF616: duplicate phase transition.
 
-These checks are intentionally additive. They do not remove AIF610, which continues to reject every construct declaration until semantic output, typed IR, deterministic native encoding, and runtime behavior are implemented and tested end to end. Structural validation is not a security sandbox, proof checker, provenance signer, ownership system, or evidence of memory safety.
+These checks are intentionally additive. Standard `compile_source` now admits only the explicitly validated Cell(Int), Phase-transition, and Vault-authorization subset through the combined native artifact path (PR #371). Proof and Trace remain fail-closed until their per-invocation evidence and trusted signing/verification boundaries are represented in the executable contract. Structural validation is not a security sandbox, proof checker, provenance signer, ownership system, or evidence of memory safety.
 
 ## Next implementation phases
 
-1. Carry typed construct declarations into semantic output and typed IR.
-2. Define per-construct field types, clauses, capabilities, effects, proof statuses, ownership, and transition graph rules.
-3. Implement deterministic native representation and enforce operations at runtime boundaries with resource limits.
-4. Add .ardisa end-to-end fixtures, negative/mutation tests, and preserve bootstrap, differential/holdout, Native Phases, workspace, and benchmark gates.
-5. For each AI-native data type, either implement source syntax + type rules + ABI/runtime behavior + observable tests, or explicitly document its exclusion and reason.
+1. Extend the standard compiler path to Proof and Trace only when per-invocation evidence, explicit unknown/failure policy, complete event fields, and trusted signer/verifier boundaries can be supplied without inventing or embedding trust.
+2. Expand Cell field types/invariants, Vault deny/effect handling, and Phase behavior only with explicit typed semantics and runtime enforcement.
+3. Add combined cross-construct, malformed-artifact, mutation-atomicity, and unauthorized-effect regressions.
+4. Keep the AI-native data-type matrix aligned with source syntax, typed IR, native ABI/runtime, exact-head CI, differential/holdout, and bootstrap evidence.
+5. Record independent review findings and reproducible benchmark baselines; do not promote hardware, self-hosting, or trust claims without their separate evidence.
