@@ -163,11 +163,11 @@ mod tests {
     }
 
     #[test]
-    fn source_constructs_remain_rejected_by_native_compilation() {
+    fn proof_and_trace_constructs_remain_fail_closed_in_standard_compilation() {
         assert!(matches!(
             crate::pipeline::compile_source(SOURCE),
-            Err(crate::pipeline::PipelineError::Semantic(diagnostics))
-                if diagnostics.iter().filter(|d| d.code == "AIF610").count() == 5
+            Err(crate::pipeline::PipelineError::CompilerContract(diagnostics))
+                if diagnostics.iter().any(|diagnostic| diagnostic.contains("UnsupportedRuntimeBoundary"))
         ));
     }
 }

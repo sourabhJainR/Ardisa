@@ -111,11 +111,11 @@ fn main() -> Int
     }
 
     #[test]
-    fn ordinary_compilation_still_rejects_construct_source_with_aif610() {
-        assert!(matches!(
-            crate::pipeline::compile_source(SOURCE),
-            Err(crate::pipeline::PipelineError::Semantic(diagnostics))
-                if diagnostics.iter().any(|diagnostic| diagnostic.code == "AIF610")
-        ));
+    fn ordinary_compilation_integrates_supported_construct_source() {
+        let compiled = crate::pipeline::compile_source(SOURCE)
+            .expect("the standard compiler integrates supported Cell, Phase, and Vault constructs");
+        let program = crate::native::decode_program(&compiled.artifact)
+            .expect("combined construct artifact decodes");
+        assert!(program.functions.contains_key("main"));
     }
 }

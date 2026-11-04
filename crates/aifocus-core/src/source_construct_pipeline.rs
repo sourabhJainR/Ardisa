@@ -2,9 +2,10 @@
 //!
 //! This gate wires parsing, source operation extraction, declaration/reference
 //! validation, expression type checking, and typed CFG lowering into one deterministic
-//! API. It intentionally does not produce ARDISA-EXEC-V1; pipeline::compile_source
-//! continues to reject construct-bearing modules with AIF610 until native operation
-//! placement and artifact semantics are implemented end-to-end.
+//! API. It does not itself produce ARDISA-EXEC-V1. The standard compiler currently
+//! routes the validated Cell/Phase/Vault executable subset through native operation
+//! placement; unsupported Proof/Trace runtime trust boundaries remain fail-closed
+//! until their evidence and signing contracts are integrated.
 
 use crate::{
     ast::Module,
@@ -139,13 +140,13 @@ fn main() -> Int
     }
 
     #[test]
-    fn ordinary_compile_gate_keeps_aif610_until_native_artifact_integration() {
+    fn standard_compile_path_fails_closed_when_proof_and_trace_runtime_trust_is_missing() {
         let error = crate::pipeline::compile_source(SOURCE)
-            .expect_err("construct-bearing source must remain blocked at native compile");
+            .expect_err("Proof/Trace must not compile without runtime evidence and trusted signing");
         assert!(matches!(
             error,
-            crate::pipeline::PipelineError::Semantic(ref diagnostics)
-                if diagnostics.iter().filter(|diagnostic| diagnostic.code == "AIF610").count() == 5
+            crate::pipeline::PipelineError::CompilerContract(ref diagnostics)
+                if diagnostics.iter().any(|diagnostic| diagnostic.contains("UnsupportedRuntimeBoundary"))
         ));
     }
 
