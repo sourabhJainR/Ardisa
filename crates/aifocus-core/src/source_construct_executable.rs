@@ -516,7 +516,7 @@ fn build_instruction_injections(
             ConstructOperationKind::TraceEmit { trace, .. } => {
                 let _declaration = constructs.iter().find(|item| item.name == *trace)
                     .ok_or_else(|| SourceConstructExecutableError::InstructionPlacement(format!("unresolved Trace '{trace}'")))?;
-                vec![NativeInstr::Load(trace_event_parameter()), NativeInstr::TracePrepare { name: trace.clone() }, NativeInstr::Pop, NativeInstr::PushUnit]
+                vec![NativeInstr::Load(trace_event_parameter()), NativeInstr::TracePrepare { name: trace.clone(), event: Some(event.clone()) }, NativeInstr::Pop, NativeInstr::PushUnit]
             },
         };
         result.entry(operation.function.clone()).or_default().insert(marker, instructions);
