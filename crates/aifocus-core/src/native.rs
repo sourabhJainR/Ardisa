@@ -214,7 +214,7 @@ pub enum NativeInstr {
     /// Enforce a source Vault capability before subsequent protected work.
     VaultAuthorize { spec: NativeVaultSpec, capability: NativeVaultCapability },
     /// Validate a source Trace event before the host receipt/signature boundary.
-    TracePrepare { name: String },
+    TracePrepare { name: String, event: Option<String> },
     /// Validate runtime-supplied outcomes against a source Proof policy.
     ProofCheck { spec: NativeProofSpec },
     /// Create an invariant-checked Cell value token.
@@ -388,7 +388,7 @@ pub fn lower_construct_declaration(
                     construct.name
                 )));
             }
-            Ok(NativeInstr::TracePrepare { name: construct.name.clone() })
+            Ok(NativeInstr::TracePrepare { name: construct.name.clone(), event: None })
         }
         crate::ast::ConstructKind::Cell => Err(NativeError::InvalidProgram(format!(
             "Cell '{}' requires an explicit initializer before native lowering",
@@ -2847,7 +2847,7 @@ fn run_function(
                 }
                 stack.push(NativeValue::Unit);
             }
-            NativeInstr::TracePrepare { name } => {
+            NativeInstr::TracePrepare { name, event } => {
                 if name.trim().is_empty() {
                     return Err(NativeError::InvalidProgram("Trace name must not be empty".into()));
                 }
@@ -2873,6 +2873,11 @@ fn run_function(
                     }
                 }
                 let is_sha256 = |value: &str| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+                if let Some(expected_event) = event {
+                    if fields[0] != *expected_event {
+                        return Err(NativeError::Type("Trace event kind does not match the source TraceEmit label".into()));
+                    }
+                }
                 if !is_sha256(&fields[2]) {
                     return Err(NativeError::Type("TracePrepare subject_sha256 must be 64 hexadecimal characters".into()));
                 }
@@ -3396,7 +3401,10 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                     validate_proof_spec(spec)?;
                     add_bytes(&spec.name)?;
                 }
-                NativeInstr::TracePrepare { name } => {
+                NativeInstr::TracePrepare { name, event } => {
+                    if event.as_ref().is_some_and(|value| value.trim().is_empty()) {
+                        return Err(NativeError::InvalidProgram("Trace event label must not be empty".into()));
+                    }
                     if name.trim().is_empty() { return Err(NativeError::InvalidProgram("Trace name must not be empty".into())); }
                     add_bytes(name)?;
                 }
@@ -3566,7 +3574,8 @@ fn encode_instr(instr: &NativeInstr) -> String {
             escape_artifact(&spec.name),
             spec.required.iter().map(|item| item.as_str()).collect::<Vec<_>>().join("+")
         ),
-        NativeInstr::TracePrepare { name } => format!("TracePrepare:{}", escape_artifact(name)), 
+        NativeInstr::TracePrepare { name, event: None } => format!("TracePrepare:{}", escape_artifact(name)),
+        NativeInstr::TracePrepare { name, event: Some(event) } => format!("TracePrepareEvent:{},{}", escape_artifact(name), escape_artifact(event)), 
         NativeInstr::PushInt(v) => format!("PushInt:{v}"),
         NativeInstr::PushFloat(bits) => format!("PushFloat:{bits}"),
         NativeInstr::PushBool(v) => format!("PushBool:{v}"),
@@ -3697,7 +3706,8 @@ fn decode_instr(s: &str) -> Result<NativeInstr, NativeError> {
                 .collect::<Result<Vec<_>, _>>()?;
             NativeInstr::ProofCheck { spec: NativeProofSpec { name, required } }
         },
-        "TracePrepare" => NativeInstr::TracePrepare { name: unescape_artifact(arg)? }, 
+        "TracePrepare" => NativeInstr::TracePrepare { name: unescape_artifact(arg)?, event: None },
+        "TracePrepareEvent" => { let (name, event) = arg.split_once(',').ok_or_else(bad)?; NativeInstr::TracePrepare { name: unescape_artifact(name)?, event: Some(unescape_artifact(event)?) } }, 
         "PushInt"=>NativeInstr::PushInt(arg.parse().map_err(|_|bad())?),
         "PushFloat"=>{let bits=arg.parse::<u32>().map_err(|_|bad())?;if !f32::from_bits(bits).is_finite(){return Err(bad());}NativeInstr::PushFloat(bits)},
         "PushBool"=>NativeInstr::PushBool(arg=="true"),
