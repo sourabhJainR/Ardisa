@@ -3407,6 +3407,7 @@ fn validate_native_program(program: &NativeProgram) -> Result<(), NativeError> {
                     }
                     if name.trim().is_empty() { return Err(NativeError::InvalidProgram("Trace name must not be empty".into())); }
                     add_bytes(name)?;
+                    if let Some(event) = event { add_bytes(event)?; }
                 }
                 NativeInstr::PushProbability(bits) => { validate_probability_bits(*bits)?; }
                 NativeInstr::PushTensor { shape, values } => { validate_tensor_parts(shape, values, MAX_TENSOR_ELEMENTS)?; }
@@ -6918,7 +6919,7 @@ mod canonical_construct_lowering_tests {
         assert!(matches!(proof, NativeInstr::ProofCheck { .. }));
 
         let trace = lower("module trace_dispatch\ntrace Audit\n  signature: ed25519\n").unwrap();
-        assert!(matches!(trace, NativeInstr::TracePrepare { name } if name == "Audit"));
+        assert!(matches!(trace, NativeInstr::TracePrepare { name, event: None } if name == "Audit"));
     }
 
     #[test]
