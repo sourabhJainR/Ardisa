@@ -288,9 +288,12 @@ fn ensure_supported_declarations(
             ConstructOperationKind::VaultAuthorize { vault, .. } => { used.insert(vault.clone()); }
             ConstructOperationKind::ProofEvaluate { proof } => { used.insert(proof.clone()); }
             ConstructOperationKind::TraceEmit { trace, event } => {
-                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
-                    format!("Trace '{trace}' event '{event}' has no trusted signing runtime"),
-                ));
+                if event.trim().is_empty() {
+                    return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                        "TraceEmit event label must not be empty".into(),
+                    ));
+                }
+                used.insert(trace.clone());
             }
         }
     }
