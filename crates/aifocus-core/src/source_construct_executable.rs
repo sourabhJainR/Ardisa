@@ -1,8 +1,8 @@
 //! Opt-in executable source-to-native integration for the supported AI-native construct subset.
 //!
 //! pipeline::compile_source routes declared construct modules through this path for
-//! the currently supported Cell(Int)/Phase/Vault subset. Unsupported declarations,
-//! operations, and runtime trust boundaries fail closed. Source operation calls are
+//! bounded Cell(Int)/Phase/Vault/Proof subsets. Trace uses explicit event data and a
+//! trusted host signing/verifying boundary. Source operation calls are
 //! replaced with unique markers, compiled, then replaced by native instructions at
 //! the same bytecode positions. Jump targets are remapped.
 
@@ -43,12 +43,7 @@ pub fn compile_source_with_constructs(source: &str) -> Result<CompiledArtifact, 
         .map_err(|error| SourceConstructExecutableError::Preparation(format!("{error:?}")))?;
     ensure_supported_declarations(&original, &prepared.operation_bindings)?;
     ensure_proof_runtime_contract(&original, &prepared.operation_bindings)?;
-    for binding in &prepared.operation_bindings {
-        if let ConstructOperationKind::TraceEmit { trace, event } = &binding.operation.kind {
-            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
-                "Trace '{trace}' event '{event}' requires complete event fields and a trusted signing boundary")));
-        }
-    }
+    ensure_trace_runtime_contract(&original, &prepared.operation_bindings)?;
     ensure_direct_call_sites(&original, &prepared.operation_bindings)?;
 
     let markers = prepared.operation_bindings.iter()
@@ -76,6 +71,7 @@ pub fn compile_source_with_constructs(source: &str) -> Result<CompiledArtifact, 
         crate::typed_ir::to_legacy_ir(&typed).map_err(SourceConstructExecutableError::TypedIr)?);
     let mut program = native::compile_program(&ir_module).map_err(native_error)?;
     attach_proof_runtime_parameters(&mut program, &prepared.operation_bindings)?;
+    attach_trace_runtime_parameters(&mut program, &prepared.operation_bindings)?;
     let injections = build_instruction_injections(&original, &prepared.operation_bindings, &markers)?;
     inject_at_markers(&mut program, &injections, &markers)?;
 
@@ -156,6 +152,8 @@ fn proof_results_parameter(_proof: &str) -> String {
     "__ardisa_proof_results".into()
 }
 
+fn trace_event_parameter() -> String { "__ardisa_trace_event_fields".into() }
+
 fn attach_proof_runtime_parameters(
     program: &mut NativeProgram,
     bindings: &[SourceConstructOperationBinding],
@@ -179,6 +177,36 @@ fn attach_proof_runtime_parameters(
     Ok(())
 }
 
+/// Validate and execute a Trace-bearing source artifact, then commit one signed receipt.
+/// Recompilation binds the operation label and Trace name to the supplied executable bytes.
+pub fn run_combined_artifact_with_trace_event<S: crate::ai_mode::TraceSigner, V: crate::ai_mode::TraceVerifier>(
+    source: &str, artifact: &str, runtime: &mut crate::trace_policy_runtime::TraceRuntimeSet,
+    event: crate::ai_mode::TraceEventInput, signer: &S, verifier: &V, limits: native::ExecutionLimits,
+) -> Result<NativeValue, SourceConstructExecutableError> {
+    let compiled = compile_source_with_constructs(source)?;
+    if compiled.artifact != artifact { return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+        "Trace source does not match the supplied executable artifact".into())); }
+    let prepared = crate::source_construct_pipeline::prepare_source_constructs(source)
+        .map_err(|error| SourceConstructExecutableError::Preparation(format!("{error:?}")))?;
+    let (trace, expected_event) = prepared.operation_bindings.iter().find_map(|binding| match &binding.operation.kind {
+        ConstructOperationKind::TraceEmit { trace, event } => Some((trace.as_str(), event.as_str())),
+        _ => None,
+    }).ok_or_else(|| SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+        "Trace execution requires one source TraceEmit operation".into()))?;
+    if event.event_kind != expected_event { return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+        "runtime event kind does not match the source TraceEmit label".into())); }
+    let fields = vec![event.event_kind.clone(), event.actor.clone(), event.subject_sha256.clone(),
+        event.outcome.clone(), event.provider_id.clone().unwrap_or_default(),
+        event.session_sha256.clone().unwrap_or_default()];
+    let decoded = native::decode_program(artifact).map_err(native_error)?;
+    let result = ValidatedNativeProgram::try_new(decoded).map_err(native_error)?
+        .run_with_limits("main", &[NativeValue::List(fields.into_iter().map(NativeValue::String).collect())], limits)
+        .map_err(native_error)?;
+    runtime.record_verified(trace, event, signer, verifier).map_err(|error|
+        SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!("Trace receipt verification failed: {error:?}")))?;
+    Ok(result)
+}
+
 /// Run a Proof-gated combined artifact with explicit per-invocation evidence outcomes.
 /// Each outcome is requirement=status, with status proved or runtime_checked.
 /// Failed, unknown, missing, duplicate, malformed, or non-string values are rejected
@@ -196,6 +224,40 @@ pub fn run_combined_artifact_with_proof_results(
         limits,
     )
 }
+/// Restrict the initial Trace ABI to one unconditional first statement in zero-argument main.
+fn ensure_trace_runtime_contract(module: &Module, bindings: &[SourceConstructOperationBinding])
+    -> Result<(), SourceConstructExecutableError> {
+    let traces: Vec<_> = bindings.iter().filter(|binding| matches!(&binding.operation.kind, ConstructOperationKind::TraceEmit { .. })).collect();
+    if traces.is_empty() { return Ok(()); }
+    if traces.len() != 1 || bindings.iter().any(|binding| matches!(&binding.operation.kind, ConstructOperationKind::ProofEvaluate { .. })) {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "initial Trace ABI supports one TraceEmit and does not yet combine Trace with Proof".into()));
+    }
+    let binding = traces[0];
+    if binding.operation.function != "main" { return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+        "TraceEmit must execute in main".into())); }
+    let main = module.items.iter().find_map(|item| match item {
+        Item::Function(function) if function.name == "main" => Some(function), _ => None,
+    }).ok_or_else(|| SourceConstructExecutableError::UnsupportedRuntimeBoundary("TraceEmit requires main".into()))?;
+    if !main.params.is_empty() { return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+        "TraceEmit requires zero-argument source main".into())); }
+    if !matches!(main.body.stmts.first().map(|stmt| &stmt.kind), Some(StmtKind::Expr(expr)) if expr.id == binding.call_node_id) {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "TraceEmit must be the first unconditional statement in main".into()));
+    }
+    Ok(())
+}
+
+fn attach_trace_runtime_parameters(program: &mut NativeProgram, bindings: &[SourceConstructOperationBinding])
+    -> Result<(), SourceConstructExecutableError> {
+    if !bindings.iter().any(|binding| matches!(&binding.operation.kind, ConstructOperationKind::TraceEmit { .. })) { return Ok(()); }
+    let main = program.functions.get_mut("main").ok_or_else(|| SourceConstructExecutableError::UnsupportedRuntimeBoundary("TraceEmit requires compiled main".into()))?;
+    if !main.params.is_empty() { return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+        "compiled main already has parameters; cannot attach Trace runtime ABI".into())); }
+    main.params.push(trace_event_parameter());
+    Ok(())
+}
+
 fn ensure_supported_declarations(
     module: &Module,
     bindings: &[SourceConstructOperationBinding],
@@ -295,9 +357,11 @@ fn ensure_supported_declarations(
                 native::proof_check_instruction(proof).map_err(native_error)?;
             }
             ConstructKind::Trace => {
-                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
-                    "Trace '{}' requires complete event fields and a trusted signing boundary", declaration.name
-                )));
+                if declaration.members.iter().any(|member| !matches!(member,
+                    ConstructMember::Clause { name, value, .. } if name == "signature" && value.trim() == "required")) {
+                    return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                        "Trace '{}' supports only signature: required", declaration.name)));
+                }
             }
         }
     }
@@ -449,7 +513,11 @@ fn build_instruction_injections(
                     native::proof_check_instruction(declaration).map_err(native_error)?,
                 ]
             }
-            ConstructOperationKind::TraceEmit { trace, event } => return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!("Trace '{trace}' event '{event}' requires complete signed event fields"))),
+            ConstructOperationKind::TraceEmit { trace, .. } => {
+                let _declaration = constructs.iter().find(|item| item.name == *trace)
+                    .ok_or_else(|| SourceConstructExecutableError::InstructionPlacement(format!("unresolved Trace '{trace}'")))?;
+                vec![NativeInstr::Load(trace_event_parameter()), NativeInstr::TracePrepare { name: trace.clone() }, NativeInstr::Pop, NativeInstr::PushUnit]
+            },
         };
         result.entry(operation.function.clone()).or_default().insert(marker, instructions);
     }
