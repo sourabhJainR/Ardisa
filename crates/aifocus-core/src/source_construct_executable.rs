@@ -729,4 +729,75 @@ fn main() -> Int
         );
         assert!(compiled.evidence.phase_order.contains(&"native_construct_placement"));
     }
+
+    const TRACE_SOURCE: &str = r#"module trace_executable
+trace Audit
+  signature: required
+fn main() -> Int
+  trace_emit("Audit", "build")
+  return 23
+"#;
+
+    struct TestTraceSigner;
+    impl crate::ai_mode::TraceSigner for TestTraceSigner {
+        fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
+            Ok(payload.iter().map(|byte| byte ^ 0x5a).collect())
+        }
+    }
+    impl crate::ai_mode::TraceVerifier for TestTraceSigner {
+        fn verify(&self, payload: &[u8], signature: &[u8]) -> Result<bool, String> {
+            Ok(payload.iter().map(|byte| byte ^ 0x5a).eq(signature.iter().copied()))
+        }
+    }
+
+    fn trace_event() -> crate::ai_mode::TraceEventInput {
+        crate::ai_mode::TraceEventInput {
+            event_kind: "build".into(), actor: "compiler".into(),
+            subject_sha256: "a".repeat(64), outcome: "passed".into(),
+            provider_id: None, session_sha256: None,
+        }
+    }
+
+    #[test]
+    fn standard_source_pipeline_executes_trace_validation_then_commits_verified_receipt() {
+        let compiled = crate::pipeline::compile_source(TRACE_SOURCE).unwrap();
+        let mut runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(TRACE_SOURCE).unwrap();
+        let result = run_combined_artifact_with_trace_event(
+            TRACE_SOURCE, &compiled.artifact, &mut runtime, trace_event(),
+            &TestTraceSigner, &TestTraceSigner, native::ExecutionLimits::default(),
+        ).unwrap();
+        assert_eq!(result, NativeValue::Int(23));
+        assert_eq!(runtime.receipts("Audit").unwrap().len(), 1);
+        runtime.verify("Audit", &TestTraceSigner).unwrap();
+    }
+
+    #[test]
+    fn trace_source_binding_and_receipt_commit_fail_closed() {
+        let compiled = crate::pipeline::compile_source(TRACE_SOURCE).unwrap();
+        let mut runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(TRACE_SOURCE).unwrap();
+        let mut mismatched = trace_event();
+        mismatched.event_kind = "release".into();
+        assert!(run_combined_artifact_with_trace_event(
+            TRACE_SOURCE, &compiled.artifact, &mut runtime, mismatched,
+            &TestTraceSigner, &TestTraceSigner, native::ExecutionLimits::default(),
+        ).is_err());
+        assert!(runtime.receipts("Audit").unwrap().is_empty());
+
+        let mut invalid_signature_runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(TRACE_SOURCE).unwrap();
+        struct BadSigner;
+        impl crate::ai_mode::TraceSigner for BadSigner {
+            fn sign(&self, _: &[u8]) -> Result<Vec<u8>, String> { Ok(b"invalid".to_vec()) }
+        }
+        assert!(run_combined_artifact_with_trace_event(
+            TRACE_SOURCE, &compiled.artifact, &mut invalid_signature_runtime, trace_event(),
+            &BadSigner, &TestTraceSigner, native::ExecutionLimits::default(),
+        ).is_err());
+        assert!(invalid_signature_runtime.receipts("Audit").unwrap().is_empty());
+
+        let detached = TRACE_SOURCE.replace("trace_emit(\"Audit\", \"build\")", "trace_emit(\"Audit\", \"release\")");
+        assert!(run_combined_artifact_with_trace_event(
+            &detached, &compiled.artifact, &mut runtime, trace_event(),
+            &TestTraceSigner, &TestTraceSigner, native::ExecutionLimits::default(),
+        ).is_err());
+    }
 }
