@@ -2874,7 +2874,7 @@ fn run_function(
                 }
                 let is_sha256 = |value: &str| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit());
                 if let Some(expected_event) = event {
-                    if fields[0] != *expected_event {
+                    if fields[0] != expected_event.as_str() {
                         return Err(NativeError::Type("Trace event kind does not match the source TraceEmit label".into()));
                     }
                 }
