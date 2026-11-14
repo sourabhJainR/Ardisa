@@ -32,25 +32,21 @@ fn native_error(error: native::NativeError) -> SourceConstructExecutableError {
     SourceConstructExecutableError::Native(format!("{error:?}"))
 }
 
-/// Compile Cell Int constants, validated Phase transitions, and Vault checks.
-/// Proof and Trace are rejected until their runtime evidence and signing inputs are
-/// explicit in the executable contract. The standard compiler calls this path only
-/// for declarations that pass the explicit supported-subset gate.
+/// Compile the bounded Cell(Int), Phase, Vault, and Proof subsets to ARDISA-EXEC-V1.
+/// Proof outcomes are explicit per-invocation runtime inputs to the entry function.
+/// Trace remains fail-closed until event data and trusted signing are part of the
+/// executable runtime contract.
 pub fn compile_source_with_constructs(source: &str) -> Result<CompiledArtifact, SourceConstructExecutableError> {
     let tokens = crate::token::lex(source).map_err(SourceConstructExecutableError::Parse)?;
     let original = crate::parse(source).map_err(SourceConstructExecutableError::Parse)?;
     let prepared = crate::source_construct_pipeline::prepare_source_constructs(source)
         .map_err(|error| SourceConstructExecutableError::Preparation(format!("{error:?}")))?;
     ensure_supported_declarations(&original, &prepared.operation_bindings)?;
+    ensure_proof_runtime_contract(&original, &prepared.operation_bindings)?;
     for binding in &prepared.operation_bindings {
-        match &binding.operation.kind {
-            ConstructOperationKind::ProofEvaluate { proof } =>
-                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
-                    "Proof '{proof}' requires per-invocation evidence outcomes; refusing to invent or bake evidence"))),
-            ConstructOperationKind::TraceEmit { trace, event } =>
-                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
-                    "Trace '{trace}' event '{event}' requires complete event fields and a trusted signing boundary"))),
-            _ => {}
+        if let ConstructOperationKind::TraceEmit { trace, event } = &binding.operation.kind {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
+                "Trace '{trace}' event '{event}' requires complete event fields and a trusted signing boundary")));
         }
     }
     ensure_direct_call_sites(&original, &prepared.operation_bindings)?;
@@ -79,6 +75,7 @@ pub fn compile_source_with_constructs(source: &str) -> Result<CompiledArtifact, 
     let ir_module = crate::optimizer::optimize(
         crate::typed_ir::to_legacy_ir(&typed).map_err(SourceConstructExecutableError::TypedIr)?);
     let mut program = native::compile_program(&ir_module).map_err(native_error)?;
+    attach_proof_runtime_parameters(&mut program, &prepared.operation_bindings)?;
     let injections = build_instruction_injections(&original, &prepared.operation_bindings, &markers)?;
     inject_at_markers(&mut program, &injections, &markers)?;
 
@@ -118,6 +115,87 @@ pub fn run_combined_artifact(
         .run_with_limits(entry, args, limits).map_err(native_error)
 }
 
+/// Proof outcomes enter the native VM through one hidden, explicit entry parameter.
+/// This first executable slice deliberately supports one ProofEvaluate in a
+/// zero-argument main function. It does not accept outcomes from source literals,
+/// global state, or a caller-invisible default.
+fn ensure_proof_runtime_contract(
+    module: &Module,
+    bindings: &[SourceConstructOperationBinding],
+) -> Result<(), SourceConstructExecutableError> {
+    let proofs: Vec<_> = bindings.iter().filter(|binding|
+        matches!(&binding.operation.kind, ConstructOperationKind::ProofEvaluate { .. })
+    ).collect();
+    if proofs.is_empty() { return Ok(()); }
+    if proofs.len() != 1 {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "the current Proof ABI supports exactly one ProofEvaluate operation per module".into()
+        ));
+    }
+    let binding = proofs[0];
+    if binding.operation.function != "main" {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "ProofEvaluate must execute in the main entry function until hidden runtime inputs can be propagated through calls".into()
+        ));
+    }
+    let main = module.items.iter().find_map(|item| match item {
+        Item::Function(function) if function.name == "main" => Some(function),
+        _ => None,
+    }).ok_or_else(|| SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+        "ProofEvaluate requires a main entry function".into()
+    ))?;
+    if !main.params.is_empty() {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "ProofEvaluate currently requires a zero-argument source main function; proof outcomes are supplied through the native runtime ABI".into()
+        ));
+    }
+    Ok(())
+}
+
+fn proof_results_parameter(_proof: &str) -> String {
+    "__ardisa_proof_results".into()
+}
+
+fn attach_proof_runtime_parameters(
+    program: &mut NativeProgram,
+    bindings: &[SourceConstructOperationBinding],
+) -> Result<(), SourceConstructExecutableError> {
+    if !bindings.iter().any(|binding|
+        matches!(&binding.operation.kind, ConstructOperationKind::ProofEvaluate { .. })
+    ) {
+        return Ok(());
+    }
+    let main = program.functions.get_mut("main").ok_or_else(||
+        SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "ProofEvaluate requires a compiled main entry function".into()
+        )
+    )?;
+    if !main.params.is_empty() {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "compiled main already has parameters; cannot attach the Proof runtime ABI".into()
+        ));
+    }
+    main.params.push("__ardisa_proof_results".into());
+    Ok(())
+}
+
+/// Run a Proof-gated combined artifact with explicit per-invocation evidence outcomes.
+/// Each outcome is requirement=status, with status proved or runtime_checked.
+/// Failed, unknown, missing, duplicate, malformed, or non-string values are rejected
+/// by NativeInstr::ProofCheck before the program can continue.
+pub fn run_combined_artifact_with_proof_results(
+    artifact: &str,
+    entry: &str,
+    outcomes: &[String],
+    limits: native::ExecutionLimits,
+) -> Result<NativeValue, SourceConstructExecutableError> {
+    run_combined_artifact(
+        artifact,
+        entry,
+        &[NativeValue::List(outcomes.iter().cloned().map(NativeValue::String).collect())],
+        limits,
+    )
+}
 fn ensure_supported_declarations(
     module: &Module,
     bindings: &[SourceConstructOperationBinding],
@@ -146,11 +224,7 @@ fn ensure_supported_declarations(
             }
             ConstructOperationKind::PhaseTransition { phase, .. } => { used.insert(phase.clone()); }
             ConstructOperationKind::VaultAuthorize { vault, .. } => { used.insert(vault.clone()); }
-            ConstructOperationKind::ProofEvaluate { proof } => {
-                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
-                    format!("Proof '{proof}' has no trusted per-invocation evidence runtime"),
-                ));
-            }
+            ConstructOperationKind::ProofEvaluate { proof } => { used.insert(proof.clone()); }
             ConstructOperationKind::TraceEmit { trace, event } => {
                 return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
                     format!("Trace '{trace}' event '{event}' has no trusted signing runtime"),
@@ -212,9 +286,17 @@ fn ensure_supported_declarations(
                     )));
                 }
             }
-            ConstructKind::Proof | ConstructKind::Trace => {
+            ConstructKind::Proof => {
+                let typed = crate::typed_ir::lower_constructs(module)
+                    .map_err(SourceConstructExecutableError::TypedIr)?;
+                let proof = typed.iter().find(|item| item.name == declaration.name)
+                    .ok_or_else(|| SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                        format!("Proof '{}' could not be lowered", declaration.name)))?;
+                native::proof_check_instruction(proof).map_err(native_error)?;
+            }
+            ConstructKind::Trace => {
                 return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!(
-                    "{:?} '{}' requires a trusted runtime boundary", declaration.kind, declaration.name
+                    "Trace '{}' requires complete event fields and a trusted signing boundary", declaration.name
                 )));
             }
         }
@@ -359,7 +441,14 @@ fn build_instruction_injections(
                 lowered
             }
             ConstructOperationKind::VaultAuthorize { .. } => native::lower_construct_operation(module, operation).map_err(native_error)?,
-            ConstructOperationKind::ProofEvaluate { proof } => return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!("Proof '{proof}' requires runtime evidence outcomes"))),
+            ConstructOperationKind::ProofEvaluate { proof } => {
+                let declaration = constructs.iter().find(|item| item.name == *proof)
+                    .ok_or_else(|| SourceConstructExecutableError::InstructionPlacement(format!("unresolved Proof '{proof}'")))?;
+                vec![
+                    NativeInstr::Load(proof_results_parameter(proof)),
+                    native::proof_check_instruction(declaration).map_err(native_error)?,
+                ]
+            }
             ConstructOperationKind::TraceEmit { trace, event } => return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!("Trace '{trace}' event '{event}' requires complete signed event fields"))),
         };
         result.entry(operation.function.clone()).or_default().insert(marker, instructions);
@@ -463,14 +552,79 @@ fn main() -> Int
         ));
     }
 
+    const PROOF_SOURCE: &str = r#"module proof_gated
+proof ReleaseGate
+  requires: type_safety, bounds
+  ensures: true
+  on_unknown: reject
+  required: true
+fn main() -> Int
+  proof_evaluate("ReleaseGate")
+  return 17
+"#;
+
     #[test]
-    fn proof_and_trace_fail_closed_without_runtime_evidence_inputs() {
-        let proof = SOURCE.replace("fn main() -> Int", "proof ReleaseGate\n  requires: bounds\n  ensures: true\n  on_unknown: reject\n  required: true\nfn main() -> Int")
-            .replace("cell_initialize(\"Counter\", \"value\", 1)", "proof_evaluate(\"ReleaseGate\")");
-        assert!(matches!(compile_source_with_constructs(&proof), Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(_))));
+    fn standard_compiler_emits_and_executes_native_proof_gate_with_explicit_outcomes() {
+        let compiled = crate::pipeline::compile_source(PROOF_SOURCE)
+            .expect("supported Proof policy should compile through the standard pipeline");
+        let outcomes = vec![
+            "type_safety=proved".to_string(),
+            "bounds=runtime_checked".to_string(),
+        ];
+        assert_eq!(
+            run_combined_artifact_with_proof_results(
+                &compiled.artifact, "main", &outcomes, native::ExecutionLimits::default()
+            ).unwrap(),
+            NativeValue::Int(17)
+        );
+        assert!(run_combined_artifact(
+            &compiled.artifact, "main", &[], native::ExecutionLimits::default()
+        ).is_err(), "proof-gated artifact must not run without its explicit runtime input");
+    }
+
+    #[test]
+    fn native_proof_gate_rejects_missing_failed_unknown_duplicate_and_malformed_outcomes() {
+        let compiled = crate::pipeline::compile_source(PROOF_SOURCE).unwrap();
+        let rejected = [
+            vec!["type_safety=proved".to_string()],
+            vec!["type_safety=failed".to_string(), "bounds=proved".to_string()],
+            vec!["type_safety=unknown".to_string(), "bounds=proved".to_string()],
+            vec!["type_safety=proved".to_string(), "bounds=proved".to_string(), "bounds=runtime_checked".to_string()],
+            vec!["type_safety=maybe".to_string(), "bounds=proved".to_string()],
+        ];
+        for outcomes in rejected {
+            assert!(
+                run_combined_artifact_with_proof_results(
+                    &compiled.artifact, "main", &outcomes, native::ExecutionLimits::default()
+                ).is_err(),
+                "invalid proof outcomes must reject: {outcomes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn proof_runtime_contract_rejects_unsupported_call_shapes_and_trace_stays_fail_closed() {
+        let nested = PROOF_SOURCE.replace(
+            "proof_evaluate(\"ReleaseGate\")",
+            "let checked = proof_evaluate(\"ReleaseGate\")"
+        ).replace("  return 17", "  return 17");
+        assert!(matches!(
+            crate::pipeline::compile_source(&nested),
+            Err(crate::pipeline::PipelineError::CompilerContract(_))
+        ));
+
+        let optional = PROOF_SOURCE.replace("on_unknown: reject", "on_unknown: record");
+        assert!(matches!(
+            crate::pipeline::compile_source(&optional),
+            Err(crate::pipeline::PipelineError::CompilerContract(_))
+        ));
+
         let trace = SOURCE.replace("fn main() -> Int", "trace Build\n  signature: required\nfn main() -> Int")
             .replace("cell_initialize(\"Counter\", \"value\", 1)", "trace_emit(\"Build\", \"compile\")");
-        assert!(matches!(compile_source_with_constructs(&trace), Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(_))));
+        assert!(matches!(
+            compile_source_with_constructs(&trace),
+            Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(_))
+        ));
     }
     #[test]
     fn unresolved_cell_field_is_rejected_before_artifact_emission() {
