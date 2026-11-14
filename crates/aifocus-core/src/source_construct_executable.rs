@@ -513,7 +513,7 @@ fn build_instruction_injections(
                     native::proof_check_instruction(declaration).map_err(native_error)?,
                 ]
             }
-            ConstructOperationKind::TraceEmit { trace, .. } => {
+            ConstructOperationKind::TraceEmit { trace, event, .. } => {
                 let _declaration = constructs.iter().find(|item| item.name == *trace)
                     .ok_or_else(|| SourceConstructExecutableError::InstructionPlacement(format!("unresolved Trace '{trace}'")))?;
                 vec![NativeInstr::Load(trace_event_parameter()), NativeInstr::TracePrepare { name: trace.clone(), event: Some(event.clone()) }, NativeInstr::Pop, NativeInstr::PushUnit]
