@@ -124,7 +124,7 @@ fn ensure_proof_runtime_contract(
     bindings: &[SourceConstructOperationBinding],
 ) -> Result<(), SourceConstructExecutableError> {
     let proofs: Vec<_> = bindings.iter().filter(|binding|
-        matches!(binding.operation.kind, ConstructOperationKind::ProofEvaluate { .. })
+        matches!(&binding.operation.kind, ConstructOperationKind::ProofEvaluate { .. })
     ).collect();
     if proofs.is_empty() { return Ok(()); }
     if proofs.len() != 1 {
@@ -161,7 +161,7 @@ fn attach_proof_runtime_parameters(
     bindings: &[SourceConstructOperationBinding],
 ) -> Result<(), SourceConstructExecutableError> {
     if !bindings.iter().any(|binding|
-        matches!(binding.operation.kind, ConstructOperationKind::ProofEvaluate { .. })
+        matches!(&binding.operation.kind, ConstructOperationKind::ProofEvaluate { .. })
     ) {
         return Ok(());
     }
@@ -553,14 +553,79 @@ fn main() -> Int
         ));
     }
 
+    const PROOF_SOURCE: &str = r#"module proof_gated
+proof ReleaseGate
+  requires: type_safety, bounds
+  ensures: true
+  on_unknown: reject
+  required: true
+fn main() -> Int
+  proof_evaluate("ReleaseGate")
+  return 17
+"#;
+
     #[test]
-    fn proof_and_trace_fail_closed_without_runtime_evidence_inputs() {
-        let proof = SOURCE.replace("fn main() -> Int", "proof ReleaseGate\n  requires: bounds\n  ensures: true\n  on_unknown: reject\n  required: true\nfn main() -> Int")
-            .replace("cell_initialize(\"Counter\", \"value\", 1)", "proof_evaluate(\"ReleaseGate\")");
-        assert!(matches!(compile_source_with_constructs(&proof), Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(_))));
+    fn standard_compiler_emits_and_executes_native_proof_gate_with_explicit_outcomes() {
+        let compiled = crate::pipeline::compile_source(PROOF_SOURCE)
+            .expect("supported Proof policy should compile through the standard pipeline");
+        let outcomes = vec![
+            "type_safety=proved".to_string(),
+            "bounds=runtime_checked".to_string(),
+        ];
+        assert_eq!(
+            run_combined_artifact_with_proof_results(
+                &compiled.artifact, "main", &outcomes, native::ExecutionLimits::default()
+            ).unwrap(),
+            NativeValue::Int(17)
+        );
+        assert!(run_combined_artifact(
+            &compiled.artifact, "main", &[], native::ExecutionLimits::default()
+        ).is_err(), "proof-gated artifact must not run without its explicit runtime input");
+    }
+
+    #[test]
+    fn native_proof_gate_rejects_missing_failed_unknown_duplicate_and_malformed_outcomes() {
+        let compiled = crate::pipeline::compile_source(PROOF_SOURCE).unwrap();
+        let rejected = [
+            vec!["type_safety=proved".to_string()],
+            vec!["type_safety=failed".to_string(), "bounds=proved".to_string()],
+            vec!["type_safety=unknown".to_string(), "bounds=proved".to_string()],
+            vec!["type_safety=proved".to_string(), "bounds=proved".to_string(), "bounds=runtime_checked".to_string()],
+            vec!["type_safety=maybe".to_string(), "bounds=proved".to_string()],
+        ];
+        for outcomes in rejected {
+            assert!(
+                run_combined_artifact_with_proof_results(
+                    &compiled.artifact, "main", &outcomes, native::ExecutionLimits::default()
+                ).is_err(),
+                "invalid proof outcomes must reject: {outcomes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn proof_runtime_contract_rejects_unsupported_call_shapes_and_trace_stays_fail_closed() {
+        let nested = PROOF_SOURCE.replace(
+            "proof_evaluate(\"ReleaseGate\")",
+            "let checked = proof_evaluate(\"ReleaseGate\")"
+        ).replace("  return 17", "  return 17");
+        assert!(matches!(
+            crate::pipeline::compile_source(&nested),
+            Err(crate::pipeline::PipelineError::CompilerContract(_))
+        ));
+
+        let optional = PROOF_SOURCE.replace("on_unknown: reject", "on_unknown: record");
+        assert!(matches!(
+            crate::pipeline::compile_source(&optional),
+            Err(crate::pipeline::PipelineError::CompilerContract(_))
+        ));
+
         let trace = SOURCE.replace("fn main() -> Int", "trace Build\n  signature: required\nfn main() -> Int")
             .replace("cell_initialize(\"Counter\", \"value\", 1)", "trace_emit(\"Build\", \"compile\")");
-        assert!(matches!(compile_source_with_constructs(&trace), Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(_))));
+        assert!(matches!(
+            compile_source_with_constructs(&trace),
+            Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(_))
+        ));
     }
     #[test]
     fn unresolved_cell_field_is_rejected_before_artifact_emission() {
