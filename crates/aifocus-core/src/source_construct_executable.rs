@@ -447,7 +447,6 @@ fn build_instruction_injections(
                 vec![
                     NativeInstr::Load(proof_results_parameter(proof)),
                     native::proof_check_instruction(declaration).map_err(native_error)?,
-                    NativeInstr::PushUnit,
                 ]
             }
             ConstructOperationKind::TraceEmit { trace, event } => return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(format!("Trace '{trace}' event '{event}' requires complete signed event fields"))),
