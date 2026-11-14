@@ -16,14 +16,12 @@ use ardisa_core::{
 
 const SOURCE: &str = r#"module cross_construct_acceptance
 phase Lifecycle
-  initial: ready
-  ready -> complete
+  Ready -> Done
 cell Counter
   value: Int
   invariant: value >= 0
 vault Local
   capabilities: filesystem_read, clock
-  denies: network
 proof ReleaseGate
   requires: type_safety, bounds
   ensures: true
@@ -71,7 +69,7 @@ fn event() -> TraceEventInput {
 fn runtime() -> SourceConstructRuntime {
     SourceConstructRuntime::from_source(
         SOURCE,
-        [("Lifecycle".into(), "ready".into())],
+        [("Lifecycle".into(), "Ready".into())],
         [("Counter".into(), 1)],
     )
     .expect("all five bounded construct adapters should initialize")
@@ -81,9 +79,9 @@ fn runtime() -> SourceConstructRuntime {
 fn all_five_constructs_compose_with_explicit_runtime_inputs() {
     let mut runtime = runtime();
 
-    assert_eq!(runtime.phases.phase_current("Lifecycle").unwrap(), "ready");
-    runtime.phases.transition_phase("Lifecycle", "complete").unwrap();
-    assert_eq!(runtime.phases.phase_current("Lifecycle").unwrap(), "complete");
+    assert_eq!(runtime.phases.phase_current("Lifecycle").unwrap(), "Ready");
+    runtime.phases.transition_phase("Lifecycle", "Done").unwrap();
+    assert_eq!(runtime.phases.phase_current("Lifecycle").unwrap(), "Done");
 
     runtime.cells.update("Counter", 2).unwrap();
     assert_eq!(runtime.cells.get("Counter").unwrap(), 2);
@@ -113,8 +111,8 @@ fn cell_and_phase_rejections_preserve_prior_state() {
     assert!(runtime.cells.update("Counter", -1).is_err());
     assert_eq!(runtime.cells.get("Counter").unwrap(), 1);
 
-    assert!(runtime.phases.transition_phase("Lifecycle", "missing").is_err());
-    assert_eq!(runtime.phases.phase_current("Lifecycle").unwrap(), "ready");
+    assert!(runtime.phases.transition_phase("Lifecycle", "Missing").is_err());
+    assert_eq!(runtime.phases.phase_current("Lifecycle").unwrap(), "Ready");
 }
 
 #[test]
