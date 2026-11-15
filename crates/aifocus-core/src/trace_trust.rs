@@ -18,16 +18,25 @@ pub enum TraceTrustError {
     DuplicateKeyId,
     UnknownKeyId,
     UnattributedReceipt,
+    KeyRevoked,
     RegistryLimitExceeded,
     ReceiptVerification(TraceError),
 }
 
+struct TraceTrustedKey<V> {
+    verifier: V,
+    /// First receipt sequence that must not be trusted under historical policy.
+    /// None means active. A cutoff of zero invalidates every receipt for this key.
+    revoked_from_sequence: Option<u64>,
+}
+
 /// Operator-configured mapping from stable key IDs to verifier instances.
 ///
-/// A verifier must be constructed with the public key or authenticated key
-/// service for that ID. Registering a verifier is an explicit trust decision.
+/// Revocation retains the verifier so historical receipts can be checked under
+/// an explicit cutoff policy. Current-trust verification rejects every revoked
+/// key. Registration remains an explicit trust decision.
 pub struct TraceKeyRegistry<V> {
-    verifiers: BTreeMap<String, V>,
+    verifiers: BTreeMap<String, TraceTrustedKey<V>>,
 }
 
 impl<V: TraceVerifier> Default for TraceKeyRegistry<V> {
@@ -51,52 +60,102 @@ impl<V: TraceVerifier> TraceKeyRegistry<V> {
         if self.verifiers.len() >= MAX_TRACE_TRUSTED_KEYS {
             return Err(TraceTrustError::RegistryLimitExceeded);
         }
-        self.verifiers.insert(key_id, verifier);
+        self.verifiers.insert(key_id, TraceTrustedKey {
+            verifier,
+            revoked_from_sequence: None,
+        });
         Ok(())
     }
 
-    /// Remove trust explicitly. Unknown IDs are reported rather than ignored.
+    /// Revoke a key immediately. Its verifier is retained only for audit
+    /// inspection; no receipt signed by it is trusted by either verification API.
     pub fn revoke(&mut self, key_id: &str) -> Result<(), TraceTrustError> {
-        validate_key_id(key_id)?;
-        self.verifiers.remove(key_id).map(|_| ()).ok_or(TraceTrustError::UnknownKeyId)
+        self.revoke_from_sequence(key_id, 0)
     }
 
+    /// Revoke a key from the first untrusted receipt sequence onward.
+    ///
+    /// Historical verification may accept earlier receipts from this key, but
+    /// current-trust verification rejects the key in full. The caller must
+    /// choose the cutoff from an independently trusted incident/configuration
+    /// record; this method does not establish when compromise occurred.
+    pub fn revoke_from_sequence(
+        &mut self,
+        key_id: &str,
+        first_untrusted_sequence: u64,
+    ) -> Result<(), TraceTrustError> {
+        validate_key_id(key_id)?;
+        let entry = self.verifiers.get_mut(key_id).ok_or(TraceTrustError::UnknownKeyId)?;
+        entry.revoked_from_sequence = Some(
+            entry.revoked_from_sequence
+                .map_or(first_untrusted_sequence, |existing| existing.min(first_untrusted_sequence)),
+        );
+        Ok(())
+    }
+
+    /// Re-activation is deliberately unsupported. Register a new key ID for
+    /// rotation rather than silently restoring a revoked identity.
     pub fn contains(&self, key_id: &str) -> bool {
-        self.verifiers.contains_key(key_id)
+        self.verifiers.get(key_id).is_some_and(|entry| entry.revoked_from_sequence.is_none())
     }
 
     pub fn trusted_key_ids(&self) -> impl Iterator<Item = &str> {
-        self.verifiers.keys().map(String::as_str)
+        self.verifiers.iter()
+            .filter(|(_, entry)| entry.revoked_from_sequence.is_none())
+            .map(|(key_id, _)| key_id.as_str())
     }
 
-    /// Verify a complete ledger by resolving each receipt's signed key ID.
-    /// Legacy V1 receipts without an identity are rejected by this API.
-    /// Multiple configured keys may coexist in one chain during key rotation.
+    /// Verify a complete ledger using only currently active signer identities.
+    /// Legacy V1 receipts without an identity and all revoked identities fail closed.
     pub fn verify_chain(
         &self,
         ledger: &TraceLedger,
         policy: &TracePolicy,
     ) -> Result<(), TraceTrustError> {
-        for receipt in ledger.receipts() {
+        self.verify_chain_internal(ledger, policy, false)
+    }
+
+    /// Verify historical receipts against the revocation cutoff recorded for
+    /// each key. A receipt is accepted only when its sequence is strictly below
+    /// that key's first-untrusted sequence. This is an audit policy, not proof
+    /// that the key was uncompromised at signing time.
+    pub fn verify_historical_chain(
+        &self,
+        ledger: &TraceLedger,
+        policy: &TracePolicy,
+    ) -> Result<(), TraceTrustError> {
+        self.verify_chain_internal(ledger, policy, true)
+    }
+
+    fn verify_chain_internal(
+        &self,
+        ledger: &TraceLedger,
+        policy: &TracePolicy,
+        allow_pre_revocation_history: bool,
+    ) -> Result<(), TraceTrustError> {
+        for (sequence, receipt) in ledger.receipts().iter().enumerate() {
             let key_id = receipt.key_id.as_deref().ok_or(TraceTrustError::UnattributedReceipt)?;
             validate_key_id(key_id)?;
-            if !self.verifiers.contains_key(key_id) {
-                return Err(TraceTrustError::UnknownKeyId);
+            let entry = self.verifiers.get(key_id).ok_or(TraceTrustError::UnknownKeyId)?;
+            if let Some(cutoff) = entry.revoked_from_sequence {
+                if !allow_pre_revocation_history || (sequence as u64) >= cutoff {
+                    return Err(TraceTrustError::KeyRevoked);
+                }
             }
         }
 
         ledger
             .verify_chain_with(policy, |key_id, payload, signature| {
                 let key_id = key_id.ok_or_else(|| "legacy receipt has no signer identity".to_string())?;
-                let verifier = self.verifiers.get(key_id)
+                let entry = self.verifiers.get(key_id)
                     .ok_or_else(|| format!("untrusted Trace signer: {key_id}"))?;
-                verifier.verify(payload, signature)
+                entry.verifier.verify(payload, signature)
             })
             .map_err(TraceTrustError::ReceiptVerification)
     }
 
     /// Compatibility helper for callers verifying a legacy V1 ledger against
-    /// one explicitly selected key. It does not establish receipt-level identity.
+    /// one explicitly selected active key. It does not establish receipt-level identity.
     pub fn verify_legacy_chain(
         &self,
         key_id: &str,
@@ -107,8 +166,11 @@ impl<V: TraceVerifier> TraceKeyRegistry<V> {
         if ledger.receipts().iter().any(|receipt| receipt.key_id.is_some()) {
             return Err(TraceTrustError::ReceiptVerification(TraceError::InvalidSignature));
         }
-        let verifier = self.verifiers.get(key_id).ok_or(TraceTrustError::UnknownKeyId)?;
-        ledger.verify_chain(policy, verifier).map_err(TraceTrustError::ReceiptVerification)
+        let entry = self.verifiers.get(key_id).ok_or(TraceTrustError::UnknownKeyId)?;
+        if entry.revoked_from_sequence.is_some() {
+            return Err(TraceTrustError::KeyRevoked);
+        }
+        ledger.verify_chain(policy, &entry.verifier).map_err(TraceTrustError::ReceiptVerification)
     }
 }
 
@@ -167,28 +229,25 @@ mod tests {
         let mut registry = TraceKeyRegistry::new();
         registry.register("build-key-2026", KeyedTestVerifier(7)).unwrap();
         assert!(registry.verify_chain(&ledger, &policy()).is_ok());
-        assert_eq!(
-            { let mut unknown = TraceLedger::new(); unknown.record_with_key_id(&policy(), event(), "unconfigured-key", Some(&KeyedTestSigner(7))).unwrap(); registry.verify_chain(&unknown, &policy()) },
-            Err(TraceTrustError::UnknownKeyId)
-        );
+        let mut unknown = TraceLedger::new();
+        unknown.record_with_key_id(&policy(), event(), "unconfigured-key", Some(&KeyedTestSigner(7))).unwrap();
+        assert_eq!(registry.verify_chain(&unknown, &policy()), Err(TraceTrustError::UnknownKeyId));
     }
 
     #[test]
     fn key_registry_rejects_invalid_duplicate_and_revoked_ids() {
         let mut registry = TraceKeyRegistry::new();
-        assert_eq!(
-            registry.register("contains spaces", KeyedTestVerifier(1)),
-            Err(TraceTrustError::InvalidKeyId)
-        );
+        assert_eq!(registry.register("contains spaces", KeyedTestVerifier(1)), Err(TraceTrustError::InvalidKeyId));
         registry.register("release-key", KeyedTestVerifier(1)).unwrap();
-        assert_eq!(
-            registry.register("release-key", KeyedTestVerifier(2)),
-            Err(TraceTrustError::DuplicateKeyId)
-        );
+        assert_eq!(registry.register("release-key", KeyedTestVerifier(2)), Err(TraceTrustError::DuplicateKeyId));
         assert!(registry.contains("release-key"));
         registry.revoke("release-key").unwrap();
         assert!(!registry.contains("release-key"));
-        assert_eq!(registry.revoke("release-key"), Err(TraceTrustError::UnknownKeyId));
+        assert_eq!(registry.revoke("release-key"), Ok(()));
+        let mut ledger = TraceLedger::new();
+        ledger.record_with_key_id(&policy(), event(), "release-key", Some(&KeyedTestSigner(1))).unwrap();
+        assert_eq!(registry.verify_chain(&ledger, &policy()), Err(TraceTrustError::KeyRevoked));
+        assert_eq!(registry.verify_historical_chain(&ledger, &policy()), Err(TraceTrustError::KeyRevoked));
     }
 
     #[test]
@@ -204,10 +263,8 @@ mod tests {
 
         let mut tampered_id = ledger.clone();
         tampered_id.receipts_mut_for_test()[1].key_id = Some("old-key".into());
-        assert!(matches!(
-            registry.verify_chain(&tampered_id, &policy()),
-            Err(TraceTrustError::ReceiptVerification(TraceError::InvalidSignature))
-        ));
+        assert!(matches!(registry.verify_chain(&tampered_id, &policy()),
+            Err(TraceTrustError::ReceiptVerification(TraceError::InvalidSignature))));
 
         let mut unknown = TraceKeyRegistry::new();
         unknown.register("old-key", KeyedTestVerifier(7)).unwrap();
@@ -228,12 +285,43 @@ mod tests {
     fn wrong_configured_key_cannot_verify_receipts() {
         let mut ledger = TraceLedger::new();
         ledger.record_with_key_id(&policy(), event(), "wrong-key", Some(&KeyedTestSigner(7))).unwrap();
-
         let mut registry = TraceKeyRegistry::new();
         registry.register("wrong-key", KeyedTestVerifier(9)).unwrap();
-        assert_eq!(
-            registry.verify_chain(&ledger, &policy()),
-            Err(TraceTrustError::ReceiptVerification(TraceError::InvalidSignature))
-        );
+        assert_eq!(registry.verify_chain(&ledger, &policy()),
+            Err(TraceTrustError::ReceiptVerification(TraceError::InvalidSignature)));
+    }
+
+    #[test]
+    fn revocation_cutoff_preserves_only_explicitly_accepted_history() {
+        let mut ledger = TraceLedger::new();
+        ledger.record_with_key_id(&policy(), event(), "rotating-key", Some(&KeyedTestSigner(7))).unwrap();
+        ledger.record_with_key_id(&policy(), event(), "rotating-key", Some(&KeyedTestSigner(7))).unwrap();
+
+        let mut registry = TraceKeyRegistry::new();
+        registry.register("rotating-key", KeyedTestVerifier(7)).unwrap();
+        registry.revoke_from_sequence("rotating-key", 1).unwrap();
+
+        assert!(!registry.contains("rotating-key"));
+        assert_eq!(registry.verify_chain(&ledger, &policy()), Err(TraceTrustError::KeyRevoked));
+        assert!(registry.verify_historical_chain(&ledger, &policy()).is_err(),
+            "the second receipt is at the first-untrusted sequence and must fail");
+        
+        let mut earlier_only = TraceLedger::new();
+        earlier_only.record_with_key_id(&policy(), event(), "rotating-key", Some(&KeyedTestSigner(7))).unwrap();
+        assert!(registry.verify_historical_chain(&earlier_only, &policy()).is_ok());
+    }
+
+    #[test]
+    fn revocation_cutoff_is_monotonic_and_immediate_revoke_invalidates_all_history() {
+        let mut registry = TraceKeyRegistry::new();
+        registry.register("key-a", KeyedTestVerifier(1)).unwrap();
+        registry.revoke_from_sequence("key-a", 10).unwrap();
+        registry.revoke_from_sequence("key-a", 20).unwrap();
+        assert!(!registry.contains("key-a"));
+        registry.revoke("key-a").unwrap();
+        
+        let mut ledger = TraceLedger::new();
+        ledger.record_with_key_id(&policy(), event(), "key-a", Some(&KeyedTestSigner(1))).unwrap();
+        assert_eq!(registry.verify_historical_chain(&ledger, &policy()), Err(TraceTrustError::KeyRevoked));
     }
 }
