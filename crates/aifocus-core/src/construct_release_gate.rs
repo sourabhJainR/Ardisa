@@ -51,11 +51,11 @@ mod tests {
     fn proof_release_gate_rejects_missing_failed_and_unknown_outcomes() {
         let source = "module release\nproof ReleaseGate\n  requires: type_safety, bounds\n  ensures: true\n  on_unknown: reject\n  required: true\n";
         let artifact = compile_proof_source(source, "ReleaseGate").unwrap();
-        execute_proof_artifact(&artifact, &["type_safety=proved".into(), "bounds=runtime_checked".into()]).unwrap();
+        execute_proof_artifact(&artifact, &["ReleaseGate:type_safety=proved".into(), "ReleaseGate:bounds=runtime_checked".into()]).unwrap();
         for outcomes in [
-            vec!["type_safety=proved".into()],
-            vec!["type_safety=failed".into(), "bounds=proved".into()],
-            vec!["type_safety=unknown".into(), "bounds=proved".into()],
+            vec!["ReleaseGate:type_safety=proved".into()],
+            vec!["ReleaseGate:type_safety=failed".into(), "ReleaseGate:bounds=proved".into()],
+            vec!["ReleaseGate:type_safety=unknown".into(), "ReleaseGate:bounds=proved".into()],
         ] {
             assert!(execute_proof_artifact(&artifact, &outcomes).is_err());
         }
