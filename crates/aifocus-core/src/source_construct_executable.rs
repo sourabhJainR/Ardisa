@@ -129,16 +129,16 @@ fn ensure_proof_runtime_contract(
         matches!(&binding.operation.kind, ConstructOperationKind::ProofEvaluate { .. })
     ).collect();
     if proofs.is_empty() { return Ok(()); }
-    if proofs.len() != 1 {
-        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
-            "the current Proof ABI supports exactly one ProofEvaluate operation per module".into()
-        ));
-    }
-    let binding = proofs[0];
-    if binding.operation.function != "main" {
-        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
-            "ProofEvaluate must execute in the main entry function until hidden runtime inputs can be propagated through calls".into()
-        ));
+    // All supported ProofEvaluate operations share one explicit, immutable
+    // per-invocation outcome bundle. Each native ProofCheck validates that bundle
+    // against its own declaration. Calls outside main remain unsupported because
+    // the compiler does not yet propagate hidden evidence parameters through calls.
+    for binding in &proofs {
+        if binding.operation.function != "main" {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                "ProofEvaluate must execute in the main entry function until hidden runtime inputs can be propagated through calls".into()
+            ));
+        }
     }
     let main = module.items.iter().find_map(|item| match item {
         Item::Function(function) if function.name == "main" => Some(function),
@@ -260,9 +260,9 @@ pub fn run_combined_artifact_with_proof_and_trace<S: crate::ai_mode::TraceSigner
     let proof_count = prepared.operation_bindings.iter().filter(|binding|
         matches!(&binding.operation.kind, ConstructOperationKind::ProofEvaluate { .. })
     ).count();
-    if proof_count != 1 {
+    if proof_count == 0 {
         return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
-            "combined Proof/Trace execution requires exactly one ProofEvaluate".into()));
+            "combined Proof/Trace execution requires at least one ProofEvaluate".into()));
     }
     let (trace, expected_event) = prepared.operation_bindings.iter().find_map(|binding| match &binding.operation.kind {
         ConstructOperationKind::TraceEmit { trace, event } => Some((trace.as_str(), event.as_str())),
@@ -729,6 +729,61 @@ fn main() -> Int
         assert!(run_combined_artifact(
             &compiled.artifact, "main", &[], native::ExecutionLimits::default()
         ).is_err(), "proof-gated artifact must not run without its explicit runtime input");
+    }
+
+    #[test]
+    fn standard_compiler_supports_multiple_proof_gates_with_one_explicit_invocation_bundle() {
+        let source = r#"module multi_proof_gated
+proof BuildGate
+  requires: type_safety
+  ensures: true
+  on_unknown: reject
+  required: true
+proof ReleaseGate
+  requires: bounds
+  ensures: true
+  on_unknown: reject
+  required: true
+fn main() -> Int
+  proof_evaluate("BuildGate")
+  proof_evaluate("ReleaseGate")
+  return 31
+"#;
+        let compiled = crate::pipeline::compile_source(source)
+            .expect("multiple supported Proof declarations should compile");
+        let outcomes = vec![
+            "type_safety=proved".to_string(),
+            "bounds=runtime_checked".to_string(),
+        ];
+        assert_eq!(
+            run_combined_artifact_with_proof_results(
+                &compiled.artifact, "main", &outcomes, native::ExecutionLimits::default()
+            ).unwrap(),
+            NativeValue::Int(31)
+        );
+
+        let failed_second_gate = vec![
+            "type_safety=proved".to_string(),
+            "bounds=failed".to_string(),
+        ];
+        assert!(run_combined_artifact_with_proof_results(
+            &compiled.artifact, "main", &failed_second_gate, native::ExecutionLimits::default()
+        ).is_err(), "a later Proof gate must stop execution");
+
+        let missing_second_gate = vec!["type_safety=proved".to_string()];
+        assert!(run_combined_artifact_with_proof_results(
+            &compiled.artifact, "main", &missing_second_gate, native::ExecutionLimits::default()
+        ).is_err(), "every declared Proof gate must receive its required outcomes");
+
+        let duplicate_operation = source.replace(
+            "proof_evaluate(\"ReleaseGate\")",
+            "proof_evaluate(\"ReleaseGate\")\\n  proof_evaluate(\"ReleaseGate\")"
+        );
+        let duplicate_compiled = crate::pipeline::compile_source(&duplicate_operation)
+            .expect("repeated evaluation of the same declared gate is allowed");
+        assert!(run_combined_artifact_with_proof_results(
+            &duplicate_compiled.artifact, "main", &outcomes, native::ExecutionLimits::default()
+        ).is_ok());
     }
 
     #[test]
