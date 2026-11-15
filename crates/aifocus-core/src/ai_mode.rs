@@ -470,6 +470,11 @@ impl TraceLedger {
         &self.receipts
     }
 
+    #[cfg(test)]
+    pub(crate) fn receipts_mut_for_test(&mut self) -> &mut [TraceReceipt] {
+        &mut self.receipts
+    }
+
     /// Verify the full append-only receipt chain against a trusted verifier.
     /// A ledger is accepted only when sequence numbers, predecessor links,
     /// canonical payload signatures, field constraints, and signature bounds
