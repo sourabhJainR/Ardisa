@@ -898,6 +898,93 @@ fn main() -> Int
     }
 
     #[test]
+    fn authenticated_proof_bundle_is_admitted_before_source_artifact_execution() {
+        struct ProofEcho;
+        impl crate::proof_evidence::SignatureVerifier for ProofEcho {
+            fn verify(&self, _: &str, payload: &[u8], signature: &[u8]) -> Result<bool, String> {
+                Ok(payload == signature)
+            }
+        }
+        let compiled = crate::pipeline::compile_source(
+            r#"module authenticated_proof
+proof BuildGate
+  requires: type_safety
+  ensures: true
+  on_unknown: reject
+  required: true
+proof ReleaseGate
+  requires: bounds
+  ensures: true
+  on_unknown: reject
+  required: true
+fn main() -> Int
+  proof_evaluate("BuildGate")
+  proof_evaluate("ReleaseGate")
+  return 41
+"#
+        ).unwrap();
+        let artifact_digest = source_sha256_hex(&compiled.artifact);
+        let mut trust = crate::proof_evidence::TrustRegistry::new();
+        trust.register("ci", "ci-key", std::sync::Arc::new(ProofEcho)).unwrap();
+        let mut make = |gate: &str, requirement: &str, sequence: u64| {
+            let mut item = crate::proof_evidence::ProofEvidence {
+                gate_id: gate.into(), requirement: requirement.into(), status: "proved".into(),
+                producer_id: "ci".into(), key_id: "ci-key".into(), sequence,
+                artifact_sha256: artifact_digest.clone(), evidence: format!("{gate}:{requirement}").into_bytes(),
+                signature: Vec::new(),
+            };
+            item.signature = item.canonical_payload();
+            item
+        };
+        let evidence = vec![
+            make("BuildGate", "type_safety", 1),
+            make("ReleaseGate", "bounds", 2),
+        ];
+        let replay = crate::proof_evidence::MemoryReplayStore::default();
+        assert_eq!(
+            run_combined_artifact_with_authenticated_proof_evidence(
+                r#"module authenticated_proof
+proof BuildGate
+  requires: type_safety
+  ensures: true
+  on_unknown: reject
+  required: true
+proof ReleaseGate
+  requires: bounds
+  ensures: true
+  on_unknown: reject
+  required: true
+fn main() -> Int
+  proof_evaluate("BuildGate")
+  proof_evaluate("ReleaseGate")
+  return 41
+"#,
+                &compiled.artifact, &evidence, &trust, &replay, native::ExecutionLimits::default()
+            ).unwrap(),
+            NativeValue::Int(41)
+        );
+        assert!(run_combined_artifact_with_authenticated_proof_evidence(
+            r#"module authenticated_proof
+proof BuildGate
+  requires: type_safety
+  ensures: true
+  on_unknown: reject
+  required: true
+proof ReleaseGate
+  requires: bounds
+  ensures: true
+  on_unknown: reject
+  required: true
+fn main() -> Int
+  proof_evaluate("BuildGate")
+  proof_evaluate("ReleaseGate")
+  return 41
+"#,
+            &compiled.artifact, &evidence, &trust, &replay, native::ExecutionLimits::default()
+        ).is_err(), "replayed evidence must be rejected");
+    }
+
+    #[test]
     fn native_proof_gate_rejects_missing_failed_unknown_duplicate_and_malformed_outcomes() {
         let compiled = crate::pipeline::compile_source(PROOF_SOURCE).unwrap();
         let rejected = [
