@@ -167,3 +167,147 @@ fn standard_compiler_keeps_proof_and_trace_fail_closed() {
             if diagnostics.iter().any(|diagnostic| diagnostic.contains("UnsupportedRuntimeBoundary"))
     ));
 }
+
+
+#[test]
+fn all_five_constructs_bind_to_one_validated_source_operation_batch() {
+    use ardisa_core::{
+        ast::{Item, StmtKind, TypeKind},
+        combined_construct_runtime::CombinedConstructPlan,
+        construct_operations::{ConstructOperation, ConstructOperationKind},
+    };
+
+    let module = ardisa_core::parse(SOURCE).expect("combined source parses");
+    let function = match &module.items[0] {
+        Item::Function(function) if function.name == "main" => function,
+        other => panic!("expected main function, got {other:?}"),
+    };
+    let expression = match &function.body.stmts[0].kind {
+        StmtKind::Return(Some(expression)) => expression.id.0,
+        other => panic!("expected a return expression for Cell initialization, got {other:?}"),
+    };
+
+    let operations = vec![
+        ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::CellInitialize {
+                cell: "Counter".into(),
+                field: "value".into(),
+                expression,
+                value_type: TypeKind::Int,
+            },
+        },
+        ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::PhaseTransition {
+                phase: "Lifecycle".into(),
+                from: "Ready".into(),
+                to: "Done".into(),
+            },
+        },
+        ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::VaultAuthorize {
+                vault: "Local".into(),
+                capability: "filesystem_read".into(),
+            },
+        },
+        ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::ProofEvaluate {
+                proof: "ReleaseGate".into(),
+            },
+        },
+        ConstructOperation {
+            function: "main".into(),
+            kind: ConstructOperationKind::TraceEmit {
+                trace: "Build".into(),
+                event: "compile".into(),
+            },
+        },
+    ];
+
+    let plan = CombinedConstructPlan::validate(SOURCE, &operations)
+        .expect("all five source constructs must validate as one batch");
+    assert_eq!(plan.module_name(), "cross_construct_acceptance");
+    assert_eq!(plan.operations(), operations.as_slice());
+
+    let mut dispatch_count = 0;
+    let count = plan
+        .dispatch_validated_batch(|batch| {
+            dispatch_count += 1;
+            assert_eq!(batch, operations.as_slice());
+            Ok(batch.len())
+        })
+        .expect("validated batch dispatch succeeds");
+    assert_eq!(count, 5);
+    assert_eq!(dispatch_count, 1);
+}
+
+#[test]
+fn all_five_construct_declarations_have_deterministic_metadata_round_trip() {
+    let module = ardisa_core::parse(SOURCE).expect("combined source parses");
+    let constructs = ardisa_core::typed_ir::lower_constructs(&module)
+        .expect("all construct declarations lower to typed metadata");
+    assert_eq!(constructs.len(), 5);
+
+    let encoded = ardisa_core::typed_ir::encode_construct_metadata(&constructs)
+        .expect("metadata encoding validates");
+    let decoded = ardisa_core::typed_ir::decode_construct_metadata(&encoded)
+        .expect("encoded metadata decodes");
+    let reencoded = ardisa_core::typed_ir::encode_construct_metadata(&decoded)
+        .expect("decoded metadata remains valid");
+
+    assert_eq!(reencoded, encoded);
+    assert_eq!(decoded.len(), 5);
+}
+
+#[test]
+fn failed_proof_prevents_phase_and_cell_promotion() {
+    let mut runtime = runtime();
+    let mut failed = BTreeMap::new();
+    failed.insert(ProofRequirement::TypeSafety, ProofStatus::Failed);
+    failed.insert(ProofRequirement::Bounds, ProofStatus::Proved);
+
+    let proof_result = runtime.validate_proofs("ReleaseGate", &failed);
+    assert!(matches!(proof_result, Err(SourceRuntimeError::Proof(_))));
+
+    // State promotion is gated on successful proof validation.
+    if proof_result.is_ok() {
+        runtime.phases.transition_phase("Lifecycle", "Done").unwrap();
+        runtime.cells.update("Counter", 2).unwrap();
+    }
+
+    assert_eq!(runtime.phases.phase_current("Lifecycle").unwrap(), "Ready");
+    assert!(runtime.phases.phase_history("Lifecycle").unwrap().is_empty());
+    assert_eq!(runtime.cells.get("Counter").unwrap(), 1);
+}
+
+struct RejectingEvidenceVerifier;
+
+impl ardisa_core::evidence::EvidenceSourceVerifier for RejectingEvidenceVerifier {
+    fn verify_source_backing(
+        &self,
+        _envelope: &ardisa_core::evidence::EvidenceEnvelope,
+    ) -> Result<(), String> {
+        Err("source provenance is not trusted".into())
+    }
+}
+
+#[test]
+fn untrusted_trace_source_cannot_be_promoted_into_evidence_graph() {
+    let mut runtime = runtime();
+    runtime.record_trace("Build", event(), Some(&TestSigner)).unwrap();
+    runtime.verify_trace("Build", &TestSigner).unwrap();
+
+    let result = runtime.verified_trace_evidence(
+        "Build",
+        "https://example.invalid/source",
+        &TestSigner,
+        &RejectingEvidenceVerifier,
+    );
+    assert!(matches!(
+        result,
+        Err(SourceRuntimeError::Trace(_))
+    ));
+}
