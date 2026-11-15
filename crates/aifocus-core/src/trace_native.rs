@@ -72,7 +72,7 @@ pub fn compile_trace_source(
         params: vec!["event".into()],
         code: vec![
             NativeInstr::Load("event".into()),
-            NativeInstr::TracePrepare { name: trace_name.to_string() },
+            NativeInstr::TracePrepare { name: trace_name.to_string(), event: None },
             NativeInstr::Return,
         ],
     });
@@ -101,7 +101,7 @@ pub fn execute_trace_event<S: TraceSigner, V: TraceVerifier>(
     let program = native::decode_program(&artifact.artifact).map_err(NativeTraceCompileError::Native)?;
     let embedded_trace = program.functions.get("main").and_then(|function| {
         function.code.iter().find_map(|instruction| match instruction {
-            NativeInstr::TracePrepare { name } => Some(name.as_str()),
+            NativeInstr::TracePrepare { name, .. } => Some(name.as_str()),
             _ => None,
         })
     });
