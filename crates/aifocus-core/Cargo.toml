@@ -7,3 +7,4 @@ description = "Core language model for Ardisa"
 
 [dependencies]
 unicode-segmentation = "=1.12.0"
+sha2 = "0.10.9"
