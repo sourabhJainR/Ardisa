@@ -22,8 +22,8 @@ jobs:
         run: |
           cargo fmt --all
           cargo fmt --all -- --check
-      - name: Workspace tests
-        run: cargo test --workspace --all-targets
+      # The CI workflow owns the full workspace test suite, including CLI unit tests.
+      # Keep this workflow focused on its additional native compiler/bootstrap gates.
       - name: Native phase contract tests
         run: cargo test -p ardisa-core compiler_engine
       - name: Bootstrap artifact
