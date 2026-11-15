@@ -219,9 +219,9 @@ pub fn run_combined_artifact_with_trace_event<S: crate::ai_mode::TraceSigner, V:
 }
 
 /// Run a Proof-gated combined artifact with explicit per-invocation evidence outcomes.
-/// Each outcome is requirement=status, with status proved or runtime_checked.
-/// Failed, unknown, missing, duplicate, malformed, or non-string values are rejected
-/// by NativeInstr::ProofCheck before the program can continue.
+/// Each outcome is gate:requirement=status, with status proved or runtime_checked.
+/// A ProofCheck accepts only entries scoped to its own gate name. Failed, unknown,
+/// missing, duplicate, malformed, or non-string values fail closed.
 pub fn run_combined_artifact_with_proof_results(
     artifact: &str,
     entry: &str,
@@ -774,6 +774,14 @@ fn main() -> Int
         assert!(run_combined_artifact_with_proof_results(
             &compiled.artifact, "main", &missing_second_gate, native::ExecutionLimits::default()
         ).is_err(), "every declared Proof gate must receive its required outcomes");
+
+        let cross_gate_substitution = vec![
+            "BuildGate:type_safety=proved".to_string(),
+            "BuildGate:bounds=runtime_checked".to_string(),
+        ];
+        assert!(run_combined_artifact_with_proof_results(
+            &compiled.artifact, "main", &cross_gate_substitution, native::ExecutionLimits::default()
+        ).is_err(), "BuildGate evidence must never satisfy ReleaseGate");
 
         let duplicate_operation = source.replace(
             "proof_evaluate(\"ReleaseGate\")",
