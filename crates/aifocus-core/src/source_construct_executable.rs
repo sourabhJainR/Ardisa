@@ -28,6 +28,12 @@ pub enum SourceConstructExecutableError {
     UnsupportedRuntimeBoundary(String),
     CompilerContract(Vec<String>),
 }
+fn source_sha256_hex(source: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(source.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn native_error(error: native::NativeError) -> SourceConstructExecutableError {
     SourceConstructExecutableError::Native(format!("{error:?}"))
 }
@@ -183,6 +189,11 @@ pub fn run_combined_artifact_with_trace_event<S: crate::ai_mode::TraceSigner, V:
     source: &str, artifact: &str, runtime: &mut crate::trace_policy_runtime::TraceRuntimeSet,
     event: crate::ai_mode::TraceEventInput, signer: &S, verifier: &V, limits: native::ExecutionLimits,
 ) -> Result<NativeValue, SourceConstructExecutableError> {
+    let expected_source_digest = source_sha256_hex(source);
+    if event.subject_sha256 != expected_source_digest {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "Trace subject digest does not match the exact source bytes being compiled".into()));
+    }
     let compiled = compile_source_with_constructs(source)?;
     if compiled.artifact != artifact { return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
         "Trace source does not match the supplied executable artifact".into())); }
@@ -823,7 +834,7 @@ fn main() -> Int
     fn trace_event() -> crate::ai_mode::TraceEventInput {
         crate::ai_mode::TraceEventInput {
             event_kind: "build".into(), actor: "compiler".into(),
-            subject_sha256: "a".repeat(64), outcome: "passed".into(),
+            subject_sha256: source_sha256_hex(PROOF_TRACE_SOURCE), outcome: "passed".into(),
             provider_id: None, session_sha256: None,
         }
     }
