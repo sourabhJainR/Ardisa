@@ -127,7 +127,7 @@ fn validate_scoped_proof_outcomes(
     for function in program.functions.values() {
         for instruction in &function.code {
             if let NativeInstr::ProofCheck { spec } = instruction {
-                let requirements = spec.required.iter().map(|item| item.as_str().to_owned()).collect();
+                let requirements: BTreeSet<String> = spec.required.iter().map(|item| item.as_str().to_owned()).collect();
                 if let Some(previous) = declared.insert(spec.name.clone(), requirements.clone()) {
                     if previous != requirements {
                         return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
