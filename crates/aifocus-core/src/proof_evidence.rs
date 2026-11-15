@@ -92,9 +92,11 @@ fn field(out: &mut Vec<u8>, bytes: &[u8]) {
 impl ProofEvidence {
     pub fn canonical_payload(&self) -> Vec<u8> {
         let mut out = b"ARDISA-PROOF-EVIDENCE-V1".to_vec();
+        let sequence = self.sequence.to_be_bytes();
+        let evidence_digest = digest(&self.evidence);
         for part in [self.producer_id.as_bytes(), self.key_id.as_bytes(), self.gate_id.as_bytes(),
-            self.requirement.as_bytes(), self.status.as_bytes(), &self.sequence.to_be_bytes(),
-            self.artifact_sha256.as_bytes(), digest(&self.evidence).as_bytes()] { field(&mut out, part); }
+            self.requirement.as_bytes(), self.status.as_bytes(), sequence.as_slice(),
+            self.artifact_sha256.as_bytes(), evidence_digest.as_bytes()] { field(&mut out, part); }
         out
     }
 }
