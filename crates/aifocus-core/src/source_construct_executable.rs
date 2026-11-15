@@ -236,6 +236,44 @@ pub fn run_combined_artifact_with_proof_results(
     )
 }
 
+/// Authenticate a complete Proof evidence bundle before native execution.
+/// All Proof declarations in the source are collected, including gates without a
+/// ProofEvaluate call-site in the current statement sequence. Producer signatures
+/// and monotonic sequence admission are checked before any native code is run.
+pub fn run_combined_artifact_with_authenticated_proof_evidence(
+    source: &str,
+    artifact: &str,
+    evidence: &[crate::proof_evidence::ProofEvidence],
+    trust: &crate::proof_evidence::TrustRegistry,
+    replay: &dyn crate::proof_evidence::ReplayStore,
+    limits: native::ExecutionLimits,
+) -> Result<NativeValue, SourceConstructExecutableError> {
+    let compiled = compile_source_with_constructs(source)?;
+    if compiled.artifact != artifact {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "Proof source does not match the supplied executable artifact".into()));
+    }
+    let module = crate::parse(source).map_err(SourceConstructExecutableError::Parse)?;
+    let constructs = crate::typed_ir::lower_constructs(&module)
+        .map_err(SourceConstructExecutableError::TypedIr)?;
+    let mut required = BTreeMap::<String, BTreeSet<String>>::new();
+    for construct in constructs.iter().filter(|item| item.kind == crate::ast::ConstructKind::Proof) {
+        let instruction = native::proof_check_instruction(construct).map_err(native_error)?;
+        let native::NativeInstr::ProofCheck { spec } = instruction else {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                "Proof declaration did not lower to a ProofCheck instruction".into()));
+        };
+        required.insert(spec.name, spec.required.iter().map(|item| item.as_str().to_owned()).collect());
+    }
+    let outcomes = crate::proof_evidence::admit(
+        &required, evidence, &source_sha256_hex(artifact), trust, replay,
+    ).map_err(|error| SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+        format!("authenticated Proof evidence admission failed: {error:?}")))?;
+    run_combined_artifact_with_proof_results(
+        artifact, "main", &outcomes, limits,
+    )
+}
+
 /// Execute one ProofEvaluate and one TraceEmit in the same source-bound artifact.
 /// The Proof input is checked by native ProofCheck; the Trace event is checked by
 /// native TracePrepare. A signed receipt is committed only after both native
