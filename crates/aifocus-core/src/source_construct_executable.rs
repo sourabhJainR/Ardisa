@@ -777,7 +777,7 @@ fn main() -> Int
 
         let duplicate_operation = source.replace(
             "proof_evaluate(\"ReleaseGate\")",
-            "proof_evaluate(\"ReleaseGate\")\\n  proof_evaluate(\"ReleaseGate\")"
+            "proof_evaluate(\"ReleaseGate\")\n  proof_evaluate(\"ReleaseGate\")"
         );
         let duplicate_compiled = crate::pipeline::compile_source(&duplicate_operation)
             .expect("repeated evaluation of the same declared gate is allowed");
