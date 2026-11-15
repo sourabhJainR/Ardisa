@@ -46,12 +46,15 @@ pub trait ReplayStore: Send + Sync {
     fn commit_batch(&self, advances: &[(String, String, u64)]) -> Result<(), AdmissionError>;
 }
 #[derive(Default)]
-pub struct MemoryReplayStore(Mutex<BTreeMap<(String, String), u64>>);
+#[cfg(test)]
+pub(crate) struct MemoryReplayStore(Mutex<BTreeMap<(String, String), u64>>);
+#[cfg(test)]
 impl MemoryReplayStore {
     pub fn latest(&self, producer: &str, key: &str) -> Option<u64> {
         self.0.lock().ok()?.get(&(producer.into(), key.into())).copied()
     }
 }
+#[cfg(test)]
 impl ReplayStore for MemoryReplayStore {
     fn commit_batch(&self, advances: &[(String, String, u64)]) -> Result<(), AdmissionError> {
         let mut state = self.0.lock().map_err(|_| AdmissionError::ReplayStoreUnavailable)?;
@@ -211,6 +214,13 @@ mod tests {
         assert_eq!(admit(&declarations(), &[one], &"a".repeat(64), &registry(), &replay),
             Err(AdmissionError::MissingGate("ReleaseGate".into())));
     }
+    #[test] fn sequence_admission_is_independent_of_evidence_input_order() {
+        let replay = MemoryReplayStore::default();
+        let reversed = vec![evidence("ReleaseGate", "bounds", 2), evidence("BuildGate", "type_safety", 1)];
+        assert_eq!(admit(&declarations(), &reversed, &"a".repeat(64), &registry(), &replay).unwrap().len(), 2);
+        assert_eq!(replay.latest("ci", "ci-key"), Some(2));
+    }
+
     #[test] fn rejects_sequence_gaps_and_partial_advancement() {
         let replay = MemoryReplayStore::default();
         let gap = vec![evidence("BuildGate","type_safety",2), evidence("ReleaseGate","bounds",3)];
