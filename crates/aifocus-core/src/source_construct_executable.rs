@@ -117,6 +117,69 @@ pub fn run_combined_artifact(
         .run_with_limits(entry, args, limits).map_err(native_error)
 }
 
+/// Validate the shared outcome bundle against every ProofCheck in the artifact.
+fn validate_scoped_proof_outcomes(
+    artifact: &str,
+    outcomes: &[String],
+) -> Result<(), SourceConstructExecutableError> {
+    let program = native::decode_program(artifact).map_err(native_error)?;
+    let mut declared = BTreeMap::<String, BTreeSet<String>>::new();
+    for function in program.functions.values() {
+        for instruction in &function.code {
+            if let NativeInstr::ProofCheck { spec } = instruction {
+                let requirements = spec.required.iter().map(|item| item.as_str().to_owned()).collect();
+                if let Some(previous) = declared.insert(spec.name.clone(), requirements.clone()) {
+                    if previous != requirements {
+                        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                            format!("conflicting Proof declarations for gate '{}'", spec.name)));
+                    }
+                }
+            }
+        }
+    }
+    if declared.is_empty() {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "Proof evidence was supplied for an artifact with no ProofCheck".into()));
+    }
+    let mut observed = BTreeSet::<(String, String)>::new();
+    for outcome in outcomes {
+        let (gate, rest) = outcome.split_once(':').ok_or_else(|| {
+            SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                "Proof outcome must use gate:requirement=status".into())
+        })?;
+        let (requirement, status) = rest.split_once('=').ok_or_else(|| {
+            SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                "Proof outcome must use gate:requirement=status".into())
+        })?;
+        if gate.trim() != gate || requirement.trim() != requirement
+            || !declared.contains_key(gate) {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                format!("unknown or malformed Proof gate identifier '{gate}'")));
+        }
+        if !declared[gate].contains(requirement) {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                format!("unknown Proof requirement '{requirement}' for gate '{gate}'")));
+        }
+        if !matches!(status, "proved" | "runtime_checked") {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                format!("Proof outcome status '{status}' is not admissible")));
+        }
+        if !observed.insert((gate.to_owned(), requirement.to_owned())) {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                format!("duplicate Proof outcome for '{gate}:{requirement}'")));
+        }
+    }
+    for (gate, requirements) in &declared {
+        for requirement in requirements {
+            if !observed.contains(&(gate.clone(), requirement.clone())) {
+                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                    format!("missing Proof outcome for '{gate}:{requirement}'")));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Proof outcomes enter the native VM through one hidden, explicit entry parameter.
 /// This first executable slice deliberately supports one ProofEvaluate in a
 /// zero-argument main function. It does not accept outcomes from source literals,
@@ -228,6 +291,7 @@ pub fn run_combined_artifact_with_proof_results(
     outcomes: &[String],
     limits: native::ExecutionLimits,
 ) -> Result<NativeValue, SourceConstructExecutableError> {
+    validate_scoped_proof_outcomes(artifact, outcomes)?;
     run_combined_artifact(
         artifact,
         entry,
@@ -293,6 +357,7 @@ pub fn run_combined_artifact_with_proof_and_trace<S: crate::ai_mode::TraceSigner
         return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
             "Proof/Trace source does not match the supplied executable artifact".into()));
     }
+    validate_scoped_proof_outcomes(artifact, proof_outcomes)?;
     let prepared = crate::source_construct_pipeline::prepare_source_constructs(source)
         .map_err(|error| SourceConstructExecutableError::Preparation(format!("{error:?}")))?;
     let proof_count = prepared.operation_bindings.iter().filter(|binding|
