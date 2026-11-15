@@ -885,6 +885,12 @@ fn main() -> Int
   return 29
 "#;
 
+    fn proof_trace_event() -> crate::ai_mode::TraceEventInput {
+        let mut event = trace_event();
+        event.event_kind = "release".into();
+        event
+    }
+
     #[test]
     fn standard_compiler_executes_proof_and_trace_in_one_native_artifact() {
         let compiled = crate::pipeline::compile_source(PROOF_TRACE_SOURCE)
@@ -899,7 +905,7 @@ fn main() -> Int
             &compiled.artifact,
             &outcomes,
             &mut runtime,
-            trace_event(),
+            proof_trace_event(),
             &TestTraceSigner,
             &TestTraceSigner,
             native::ExecutionLimits::default(),
@@ -923,7 +929,7 @@ fn main() -> Int
             &compiled.artifact,
             &outcomes,
             &mut proof_rejected_runtime,
-            trace_event(),
+            proof_trace_event(),
             &TestTraceSigner,
             &TestTraceSigner,
             native::ExecutionLimits::default(),
@@ -944,7 +950,7 @@ fn main() -> Int
             &compiled.artifact,
             &outcomes,
             &mut trace_rejected_runtime,
-            trace_event(),
+            proof_trace_event(),
             &BadSigner,
             &TestTraceSigner,
             native::ExecutionLimits::default(),
@@ -961,7 +967,7 @@ fn main() -> Int
             &compiled.artifact,
             &[],
             &mut runtime,
-            trace_event(),
+            proof_trace_event(),
             &TestTraceSigner,
             &TestTraceSigner,
             native::ExecutionLimits::default(),
