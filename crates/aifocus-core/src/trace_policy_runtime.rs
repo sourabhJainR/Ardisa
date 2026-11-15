@@ -279,4 +279,85 @@ mod tests {
             Err(TraceRuntimeError::Trace(TraceError::InvalidSignature))
         ));
     }
+
+    #[test]
+    fn trace_policy_rejects_provider_and_session_metadata_without_appending() {
+        let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
+
+        let mut provider_metadata = event();
+        provider_metadata.provider_id = Some("provider-x".into());
+        assert!(matches!(
+            runtime.record("Build", provider_metadata, Some(&TestSigner)),
+            Err(TraceRuntimeError::Trace(TraceError::MetadataNotAllowed))
+        ));
+        assert!(runtime.receipts("Build").unwrap().is_empty());
+
+        let mut session_metadata = event();
+        session_metadata.session_sha256 = Some("b".repeat(64));
+        assert!(matches!(
+            runtime.record("Build", session_metadata, Some(&TestSigner)),
+            Err(TraceRuntimeError::Trace(TraceError::MetadataNotAllowed))
+        ));
+        assert!(runtime.receipts("Build").unwrap().is_empty());
+    }
+
+    #[test]
+    fn accepted_trace_receipt_contains_only_explicitly_allowed_fields() {
+        let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
+        runtime.record("Build", event(), Some(&TestSigner)).unwrap();
+
+        let receipt = &runtime.receipts("Build").unwrap()[0];
+        assert_eq!(receipt.event_kind, "build");
+        assert_eq!(receipt.actor, "compiler");
+        assert_eq!(receipt.outcome, "passed");
+        assert_eq!(receipt.subject_sha256, "a".repeat(64));
+        assert_eq!(receipt.provider_id, None);
+        assert_eq!(receipt.session_sha256, None);
+        assert!(!format!("{receipt:?}").to_ascii_lowercase().contains("prompt"));
+    }
+
+    #[test]
+    fn evidence_graph_exports_only_redacted_trace_provenance_fields() {
+        let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
+        runtime.record("Build", event(), Some(&TestSigner)).unwrap();
+
+        let graph = runtime.verified_evidence_graph(
+            "Build",
+            "https://example.invalid/source",
+            &TestSigner,
+            &EvidenceVerifier,
+        ).unwrap();
+
+        let evidence = &graph.envelopes[0].evidence;
+        assert_eq!(evidence.len(), 3);
+        assert!(evidence.iter().any(|item| item == "source_uri=https://example.invalid/source"));
+        assert!(evidence.iter().any(|item| item == &format!("source_sha256={}", "a".repeat(64))));
+        assert!(evidence.iter().any(|item| item.starts_with("verification_receipt=")));
+        assert!(evidence.iter().all(|item| {
+            item.starts_with("source_uri=")
+                || item.starts_with("source_sha256=")
+                || item.starts_with("verification_receipt=")
+        }));
+    }
+
+    #[test]
+    fn malformed_trace_events_are_rejected_without_receipt_mutation() {
+        let mut runtime = TraceRuntimeSet::from_source(SOURCE).unwrap();
+
+        let mut invalid_token = event();
+        invalid_token.actor = "user supplied raw prompt".into();
+        assert!(matches!(
+            runtime.record("Build", invalid_token, Some(&TestSigner)),
+            Err(TraceRuntimeError::Trace(TraceError::InvalidToken("actor")))
+        ));
+        assert!(runtime.receipts("Build").unwrap().is_empty());
+
+        let mut invalid_digest = event();
+        invalid_digest.subject_sha256 = "not-a-digest".into();
+        assert!(matches!(
+            runtime.record("Build", invalid_digest, Some(&TestSigner)),
+            Err(TraceRuntimeError::Trace(TraceError::InvalidDigest("subject_sha256")))
+        ));
+        assert!(runtime.receipts("Build").unwrap().is_empty());
+    }
 }
