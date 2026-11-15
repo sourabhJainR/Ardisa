@@ -870,4 +870,118 @@ fn main() -> Int
             &TestTraceSigner, &TestTraceSigner, native::ExecutionLimits::default(),
         ).is_err());
     }
+
+    const PROOF_TRACE_SOURCE: &str = r#"module proof_trace_executable
+proof ReleaseGate
+  requires: type_safety, bounds
+  ensures: true
+  on_unknown: reject
+  required: true
+trace Audit
+  signature: required
+fn main() -> Int
+  trace_emit("Audit", "release")
+  proof_evaluate("ReleaseGate")
+  return 29
+"#;
+
+    #[test]
+    fn standard_compiler_executes_proof_and_trace_in_one_native_artifact() {
+        let compiled = crate::pipeline::compile_source(PROOF_TRACE_SOURCE)
+            .expect("the bounded combined Proof/Trace source should compile");
+        let mut runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
+        let outcomes = vec![
+            "type_safety=proved".to_string(),
+            "bounds=runtime_checked".to_string(),
+        ];
+        let result = run_combined_artifact_with_proof_and_trace(
+            PROOF_TRACE_SOURCE,
+            &compiled.artifact,
+            &outcomes,
+            &mut runtime,
+            trace_event(),
+            &TestTraceSigner,
+            &TestTraceSigner,
+            native::ExecutionLimits::default(),
+        ).unwrap();
+
+        assert_eq!(result, NativeValue::Int(29));
+        assert_eq!(runtime.receipts("Audit").unwrap().len(), 1);
+        runtime.verify("Audit", &TestTraceSigner).unwrap();
+    }
+
+    #[test]
+    fn combined_proof_failure_or_trace_verification_failure_never_commits_receipt() {
+        let compiled = crate::pipeline::compile_source(PROOF_TRACE_SOURCE).unwrap();
+        let outcomes = vec![
+            "type_safety=failed".to_string(),
+            "bounds=proved".to_string(),
+        ];
+        let mut proof_rejected_runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
+        assert!(run_combined_artifact_with_proof_and_trace(
+            PROOF_TRACE_SOURCE,
+            &compiled.artifact,
+            &outcomes,
+            &mut proof_rejected_runtime,
+            trace_event(),
+            &TestTraceSigner,
+            &TestTraceSigner,
+            native::ExecutionLimits::default(),
+        ).is_err());
+        assert!(proof_rejected_runtime.receipts("Audit").unwrap().is_empty());
+
+        let outcomes = vec![
+            "type_safety=proved".to_string(),
+            "bounds=runtime_checked".to_string(),
+        ];
+        let mut trace_rejected_runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
+        struct BadSigner;
+        impl crate::ai_mode::TraceSigner for BadSigner {
+            fn sign(&self, _: &[u8]) -> Result<Vec<u8>, String> { Ok(b"invalid".to_vec()) }
+        }
+        assert!(run_combined_artifact_with_proof_and_trace(
+            PROOF_TRACE_SOURCE,
+            &compiled.artifact,
+            &outcomes,
+            &mut trace_rejected_runtime,
+            trace_event(),
+            &BadSigner,
+            &TestTraceSigner,
+            native::ExecutionLimits::default(),
+        ).is_err());
+        assert!(trace_rejected_runtime.receipts("Audit").unwrap().is_empty());
+    }
+
+    #[test]
+    fn combined_proof_trace_rejects_missing_or_mismatched_runtime_inputs() {
+        let compiled = crate::pipeline::compile_source(PROOF_TRACE_SOURCE).unwrap();
+        let mut runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
+        assert!(run_combined_artifact_with_proof_and_trace(
+            PROOF_TRACE_SOURCE,
+            &compiled.artifact,
+            &[],
+            &mut runtime,
+            trace_event(),
+            &TestTraceSigner,
+            &TestTraceSigner,
+            native::ExecutionLimits::default(),
+        ).is_err());
+        let mut wrong_event = trace_event();
+        wrong_event.event_kind = "build".into();
+        let outcomes = vec![
+            "type_safety=proved".to_string(),
+            "bounds=proved".to_string(),
+        ];
+        assert!(run_combined_artifact_with_proof_and_trace(
+            PROOF_TRACE_SOURCE,
+            &compiled.artifact,
+            &outcomes,
+            &mut runtime,
+            wrong_event,
+            &TestTraceSigner,
+            &TestTraceSigner,
+            native::ExecutionLimits::default(),
+        ).is_err());
+        assert!(runtime.receipts("Audit").unwrap().is_empty());
+    }
 }
