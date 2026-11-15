@@ -2815,7 +2815,7 @@ fn run_function(
                 validate_proof_spec(spec)?;
                 let results = match stack.pop() {
                     Some(NativeValue::List(items)) => items,
-                    Some(_) => return Err(NativeError::Type("ProofCheck requires a List of requirement=status strings".into())),
+                    Some(_) => return Err(NativeError::Type("ProofCheck requires a List of gate:requirement=status strings".into())),
                     None => return Err(NativeError::InvalidProgram("ProofCheck results missing".into())),
                 };
                 let mut observed = std::collections::BTreeMap::new();
@@ -2823,8 +2823,14 @@ fn run_function(
                     let NativeValue::String(item) = item else {
                         return Err(NativeError::Type("ProofCheck result entries must be Strings".into()));
                     };
-                    let (name, status) = item.split_once('=').ok_or_else(|| {
-                        NativeError::Type("ProofCheck result must use requirement=status".into())
+                    let (gate, outcome) = item.split_once(':').ok_or_else(|| {
+                        NativeError::Type("ProofCheck result must use gate:requirement=status".into())
+                    })?;
+                    if gate.trim().is_empty() || gate.trim() != gate {
+                        return Err(NativeError::Type("ProofCheck result has an invalid gate identifier".into()));
+                    }
+                    let (name, status) = outcome.split_once('=').ok_or_else(|| {
+                        NativeError::Type("ProofCheck result must use gate:requirement=status".into())
                     })?;
                     let requirement = NativeProofRequirement::parse(name).ok_or_else(|| {
                         NativeError::Type(format!("ProofCheck has unknown result requirement '{name}'"))
@@ -2832,8 +2838,13 @@ fn run_function(
                     if !["proved", "runtime_checked", "unknown", "failed"].contains(&status) {
                         return Err(NativeError::Type(format!("ProofCheck has unknown status '{status}'")));
                     }
+                    // Outcomes for another gate are never eligible to satisfy this
+                    // Proof. They remain in the shared immutable invocation bundle.
+                    if gate != spec.name {
+                        continue;
+                    }
                     if observed.insert(requirement, status.to_string()).is_some() {
-                        return Err(NativeError::Type(format!("ProofCheck repeats result '{name}'")));
+                        return Err(NativeError::Type(format!("ProofCheck repeats result '{name}' for gate '{}'", spec.name)));
                     }
                 }
                 for requirement in &spec.required {

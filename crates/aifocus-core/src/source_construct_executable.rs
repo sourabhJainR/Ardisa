@@ -117,6 +117,69 @@ pub fn run_combined_artifact(
         .run_with_limits(entry, args, limits).map_err(native_error)
 }
 
+/// Validate the shared outcome bundle against every ProofCheck in the artifact.
+fn validate_scoped_proof_outcomes(
+    artifact: &str,
+    outcomes: &[String],
+) -> Result<(), SourceConstructExecutableError> {
+    let program = native::decode_program(artifact).map_err(native_error)?;
+    let mut declared = BTreeMap::<String, BTreeSet<String>>::new();
+    for function in program.functions.values() {
+        for instruction in &function.code {
+            if let NativeInstr::ProofCheck { spec } = instruction {
+                let requirements: BTreeSet<String> = spec.required.iter().map(|item| item.as_str().to_owned()).collect();
+                if let Some(previous) = declared.insert(spec.name.clone(), requirements.clone()) {
+                    if previous != requirements {
+                        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                            format!("conflicting Proof declarations for gate '{}'", spec.name)));
+                    }
+                }
+            }
+        }
+    }
+    if declared.is_empty() {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "Proof evidence was supplied for an artifact with no ProofCheck".into()));
+    }
+    let mut observed = BTreeSet::<(String, String)>::new();
+    for outcome in outcomes {
+        let (gate, rest) = outcome.split_once(':').ok_or_else(|| {
+            SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                "Proof outcome must use gate:requirement=status".into())
+        })?;
+        let (requirement, status) = rest.split_once('=').ok_or_else(|| {
+            SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                "Proof outcome must use gate:requirement=status".into())
+        })?;
+        if gate.trim() != gate || requirement.trim() != requirement
+            || !declared.contains_key(gate) {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                format!("unknown or malformed Proof gate identifier '{gate}'")));
+        }
+        if !declared[gate].contains(requirement) {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                format!("unknown Proof requirement '{requirement}' for gate '{gate}'")));
+        }
+        if !matches!(status, "proved" | "runtime_checked") {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                format!("Proof outcome status '{status}' is not admissible")));
+        }
+        if !observed.insert((gate.to_owned(), requirement.to_owned())) {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                format!("duplicate Proof outcome for '{gate}:{requirement}'")));
+        }
+    }
+    for (gate, requirements) in &declared {
+        for requirement in requirements {
+            if !observed.contains(&(gate.clone(), requirement.clone())) {
+                return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                    format!("missing Proof outcome for '{gate}:{requirement}'")));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Proof outcomes enter the native VM through one hidden, explicit entry parameter.
 /// This first executable slice deliberately supports one ProofEvaluate in a
 /// zero-argument main function. It does not accept outcomes from source literals,
@@ -219,20 +282,59 @@ pub fn run_combined_artifact_with_trace_event<S: crate::ai_mode::TraceSigner, V:
 }
 
 /// Run a Proof-gated combined artifact with explicit per-invocation evidence outcomes.
-/// Each outcome is requirement=status, with status proved or runtime_checked.
-/// Failed, unknown, missing, duplicate, malformed, or non-string values are rejected
-/// by NativeInstr::ProofCheck before the program can continue.
+/// Each outcome is gate:requirement=status, with status proved or runtime_checked.
+/// A ProofCheck accepts only entries scoped to its own gate name. Failed, unknown,
+/// missing, duplicate, malformed, or non-string values fail closed.
 pub fn run_combined_artifact_with_proof_results(
     artifact: &str,
     entry: &str,
     outcomes: &[String],
     limits: native::ExecutionLimits,
 ) -> Result<NativeValue, SourceConstructExecutableError> {
+    validate_scoped_proof_outcomes(artifact, outcomes)?;
     run_combined_artifact(
         artifact,
         entry,
         &[NativeValue::List(outcomes.iter().cloned().map(NativeValue::String).collect())],
         limits,
+    )
+}
+
+/// Authenticate a complete Proof evidence bundle before native execution.
+/// All Proof declarations in the source are collected, including gates without a
+/// ProofEvaluate call-site in the current statement sequence. Producer signatures
+/// and monotonic sequence admission are checked before any native code is run.
+pub fn run_combined_artifact_with_authenticated_proof_evidence(
+    source: &str,
+    artifact: &str,
+    evidence: &[crate::proof_evidence::ProofEvidence],
+    trust: &crate::proof_evidence::TrustRegistry,
+    replay: &dyn crate::proof_evidence::ReplayStore,
+    limits: native::ExecutionLimits,
+) -> Result<NativeValue, SourceConstructExecutableError> {
+    let compiled = compile_source_with_constructs(source)?;
+    if compiled.artifact != artifact {
+        return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+            "Proof source does not match the supplied executable artifact".into()));
+    }
+    let module = crate::parse(source).map_err(SourceConstructExecutableError::Parse)?;
+    let constructs = crate::typed_ir::lower_constructs(&module)
+        .map_err(SourceConstructExecutableError::TypedIr)?;
+    let mut required = BTreeMap::<String, BTreeSet<String>>::new();
+    for construct in constructs.iter().filter(|item| item.kind == crate::ast::ConstructKind::Proof) {
+        let instruction = native::proof_check_instruction(construct).map_err(native_error)?;
+        let native::NativeInstr::ProofCheck { spec } = instruction else {
+            return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+                "Proof declaration did not lower to a ProofCheck instruction".into()));
+        };
+        required.insert(spec.name, spec.required.iter().map(|item| item.as_str().to_owned()).collect());
+    }
+    let outcomes = crate::proof_evidence::admit(
+        &required, evidence, &source_sha256_hex(artifact), trust, replay,
+    ).map_err(|error| SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+        format!("authenticated Proof evidence admission failed: {error:?}")))?;
+    run_combined_artifact_with_proof_results(
+        artifact, "main", &outcomes, limits,
     )
 }
 
@@ -255,6 +357,7 @@ pub fn run_combined_artifact_with_proof_and_trace<S: crate::ai_mode::TraceSigner
         return Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(
             "Proof/Trace source does not match the supplied executable artifact".into()));
     }
+    validate_scoped_proof_outcomes(artifact, proof_outcomes)?;
     let prepared = crate::source_construct_pipeline::prepare_source_constructs(source)
         .map_err(|error| SourceConstructExecutableError::Preparation(format!("{error:?}")))?;
     let proof_count = prepared.operation_bindings.iter().filter(|binding|
@@ -717,8 +820,8 @@ fn main() -> Int
         let compiled = crate::pipeline::compile_source(PROOF_SOURCE)
             .expect("supported Proof policy should compile through the standard pipeline");
         let outcomes = vec![
-            "type_safety=proved".to_string(),
-            "bounds=runtime_checked".to_string(),
+            "ReleaseGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=runtime_checked".to_string(),
         ];
         assert_eq!(
             run_combined_artifact_with_proof_results(
@@ -752,8 +855,8 @@ fn main() -> Int
         let compiled = crate::pipeline::compile_source(source)
             .expect("multiple supported Proof declarations should compile");
         let outcomes = vec![
-            "type_safety=proved".to_string(),
-            "bounds=runtime_checked".to_string(),
+            "BuildGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=runtime_checked".to_string(),
         ];
         assert_eq!(
             run_combined_artifact_with_proof_results(
@@ -763,17 +866,25 @@ fn main() -> Int
         );
 
         let failed_second_gate = vec![
-            "type_safety=proved".to_string(),
-            "bounds=failed".to_string(),
+            "BuildGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=failed".to_string(),
         ];
         assert!(run_combined_artifact_with_proof_results(
             &compiled.artifact, "main", &failed_second_gate, native::ExecutionLimits::default()
         ).is_err(), "a later Proof gate must stop execution");
 
-        let missing_second_gate = vec!["type_safety=proved".to_string()];
+        let missing_second_gate = vec!["BuildGate:type_safety=proved".to_string()];
         assert!(run_combined_artifact_with_proof_results(
             &compiled.artifact, "main", &missing_second_gate, native::ExecutionLimits::default()
         ).is_err(), "every declared Proof gate must receive its required outcomes");
+
+        let cross_gate_substitution = vec![
+            "BuildGate:type_safety=proved".to_string(),
+            "BuildGate:bounds=runtime_checked".to_string(),
+        ];
+        assert!(run_combined_artifact_with_proof_results(
+            &compiled.artifact, "main", &cross_gate_substitution, native::ExecutionLimits::default()
+        ).is_err(), "BuildGate evidence must never satisfy ReleaseGate");
 
         let duplicate_operation = source.replace(
             "proof_evaluate(\"ReleaseGate\")",
@@ -787,14 +898,101 @@ fn main() -> Int
     }
 
     #[test]
+    fn authenticated_proof_bundle_is_admitted_before_source_artifact_execution() {
+        struct ProofEcho;
+        impl crate::proof_evidence::SignatureVerifier for ProofEcho {
+            fn verify(&self, _: &str, payload: &[u8], signature: &[u8]) -> Result<bool, String> {
+                Ok(payload == signature)
+            }
+        }
+        let compiled = crate::pipeline::compile_source(
+            r#"module authenticated_proof
+proof BuildGate
+  requires: type_safety
+  ensures: true
+  on_unknown: reject
+  required: true
+proof ReleaseGate
+  requires: bounds
+  ensures: true
+  on_unknown: reject
+  required: true
+fn main() -> Int
+  proof_evaluate("BuildGate")
+  proof_evaluate("ReleaseGate")
+  return 41
+"#
+        ).unwrap();
+        let artifact_digest = source_sha256_hex(&compiled.artifact);
+        let mut trust = crate::proof_evidence::TrustRegistry::new();
+        trust.register("ci", "ci-key", std::sync::Arc::new(ProofEcho)).unwrap();
+        let mut make = |gate: &str, requirement: &str, sequence: u64| {
+            let mut item = crate::proof_evidence::ProofEvidence {
+                gate_id: gate.into(), requirement: requirement.into(), status: "proved".into(),
+                producer_id: "ci".into(), key_id: "ci-key".into(), sequence,
+                artifact_sha256: artifact_digest.clone(), evidence: format!("{gate}:{requirement}").into_bytes(),
+                signature: Vec::new(),
+            };
+            item.signature = item.canonical_payload();
+            item
+        };
+        let evidence = vec![
+            make("BuildGate", "type_safety", 1),
+            make("ReleaseGate", "bounds", 2),
+        ];
+        let replay = crate::proof_evidence::MemoryReplayStore::default();
+        assert_eq!(
+            run_combined_artifact_with_authenticated_proof_evidence(
+                r#"module authenticated_proof
+proof BuildGate
+  requires: type_safety
+  ensures: true
+  on_unknown: reject
+  required: true
+proof ReleaseGate
+  requires: bounds
+  ensures: true
+  on_unknown: reject
+  required: true
+fn main() -> Int
+  proof_evaluate("BuildGate")
+  proof_evaluate("ReleaseGate")
+  return 41
+"#,
+                &compiled.artifact, &evidence, &trust, &replay, native::ExecutionLimits::default()
+            ).unwrap(),
+            NativeValue::Int(41)
+        );
+        assert!(run_combined_artifact_with_authenticated_proof_evidence(
+            r#"module authenticated_proof
+proof BuildGate
+  requires: type_safety
+  ensures: true
+  on_unknown: reject
+  required: true
+proof ReleaseGate
+  requires: bounds
+  ensures: true
+  on_unknown: reject
+  required: true
+fn main() -> Int
+  proof_evaluate("BuildGate")
+  proof_evaluate("ReleaseGate")
+  return 41
+"#,
+            &compiled.artifact, &evidence, &trust, &replay, native::ExecutionLimits::default()
+        ).is_err(), "replayed evidence must be rejected");
+    }
+
+    #[test]
     fn native_proof_gate_rejects_missing_failed_unknown_duplicate_and_malformed_outcomes() {
         let compiled = crate::pipeline::compile_source(PROOF_SOURCE).unwrap();
         let rejected = [
-            vec!["type_safety=proved".to_string()],
-            vec!["type_safety=failed".to_string(), "bounds=proved".to_string()],
-            vec!["type_safety=unknown".to_string(), "bounds=proved".to_string()],
-            vec!["type_safety=proved".to_string(), "bounds=proved".to_string(), "bounds=runtime_checked".to_string()],
-            vec!["type_safety=maybe".to_string(), "bounds=proved".to_string()],
+            vec!["BuildGate:type_safety=proved".to_string()],
+            vec!["ReleaseGate:type_safety=failed".to_string(), "ReleaseGate:bounds=proved".to_string()],
+            vec!["ReleaseGate:type_safety=unknown".to_string(), "ReleaseGate:bounds=proved".to_string()],
+            vec!["ReleaseGate:type_safety=proved".to_string(), "ReleaseGate:bounds=proved".to_string(), "ReleaseGate:bounds=runtime_checked".to_string()],
+            vec!["ReleaseGate:type_safety=maybe".to_string(), "ReleaseGate:bounds=proved".to_string()],
         ];
         for outcomes in rejected {
             assert!(
@@ -964,8 +1162,8 @@ fn main() -> Int
             .expect("the bounded combined Proof/Trace source should compile");
         let mut runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
         let outcomes = vec![
-            "type_safety=proved".to_string(),
-            "bounds=runtime_checked".to_string(),
+            "ReleaseGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=runtime_checked".to_string(),
         ];
         let result = run_combined_artifact_with_proof_and_trace(
             PROOF_TRACE_SOURCE,
@@ -987,8 +1185,8 @@ fn main() -> Int
     fn combined_proof_failure_or_trace_verification_failure_never_commits_receipt() {
         let compiled = crate::pipeline::compile_source(PROOF_TRACE_SOURCE).unwrap();
         let outcomes = vec![
-            "type_safety=failed".to_string(),
-            "bounds=proved".to_string(),
+            "ReleaseGate:type_safety=failed".to_string(),
+            "ReleaseGate:bounds=proved".to_string(),
         ];
         let mut proof_rejected_runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
         assert!(run_combined_artifact_with_proof_and_trace(
@@ -1004,8 +1202,8 @@ fn main() -> Int
         assert!(proof_rejected_runtime.receipts("Audit").unwrap().is_empty());
 
         let outcomes = vec![
-            "type_safety=proved".to_string(),
-            "bounds=runtime_checked".to_string(),
+            "ReleaseGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=runtime_checked".to_string(),
         ];
         let mut trace_rejected_runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
         struct BadSigner;
@@ -1042,8 +1240,8 @@ fn main() -> Int
         let mut wrong_event = trace_event();
         wrong_event.event_kind = "build".into();
         let outcomes = vec![
-            "type_safety=proved".to_string(),
-            "bounds=proved".to_string(),
+            "ReleaseGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=proved".to_string(),
         ];
         assert!(run_combined_artifact_with_proof_and_trace(
             PROOF_TRACE_SOURCE,

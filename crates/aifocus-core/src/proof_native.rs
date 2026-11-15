@@ -28,7 +28,7 @@ pub struct NativeProofArtifact {
 }
 
 /// Compile one source Proof policy to a native artifact. Runtime outcomes are
-/// supplied as requirement=status strings, e.g. type_safety=proved.
+/// supplied as gate:requirement=status strings, e.g. type_safety=proved.
 pub fn compile_proof_source(
     source: &str,
     proof_name: &str,
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn native_proof_accepts_complete_proved_or_runtime_checked_results() {
         let artifact = compile_proof_source(SOURCE, "ReleaseGate").unwrap();
-        let results = vec!["type_safety=proved".into(), "bounds=runtime_checked".into()];
+        let results = vec!["ReleaseGate:type_safety=proved".into(), "ReleaseGate:bounds=runtime_checked".into()];
         execute_proof_artifact(&artifact, &results).unwrap();
     }
 
@@ -167,12 +167,12 @@ mod tests {
             kind: ConstructOperationKind::ProofEvaluate { proof: "ReleaseGate".into() },
         };
         execute_proof_construct_operation(&source, &operation, &[
-            "type_safety=proved".into(), "bounds=runtime_checked".into(),
+            "ReleaseGate:type_safety=proved".into(), "ReleaseGate:bounds=runtime_checked".into(),
         ]).unwrap();
-        assert!(execute_proof_construct_operation(&source, &operation, &["type_safety=proved".into()]).is_err());
+        assert!(execute_proof_construct_operation(&source, &operation, &["ReleaseGate:type_safety=proved".into()]).is_err());
         let unresolved = ConstructOperation { function: "missing".into(), kind: operation.kind.clone() };
         assert!(matches!(execute_proof_construct_operation(&source, &unresolved, &[
-            "type_safety=proved".into(), "bounds=proved".into(),
+            "ReleaseGate:type_safety=proved".into(), "ReleaseGate:bounds=proved".into(),
         ]), Err(NativeProofCompileError::InvalidOperation(_))));
     }
 
@@ -202,19 +202,19 @@ mod tests {
             kind: ConstructOperationKind::ProofEvaluate { proof: "ReleaseGate".into() },
         };
         let evidence = vec![
-            ProofOutcomeEvidence { outcome: "type_safety=proved".into(), attestation: vec![1, 2, 3] },
-            ProofOutcomeEvidence { outcome: "bounds=runtime_checked".into(), attestation: vec![4, 5, 6] },
+            ProofOutcomeEvidence { outcome: "ReleaseGate:type_safety=proved".into(), attestation: vec![1, 2, 3] },
+            ProofOutcomeEvidence { outcome: "ReleaseGate:bounds=runtime_checked".into(), attestation: vec![4, 5, 6] },
         ];
         assert!(execute_proof_construct_operation_with_evidence(
             &source, &operation, &evidence, |outcome, bytes| {
-                !bytes.is_empty() && (outcome.starts_with("type_safety=") || outcome.starts_with("bounds="))
+                !bytes.is_empty() && (outcome.starts_with("ReleaseGate:type_safety=") || outcome.starts_with("ReleaseGate:bounds="))
             }
         ).is_ok());
         assert!(execute_proof_construct_operation_with_evidence(
             &source, &operation, &evidence, |_outcome, _bytes| false
         ).is_err());
         let empty_attestation = vec![
-            ProofOutcomeEvidence { outcome: "type_safety=proved".into(), attestation: vec![] },
+            ProofOutcomeEvidence { outcome: "ReleaseGate:type_safety=proved".into(), attestation: vec![] },
             evidence[1].clone(),
         ];
         assert!(execute_proof_construct_operation_with_evidence(
@@ -244,10 +244,10 @@ mod tests {
     fn missing_failed_unknown_and_malformed_results_reject() {
         let artifact = compile_proof_source(SOURCE, "ReleaseGate").unwrap();
         for results in [
-            vec!["type_safety=proved".into()],
-            vec!["type_safety=failed".into(), "bounds=proved".into()],
-            vec!["type_safety=unknown".into(), "bounds=proved".into()],
-            vec!["type_safety=proved".into(), "bounds=maybe".into()],
+            vec!["ReleaseGate:type_safety=proved".into()],
+            vec!["ReleaseGate:type_safety=failed".into(), "ReleaseGate:bounds=proved".into()],
+            vec!["ReleaseGate:type_safety=unknown".into(), "ReleaseGate:bounds=proved".into()],
+            vec!["ReleaseGate:type_safety=proved".into(), "ReleaseGate:bounds=maybe".into()],
         ] {
             assert!(execute_proof_artifact(&artifact, &results).is_err(), "accepted {results:?}");
         }
@@ -268,7 +268,7 @@ mod tests {
         ).is_err());
         let artifact = compile_proof_source(SOURCE, "ReleaseGate").unwrap();
         assert!(matches!(
-            execute_proof_artifact(&artifact, &["bounds=proved".into(), "bounds=runtime_checked".into(), "type_safety=proved".into()]),
+            execute_proof_artifact(&artifact, &["ReleaseGate:bounds=proved".into(), "ReleaseGate:bounds=runtime_checked".into(), "ReleaseGate:type_safety=proved".into()]),
             Err(NativeProofCompileError::Native(native::NativeError::Type(_)))
         ));
     }
