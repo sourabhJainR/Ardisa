@@ -752,7 +752,7 @@ fn main() -> Int
         let compiled = crate::pipeline::compile_source(source)
             .expect("multiple supported Proof declarations should compile");
         let outcomes = vec![
-            "ReleaseGate:type_safety=proved".to_string(),
+            "BuildGate:type_safety=proved".to_string(),
             "ReleaseGate:bounds=runtime_checked".to_string(),
         ];
         assert_eq!(
@@ -770,7 +770,7 @@ fn main() -> Int
             &compiled.artifact, "main", &failed_second_gate, native::ExecutionLimits::default()
         ).is_err(), "a later Proof gate must stop execution");
 
-        let missing_second_gate = vec!["ReleaseGate:type_safety=proved".to_string()];
+        let missing_second_gate = vec!["BuildGate:type_safety=proved".to_string()];
         assert!(run_combined_artifact_with_proof_results(
             &compiled.artifact, "main", &missing_second_gate, native::ExecutionLimits::default()
         ).is_err(), "every declared Proof gate must receive its required outcomes");
@@ -964,7 +964,7 @@ fn main() -> Int
             .expect("the bounded combined Proof/Trace source should compile");
         let mut runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
         let outcomes = vec![
-            "BuildGate:type_safety=proved".to_string(),
+            "ReleaseGate:type_safety=proved".to_string(),
             "ReleaseGate:bounds=runtime_checked".to_string(),
         ];
         let result = run_combined_artifact_with_proof_and_trace(
@@ -1005,7 +1005,7 @@ fn main() -> Int
 
         let outcomes = vec![
             "ReleaseGate:type_safety=proved".to_string(),
-            "bounds=runtime_checked".to_string(),
+            "ReleaseGate:bounds=runtime_checked".to_string(),
         ];
         let mut trace_rejected_runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
         struct BadSigner;
