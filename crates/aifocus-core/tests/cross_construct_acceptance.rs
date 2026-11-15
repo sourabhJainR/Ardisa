@@ -183,8 +183,8 @@ fn all_five_constructs_bind_to_one_validated_source_operation_batch() {
         other => panic!("expected main function, got {other:?}"),
     };
     let expression = match &function.body.stmts[0].kind {
-        StmtKind::Expr(expression) => expression.id.0,
-        other => panic!("expected a typed expression for Cell initialization, got {other:?}"),
+        StmtKind::Return(Some(expression)) => expression.id.0,
+        other => panic!("expected a return expression for Cell initialization, got {other:?}"),
     };
 
     let operations = vec![
