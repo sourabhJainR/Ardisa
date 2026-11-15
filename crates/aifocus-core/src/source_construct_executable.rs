@@ -834,7 +834,7 @@ fn main() -> Int
     fn trace_event() -> crate::ai_mode::TraceEventInput {
         crate::ai_mode::TraceEventInput {
             event_kind: "build".into(), actor: "compiler".into(),
-            subject_sha256: source_sha256_hex(PROOF_TRACE_SOURCE), outcome: "passed".into(),
+            subject_sha256: source_sha256_hex(TRACE_SOURCE), outcome: "passed".into(),
             provider_id: None, session_sha256: None,
         }
     }
@@ -899,6 +899,7 @@ fn main() -> Int
     fn proof_trace_event() -> crate::ai_mode::TraceEventInput {
         let mut event = trace_event();
         event.event_kind = "release".into();
+        event.subject_sha256 = source_sha256_hex(PROOF_TRACE_SOURCE);
         event
     }
 
