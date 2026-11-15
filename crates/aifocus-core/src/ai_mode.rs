@@ -447,6 +447,9 @@ pub struct TraceReceipt {
     pub outcome: String,
     pub provider_id: Option<String>,
     pub session_sha256: Option<String>,
+    /// Stable signer identity, included in the canonical signed payload.
+    /// None is reserved for legacy V1 receipts and is not attributable.
+    pub key_id: Option<String>,
     /// Exact previous receipt signature, providing a tamper-evident chain when
     /// callers verify each signature and predecessor link with the trusted key.
     pub previous_signature: Vec<u8>,
@@ -476,6 +479,22 @@ impl TraceLedger {
         policy: &TracePolicy,
         verifier: &V,
     ) -> Result<(), TraceError> {
+        self.verify_chain_with(policy, |_key_id, payload, signature| {
+            verifier.verify(payload, signature)
+        })
+    }
+
+    /// Verify receipts with a verifier selected from each signed key ID.
+    /// The callback receives the untrusted ID only after the signed payload is
+    /// reconstructed; the caller must resolve it against an explicit trust registry.
+    pub fn verify_chain_with<F>(
+        &self,
+        policy: &TracePolicy,
+        mut verify: F,
+    ) -> Result<(), TraceError>
+    where
+        F: FnMut(Option<&str>, &[u8], &[u8]) -> Result<bool, String>,
+    {
         if policy.required && self.receipts.is_empty() {
             return Err(TraceError::MissingRequiredTrace);
         }
@@ -525,9 +544,9 @@ impl TraceLedger {
                 receipt.sequence,
                 &event,
                 &receipt.previous_signature,
+                receipt.key_id.as_deref(),
             );
-            let valid = verifier
-                .verify(payload.as_bytes(), &receipt.signature)
+            let valid = verify(receipt.key_id.as_deref(), payload.as_bytes(), &receipt.signature)
                 .map_err(TraceError::SignatureVerificationFailed)?;
             if !valid {
                 return Err(TraceError::InvalidSignature);
@@ -545,6 +564,28 @@ impl TraceLedger {
         event: TraceEventInput,
         signer: Option<&S>,
     ) -> Result<&TraceReceipt, TraceError> {
+        self.record_internal(policy, event, None, signer)
+    }
+
+    /// Record a receipt with a stable signer identity bound into its signature.
+    /// The key ID is metadata only until a verifier is resolved through a trusted registry.
+    pub fn record_with_key_id<S: TraceSigner>(
+        &mut self,
+        policy: &TracePolicy,
+        event: TraceEventInput,
+        key_id: impl Into<String>,
+        signer: Option<&S>,
+    ) -> Result<&TraceReceipt, TraceError> {
+        self.record_internal(policy, event, Some(key_id.into()), signer)
+    }
+
+    fn record_internal<S: TraceSigner>(
+        &mut self,
+        policy: &TracePolicy,
+        event: TraceEventInput,
+        key_id: Option<String>,
+        signer: Option<&S>,
+    ) -> Result<&TraceReceipt, TraceError> {
         if self.receipts.len() >= MAX_TRACE_RECEIPTS {
             return Err(TraceError::LedgerLimitExceeded);
         }
@@ -552,6 +593,9 @@ impl TraceLedger {
         validate_trace_token(&event.actor, "actor")?;
         validate_trace_token(&event.outcome, "outcome")?;
         validate_trace_digest(&event.subject_sha256, "subject_sha256")?;
+        if let Some(key_id) = &key_id {
+            validate_trace_token(key_id, "key_id")?;
+        }
 
         if !policy.include_ai_metadata && (event.provider_id.is_some() || event.session_sha256.is_some()) {
             return Err(TraceError::MetadataNotAllowed);
@@ -568,7 +612,7 @@ impl TraceLedger {
 
         let previous_signature = self.receipts.last().map(|r| r.signature.clone()).unwrap_or_default();
         let sequence = self.receipts.len() as u64;
-        let payload = canonical_trace_payload(sequence, &event, &previous_signature);
+        let payload = canonical_trace_payload(sequence, &event, &previous_signature, key_id.as_deref());
         let signature = match signer {
             Some(signer) => signer.sign(payload.as_bytes()).map_err(TraceError::SigningFailed)?,
             None => Vec::new(),
@@ -588,6 +632,7 @@ impl TraceLedger {
             outcome: event.outcome,
             provider_id: event.provider_id,
             session_sha256: event.session_sha256,
+            key_id,
             previous_signature,
             signature,
         });
@@ -612,17 +657,33 @@ fn validate_trace_digest(value: &str, field: &'static str) -> Result<(), TraceEr
     Ok(())
 }
 
-fn canonical_trace_payload(sequence: u64, event: &TraceEventInput, previous_signature: &[u8]) -> String {
+fn canonical_trace_payload(
+    sequence: u64,
+    event: &TraceEventInput,
+    previous_signature: &[u8],
+    key_id: Option<&str>,
+) -> String {
     let previous_hex = previous_signature.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    format!(
-        "ARDISA-TRACE-V1|{sequence}|{}|{}|{}|{}|{}|{}|{previous_hex}",
-        event.event_kind,
-        event.actor,
-        event.subject_sha256.to_ascii_lowercase(),
-        event.outcome,
-        event.provider_id.as_deref().unwrap_or("-"),
-        event.session_sha256.as_deref().unwrap_or("-").to_ascii_lowercase()
-    )
+    match key_id {
+        Some(key_id) => format!(
+            "ARDISA-TRACE-V2|{sequence}|{key_id}|{}|{}|{}|{}|{}|{}|{previous_hex}",
+            event.event_kind,
+            event.actor,
+            event.subject_sha256.to_ascii_lowercase(),
+            event.outcome,
+            event.provider_id.as_deref().unwrap_or("-"),
+            event.session_sha256.as_deref().unwrap_or("-").to_ascii_lowercase()
+        ),
+        None => format!(
+            "ARDISA-TRACE-V1|{sequence}|{}|{}|{}|{}|{}|{}|{previous_hex}",
+            event.event_kind,
+            event.actor,
+            event.subject_sha256.to_ascii_lowercase(),
+            event.outcome,
+            event.provider_id.as_deref().unwrap_or("-"),
+            event.session_sha256.as_deref().unwrap_or("-").to_ascii_lowercase()
+        ),
+    }
 }
 
 
