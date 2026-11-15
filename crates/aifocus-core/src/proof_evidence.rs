@@ -28,6 +28,8 @@ pub struct TrustRegistry {
     keys: BTreeMap<(String, String), Arc<dyn SignatureVerifier>>,
 }
 impl TrustRegistry {
+    pub fn new() -> Self { Self::default() }
+
     pub fn register(&mut self, producer: &str, key: &str, verifier: Arc<dyn SignatureVerifier>) -> Result<(), AdmissionError> {
         valid_id(producer)?; valid_id(key)?;
         let id = (producer.to_owned(), key.to_owned());
