@@ -65,6 +65,43 @@ impl SourceConstructRuntime {
         self.proofs.validate_results(proof, results).map_err(SourceRuntimeError::Proof)
     }
 
+    /// Run Cell and Phase state changes as one in-memory transaction.
+    ///
+    /// The operation receives staged clones. Neither state machine is replaced
+    /// unless the complete closure succeeds, so a late Cell invariant failure
+    /// cannot leave an earlier Phase transition or history entry committed.
+    /// This transaction does not roll back external host effects, Vault closures,
+    /// Trace receipts, or other resources outside these two state stores.
+    pub fn transact_cell_phase<T>(
+        &mut self,
+        operation: impl FnOnce(
+            &mut crate::construct_runtime::ConstructRuntime,
+            &mut CellRuntime,
+        ) -> Result<T, SourceRuntimeError>,
+    ) -> Result<T, SourceRuntimeError> {
+        let mut staged_phases = self.phases.clone();
+        let mut staged_cells = self.cells.clone();
+        let result = operation(&mut staged_phases, &mut staged_cells)?;
+        self.phases = staged_phases;
+        self.cells = staged_cells;
+        Ok(result)
+    }
+
+    /// Require all declared Proof outcomes before committing a Cell/Phase
+    /// transaction. Missing, failed, or unknown outcomes reject before staging.
+    pub fn transact_proof_gated_cell_phase<T>(
+        &mut self,
+        proof: &str,
+        results: &BTreeMap<ProofRequirement, ProofStatus>,
+        operation: impl FnOnce(
+            &mut crate::construct_runtime::ConstructRuntime,
+            &mut CellRuntime,
+        ) -> Result<T, SourceRuntimeError>,
+    ) -> Result<T, SourceRuntimeError> {
+        self.validate_proofs(proof, results)?;
+        self.transact_cell_phase(operation)
+    }
+
     pub fn execute_vault<T>(
         &self,
         vault: &str,
@@ -170,4 +207,80 @@ mod tests {
                 if diagnostics.iter().any(|diagnostic| diagnostic.contains("UnsupportedRuntimeBoundary"))
         ));
     }
+    #[test]
+    fn late_cell_failure_rolls_back_phase_state_and_history() {
+        let mut runtime = SourceConstructRuntime::from_source(
+            SOURCE,
+            [("Lifecycle".to_string(), "Ready".to_string())],
+            [("Counter".to_string(), 1)],
+        ).unwrap();
+
+        let result = runtime.transact_cell_phase(|phases, cells| {
+            phases.transition_phase("Lifecycle", "Done").map_err(SourceRuntimeError::Phase)?;
+            cells.update("Counter", -1).map_err(SourceRuntimeError::Cell)?;
+            Ok(())
+        });
+
+        assert!(matches!(result, Err(SourceRuntimeError::Cell(CellRuntimeError::InvariantViolation(_)))));
+        assert_eq!(runtime.phases.phase_current("Lifecycle").unwrap(), "Ready");
+        assert!(runtime.phases.phase_history("Lifecycle").unwrap().is_empty());
+        assert_eq!(runtime.cells.get("Counter").unwrap(), 1);
+    }
+
+    #[test]
+    fn failed_proof_rejects_before_cell_phase_transaction_starts() {
+        let mut runtime = SourceConstructRuntime::from_source(
+            SOURCE,
+            [("Lifecycle".to_string(), "Ready".to_string())],
+            [("Counter".to_string(), 1)],
+        ).unwrap();
+        let mut outcomes = BTreeMap::new();
+        outcomes.insert(ProofRequirement::TypeSafety, ProofStatus::Failed);
+        outcomes.insert(ProofRequirement::Bounds, ProofStatus::Proved);
+        let invoked = FlagCell::new(false);
+
+        let result = runtime.transact_proof_gated_cell_phase(
+            "ReleaseGate",
+            &outcomes,
+            |phases, cells| {
+                invoked.set(true);
+                phases.transition_phase("Lifecycle", "Done").map_err(SourceRuntimeError::Phase)?;
+                cells.update("Counter", 2).map_err(SourceRuntimeError::Cell)?;
+                Ok(())
+            },
+        );
+
+        assert!(matches!(result, Err(SourceRuntimeError::Proof(_))));
+        assert!(!invoked.get(), "failed proof must reject before staged state changes");
+        assert_eq!(runtime.phases.phase_current("Lifecycle").unwrap(), "Ready");
+        assert!(runtime.phases.phase_history("Lifecycle").unwrap().is_empty());
+        assert_eq!(runtime.cells.get("Counter").unwrap(), 1);
+    }
+
+    #[test]
+    fn successful_proof_commits_cell_and_phase_changes_together() {
+        let mut runtime = SourceConstructRuntime::from_source(
+            SOURCE,
+            [("Lifecycle".to_string(), "Ready".to_string())],
+            [("Counter".to_string(), 1)],
+        ).unwrap();
+        let mut outcomes = BTreeMap::new();
+        outcomes.insert(ProofRequirement::TypeSafety, ProofStatus::Proved);
+        outcomes.insert(ProofRequirement::Bounds, ProofStatus::RuntimeChecked);
+
+        runtime.transact_proof_gated_cell_phase(
+            "ReleaseGate",
+            &outcomes,
+            |phases, cells| {
+                phases.transition_phase("Lifecycle", "Done").map_err(SourceRuntimeError::Phase)?;
+                cells.update("Counter", 2).map_err(SourceRuntimeError::Cell)?;
+                Ok(())
+            },
+        ).unwrap();
+
+        assert_eq!(runtime.phases.phase_current("Lifecycle").unwrap(), "Done");
+        assert_eq!(runtime.phases.phase_history("Lifecycle").unwrap().len(), 1);
+        assert_eq!(runtime.cells.get("Counter").unwrap(), 2);
+    }
+
 }
