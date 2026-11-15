@@ -717,8 +717,8 @@ fn main() -> Int
         let compiled = crate::pipeline::compile_source(PROOF_SOURCE)
             .expect("supported Proof policy should compile through the standard pipeline");
         let outcomes = vec![
-            "type_safety=proved".to_string(),
-            "bounds=runtime_checked".to_string(),
+            "ReleaseGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=runtime_checked".to_string(),
         ];
         assert_eq!(
             run_combined_artifact_with_proof_results(
@@ -752,8 +752,8 @@ fn main() -> Int
         let compiled = crate::pipeline::compile_source(source)
             .expect("multiple supported Proof declarations should compile");
         let outcomes = vec![
-            "type_safety=proved".to_string(),
-            "bounds=runtime_checked".to_string(),
+            "ReleaseGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=runtime_checked".to_string(),
         ];
         assert_eq!(
             run_combined_artifact_with_proof_results(
@@ -763,14 +763,14 @@ fn main() -> Int
         );
 
         let failed_second_gate = vec![
-            "type_safety=proved".to_string(),
-            "bounds=failed".to_string(),
+            "BuildGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=failed".to_string(),
         ];
         assert!(run_combined_artifact_with_proof_results(
             &compiled.artifact, "main", &failed_second_gate, native::ExecutionLimits::default()
         ).is_err(), "a later Proof gate must stop execution");
 
-        let missing_second_gate = vec!["type_safety=proved".to_string()];
+        let missing_second_gate = vec!["ReleaseGate:type_safety=proved".to_string()];
         assert!(run_combined_artifact_with_proof_results(
             &compiled.artifact, "main", &missing_second_gate, native::ExecutionLimits::default()
         ).is_err(), "every declared Proof gate must receive its required outcomes");
@@ -790,11 +790,11 @@ fn main() -> Int
     fn native_proof_gate_rejects_missing_failed_unknown_duplicate_and_malformed_outcomes() {
         let compiled = crate::pipeline::compile_source(PROOF_SOURCE).unwrap();
         let rejected = [
-            vec!["type_safety=proved".to_string()],
-            vec!["type_safety=failed".to_string(), "bounds=proved".to_string()],
-            vec!["type_safety=unknown".to_string(), "bounds=proved".to_string()],
-            vec!["type_safety=proved".to_string(), "bounds=proved".to_string(), "bounds=runtime_checked".to_string()],
-            vec!["type_safety=maybe".to_string(), "bounds=proved".to_string()],
+            vec!["BuildGate:type_safety=proved".to_string()],
+            vec!["ReleaseGate:type_safety=failed".to_string(), "ReleaseGate:bounds=proved".to_string()],
+            vec!["ReleaseGate:type_safety=unknown".to_string(), "ReleaseGate:bounds=proved".to_string()],
+            vec!["ReleaseGate:type_safety=proved".to_string(), "ReleaseGate:bounds=proved".to_string(), "ReleaseGate:bounds=runtime_checked".to_string()],
+            vec!["ReleaseGate:type_safety=maybe".to_string(), "ReleaseGate:bounds=proved".to_string()],
         ];
         for outcomes in rejected {
             assert!(
@@ -964,8 +964,8 @@ fn main() -> Int
             .expect("the bounded combined Proof/Trace source should compile");
         let mut runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
         let outcomes = vec![
-            "type_safety=proved".to_string(),
-            "bounds=runtime_checked".to_string(),
+            "BuildGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=runtime_checked".to_string(),
         ];
         let result = run_combined_artifact_with_proof_and_trace(
             PROOF_TRACE_SOURCE,
@@ -987,8 +987,8 @@ fn main() -> Int
     fn combined_proof_failure_or_trace_verification_failure_never_commits_receipt() {
         let compiled = crate::pipeline::compile_source(PROOF_TRACE_SOURCE).unwrap();
         let outcomes = vec![
-            "type_safety=failed".to_string(),
-            "bounds=proved".to_string(),
+            "ReleaseGate:type_safety=failed".to_string(),
+            "ReleaseGate:bounds=proved".to_string(),
         ];
         let mut proof_rejected_runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
         assert!(run_combined_artifact_with_proof_and_trace(
@@ -1004,7 +1004,7 @@ fn main() -> Int
         assert!(proof_rejected_runtime.receipts("Audit").unwrap().is_empty());
 
         let outcomes = vec![
-            "type_safety=proved".to_string(),
+            "ReleaseGate:type_safety=proved".to_string(),
             "bounds=runtime_checked".to_string(),
         ];
         let mut trace_rejected_runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(PROOF_TRACE_SOURCE).unwrap();
@@ -1042,8 +1042,8 @@ fn main() -> Int
         let mut wrong_event = trace_event();
         wrong_event.event_kind = "build".into();
         let outcomes = vec![
-            "type_safety=proved".to_string(),
-            "bounds=proved".to_string(),
+            "ReleaseGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=proved".to_string(),
         ];
         assert!(run_combined_artifact_with_proof_and_trace(
             PROOF_TRACE_SOURCE,
