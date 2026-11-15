@@ -37,8 +37,10 @@ impl TrustRegistry {
 }
 
 pub trait ReplayStore: Send + Sync {
-    /// Atomically compare-and-advance all counters. Persistent implementations must
-    /// protect this state against backup/restore rollback, not only process restarts.
+    /// Atomically compare-and-advance all counters by exactly one sequence value.
+    /// Persistent implementations must protect this state against backup/restore
+    /// rollback (for example with an external monotonic store or hardware counter),
+    /// not only process restarts. The in-memory implementation is for tests only.
     fn commit_batch(&self, advances: &[(String, String, u64)]) -> Result<(), AdmissionError>;
 }
 #[derive(Default)]
@@ -54,8 +56,10 @@ impl ReplayStore for MemoryReplayStore {
         let mut pending = BTreeMap::new();
         for (producer, key, sequence) in advances {
             let id = (producer.clone(), key.clone());
-            if *sequence == 0 || state.get(&id).is_some_and(|old| sequence <= old)
-                || pending.get(&id).is_some_and(|old| sequence <= old) {
+            let expected = pending.get(&id).copied()
+                .or_else(|| state.get(&id).copied())
+                .map_or(Some(1), |last| last.checked_add(1));
+            if expected != Some(*sequence) {
                 return Err(AdmissionError::ReplayOrRollback);
             }
             pending.insert(id, *sequence);
@@ -156,6 +160,7 @@ pub fn admit(
             }
         }
     }
+    advances.sort_by(|a, b| (&a.0, &a.1, a.2).cmp(&(&b.0, &b.1, b.2)));
     replay.commit_batch(&advances)?;
     outcomes.sort(); Ok(outcomes)
 }
@@ -204,6 +209,16 @@ mod tests {
         assert_eq!(admit(&declarations(), &[one], &"a".repeat(64), &registry(), &replay),
             Err(AdmissionError::MissingGate("ReleaseGate".into())));
     }
+    #[test] fn rejects_sequence_gaps_and_partial_advancement() {
+        let replay = MemoryReplayStore::default();
+        let gap = vec![evidence("BuildGate","type_safety",2), evidence("ReleaseGate","bounds",3)];
+        assert_eq!(admit(&declarations(), &gap, &"a".repeat(64), &registry(), &replay), Err(AdmissionError::ReplayOrRollback));
+        assert_eq!(replay.latest("ci","ci-key"), None, "failed batches must not advance any sequence");
+        let valid = vec![evidence("BuildGate","type_safety",1), evidence("ReleaseGate","bounds",2)];
+        admit(&declarations(), &valid, &"a".repeat(64), &registry(), &replay).unwrap();
+        assert_eq!(replay.latest("ci","ci-key"), Some(2));
+    }
+
     #[test] fn rejects_tampering_replay_and_rollback_atomically() {
         let replay = MemoryReplayStore::default();
         let mut bad = evidence("BuildGate","type_safety",1); bad.status = "runtime_checked".into();
