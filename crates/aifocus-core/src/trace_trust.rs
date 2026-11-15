@@ -244,7 +244,10 @@ mod tests {
         registry.revoke("release-key").unwrap();
         assert!(!registry.contains("release-key"));
         assert_eq!(registry.revoke("release-key"), Ok(()));
-        assert_eq!(registry.verify_chain(&TraceLedger::new(), &policy()), Ok(()));
+        let mut ledger = TraceLedger::new();
+        ledger.record_with_key_id(&policy(), event(), "release-key", Some(&KeyedTestSigner(1))).unwrap();
+        assert_eq!(registry.verify_chain(&ledger, &policy()), Err(TraceTrustError::KeyRevoked));
+        assert_eq!(registry.verify_historical_chain(&ledger, &policy()), Err(TraceTrustError::KeyRevoked));
     }
 
     #[test]
