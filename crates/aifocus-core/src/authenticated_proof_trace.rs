@@ -9,6 +9,7 @@ use crate::{
     ast::ConstructKind,
     native::{self, ExecutionLimits, NativeValue},
     proof_evidence::{self, ProofEvidence, ReplayStore, TrustRegistry},
+    proof_trust_config::{self, ProducerVerifierResolver, TrustConfigSignatureVerifier, TrustConfigStore},
     source_construct_executable::{self, SourceConstructExecutableError},
     trace_policy_runtime::TraceRuntimeSet,
     ai_mode::{TraceEventInput, TraceSigner, TraceVerifier},
@@ -111,5 +112,40 @@ pub fn run_authenticated_proof_and_trace<S: TraceSigner, V: TraceVerifier>(
 
     source_construct_executable::run_combined_artifact_with_proof_and_trace(
         source, artifact, &outcomes, runtime, event, signer, verifier, limits,
+    )
+}
+
+
+/// Execute authenticated Proof + Trace using the currently committed, root-signed
+/// producer trust configuration. The supplied store must enforce its own durable
+/// rollback boundary; use an anchored production store rather than an in-memory
+/// or ordinary snapshot-backed implementation.
+pub fn run_authenticated_proof_and_trace_with_trust_config<
+    S: TraceSigner,
+    V: TraceVerifier,
+>(
+    source: &str,
+    artifact: &str,
+    evidence: &[ProofEvidence],
+    trust_config_store: &dyn TrustConfigStore,
+    root_verifier: &dyn TrustConfigSignatureVerifier,
+    producer_verifiers: &dyn ProducerVerifierResolver,
+    replay: &dyn ReplayStore,
+    runtime: &mut TraceRuntimeSet,
+    event: TraceEventInput,
+    signer: &S,
+    verifier: &V,
+    limits: ExecutionLimits,
+) -> Result<NativeValue, SourceConstructExecutableError> {
+    let trust = proof_trust_config::load_authenticated_registry(
+        trust_config_store,
+        root_verifier,
+        producer_verifiers,
+    ).map_err(|error| SourceConstructExecutableError::UnsupportedRuntimeBoundary(
+        format!("authenticated Proof trust configuration could not be loaded: {error:?}"),
+    ))?;
+
+    run_authenticated_proof_and_trace(
+        source, artifact, evidence, &trust, replay, runtime, event, signer, verifier, limits,
     )
 }
