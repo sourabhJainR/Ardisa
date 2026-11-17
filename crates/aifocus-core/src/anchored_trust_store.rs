@@ -35,6 +35,11 @@ pub trait TrustConfigAnchor: Send + Sync {
     ) -> Result<(), String>;
 }
 
+struct LockGuard(PathBuf);
+impl Drop for LockGuard {
+    fn drop(&mut self) { let _ = fs::remove_file(&self.0); }
+}
+
 pub struct AnchoredFileTrustConfigStore {
     path: PathBuf,
     anchor: Arc<dyn TrustConfigAnchor>,
@@ -129,27 +134,28 @@ impl TrustConfigStore for AnchoredFileTrustConfigStore {
         next: SignedTrustConfig,
     ) -> Result<(), String> {
         let lock = self.lock_path();
-        let _guard = OpenOptions::new().write(true).create_new(true).open(&lock)
+        let _lock_file = OpenOptions::new().write(true).create_new(true).open(&lock)
             .map_err(|_| "trust config writer lock unavailable".to_string())?;
+        let _guard = LockGuard(lock);
         let current_anchor = self.anchor.load()?;
         let current = self.read_config()?;
         let current_version = current.as_ref().map(SignedTrustConfig::version)
             .transpose().map_err(|e| format!("invalid current config: {e:?}"))?;
         if current_version != expected {
-            let _ = fs::remove_file(&lock);
             return Err("conflict".into());
+        }
+        if current.is_none() && (current_anchor.generation != 0 || current_anchor.digest != [0; 32]) {
+            return Err("trust config file is missing while anchor is advanced".into());
         }
         let expected_generation = current_anchor.generation.checked_add(1)
             .ok_or_else(|| "trust config generation exhausted".to_string())?;
         let next_version = next.version().map_err(|e| format!("invalid next config: {e:?}"))?;
         if next_version.generation != expected_generation {
-            let _ = fs::remove_file(&lock);
             return Err("generation does not advance anchor by one".into());
         }
         if current_version.as_ref().is_some_and(|v| {
             current_anchor.generation != v.generation || current_anchor.digest != v.digest
         }) {
-            let _ = fs::remove_file(&lock);
             return Err("current config does not match anchor".into());
         }
         let next_anchor = TrustAnchorState {
@@ -160,7 +166,6 @@ impl TrustConfigStore for AnchoredFileTrustConfigStore {
         // mismatch and therefore fails closed on the next open/load.
         self.write_config(&next)?;
         self.anchor.compare_and_advance(&current_anchor, &next_anchor)?;
-        let _ = fs::remove_file(&lock);
         Ok(())
     }
 }
