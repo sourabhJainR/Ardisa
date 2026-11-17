@@ -149,3 +149,95 @@ pub fn run_authenticated_proof_and_trace_with_trust_config<
         source, artifact, evidence, &trust, replay, runtime, event, signer, verifier, limits,
     )
 }
+
+
+#[cfg(test)]
+mod trust_config_execution_tests {
+    use super::*;
+    use crate::{
+        proof_evidence::{AdmissionError, SignatureVerifier},
+        proof_trust_config::{SignedTrustConfig, TrustConfigError, TrustConfigVersion},
+    };
+    use std::sync::Arc;
+
+    struct EmptyStore;
+    impl TrustConfigStore for EmptyStore {
+        fn load(&self) -> Result<Option<SignedTrustConfig>, String> { Ok(None) }
+        fn compare_and_store(
+            &self,
+            _expected: Option<TrustConfigVersion>,
+            _next: SignedTrustConfig,
+        ) -> Result<(), String> { Err("not writable".into()) }
+    }
+
+    struct Root;
+    impl TrustConfigSignatureVerifier for Root {
+        fn verify(&self, _payload: &[u8], _signature: &[u8]) -> Result<bool, String> {
+            Ok(false)
+        }
+    }
+
+    struct Producer;
+    impl SignatureVerifier for Producer {
+        fn verify(&self, _key_id: &str, _payload: &[u8], _signature: &[u8]) -> Result<bool, String> {
+            Ok(false)
+        }
+    }
+
+    struct Resolver;
+    impl ProducerVerifierResolver for Resolver {
+        fn resolve(&self, _producer_id: &str, _key_id: &str)
+            -> Result<Arc<dyn SignatureVerifier>, String> {
+            Ok(Arc::new(Producer))
+        }
+    }
+
+    struct Replay;
+    impl ReplayStore for Replay {
+        fn commit_batch(&self, _advances: &[(String, String, u64)]) -> Result<(), AdmissionError> {
+            Ok(())
+        }
+    }
+
+    struct TraceCrypto;
+    impl TraceSigner for TraceCrypto {
+        fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, String> { Ok(payload.to_vec()) }
+    }
+    impl TraceVerifier for TraceCrypto {
+        fn verify(&self, payload: &[u8], signature: &[u8]) -> Result<bool, String> {
+            Ok(payload == signature)
+        }
+    }
+
+    #[test]
+    fn configured_execution_rejects_missing_persisted_trust_before_admission() {
+        let mut runtime = TraceRuntimeSet::default();
+        let result = run_authenticated_proof_and_trace_with_trust_config(
+            "not parsed because trust is absent",
+            "not an artifact",
+            &[],
+            &EmptyStore,
+            &Root,
+            &Resolver,
+            &Replay,
+            &mut runtime,
+            TraceEventInput {
+                event_kind: "release".into(),
+                actor: "ci".into(),
+                subject_sha256: "0".repeat(64),
+                outcome: "passed".into(),
+                provider_id: None,
+                session_sha256: None,
+            },
+            &TraceCrypto,
+            &TraceCrypto,
+            ExecutionLimits::default(),
+        );
+        assert!(matches!(
+            result,
+            Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(message))
+                if message.contains("InvalidGeneration")
+        ));
+        let _ = TrustConfigError::InvalidGeneration;
+    }
+}
