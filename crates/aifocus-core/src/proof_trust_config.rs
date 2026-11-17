@@ -130,7 +130,6 @@ pub fn commit_authenticated_config(
     next: SignedTrustConfig,
 ) -> Result<TrustConfigVersion, TrustConfigError> {
     verify_signature(&next, root)?;
-    validate_config_chain(&next, None)?;
     let current = store.load().map_err(TrustConfigError::StoreUnavailable)?;
     let expected = match current.as_ref() {
         None => {
@@ -190,7 +189,7 @@ fn validate_config_chain(
                 .map(|e| ((e.producer_id.as_str(), e.key_id.as_str()), e.state)).collect();
             for (id, state) in old_entries {
                 let new_state = new_entries.get(&id).ok_or(TrustConfigError::KeyRemoved)?;
-                if state == KeyState::Revoked && **new_state != KeyState::Revoked {
+                if state == KeyState::Revoked && *new_state != KeyState::Revoked {
                     return Err(TrustConfigError::RevokedKeyReactivated);
                 }
             }
