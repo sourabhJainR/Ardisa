@@ -156,6 +156,9 @@ impl TrustConfigStore for AnchoredFileTrustConfigStore {
         if next_version.generation != expected_generation {
             return Err("generation does not advance anchor by one".into());
         }
+        if next.previous_digest != current_anchor.digest {
+            return Err("next trust config does not extend the anchored digest".into());
+        }
         if current_version.as_ref().is_some_and(|v| {
             current_anchor.generation != v.generation || current_anchor.digest != v.digest
         }) {
@@ -333,6 +336,32 @@ mod tests {
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(backup);
     }
+    #[test]
+    fn rejects_next_generation_that_does_not_extend_anchor() {
+        let path = path();
+        let anchor = Arc::new(TestAnchor::default());
+        let store = AnchoredFileTrustConfigStore::open(&path, anchor.clone()).unwrap();
+        let first = config();
+        let first_version = first.version().unwrap();
+        store.compare_and_store(None, first).unwrap();
+
+        let mut detached = SignedTrustConfig {
+            generation: 2,
+            previous_digest: [9; 32],
+            entries: vec![TrustEntry {
+                producer_id: "ci".into(),
+                key_id: "key-v2".into(),
+                state: KeyState::Active,
+            }],
+            signature: vec![7, 8, 9],
+        };
+        detached.signature = detached.canonical_payload().unwrap();
+        assert!(store.compare_and_store(Some(first_version), detached).is_err());
+        assert_eq!(store.load().unwrap().unwrap().generation, 1);
+        drop(store);
+        let _ = fs::remove_file(path);
+    }
+
     #[test]
     fn rejects_corrupt_and_noncanonical_files() {
         let mut bytes = encode(&config()).unwrap();
