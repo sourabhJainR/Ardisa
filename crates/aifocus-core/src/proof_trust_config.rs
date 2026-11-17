@@ -117,7 +117,8 @@ pub fn load_authenticated_registry(
     let config = store.load().map_err(TrustConfigError::StoreUnavailable)?
         .ok_or(TrustConfigError::InvalidGeneration)?;
     verify_signature(&config, root)?;
-    validate_config_chain(&config, None)?;
+    if config.generation == 0 { return Err(TrustConfigError::InvalidGeneration); }
+    validate_entries(&config.entries)?;
     build_registry(&config, resolver)
 }
 
