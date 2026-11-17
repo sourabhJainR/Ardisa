@@ -1,9 +1,9 @@
 //! Unified host-runtime facade for Ardisa's source-backed AI constructs.
 //!
-//! This composes the individually checked Phase, Cell, Vault, Proof, and Trace
-//! runtime adapters for one source module. It is not ARDISA-EXEC-V1 support:
-//! `pipeline::compile_source` continues to reject these declarations until
-//! source operations have native instruction and artifact semantics.
+//! This composes the focused host-side Phase, Cell, Vault, Proof, and Trace
+//! adapters for one source module. It is separate from the bounded native
+//! executable path in `pipeline::compile_source`; it does not add native
+//! instructions or provide atomicity across external host effects.
 use std::collections::BTreeMap;
 
 use crate::{
@@ -200,11 +200,11 @@ mod tests {
     }
 
     #[test]
-    fn proof_and_trace_constructs_remain_fail_closed_in_standard_compilation() {
+    fn declarations_without_executable_operations_fail_closed_in_standard_compilation() {
         assert!(matches!(
             crate::pipeline::compile_source(SOURCE),
             Err(crate::pipeline::PipelineError::CompilerContract(diagnostics))
-                if diagnostics.iter().any(|diagnostic| diagnostic.contains("UnsupportedRuntimeBoundary"))
+                if diagnostics.iter().any(|diagnostic| diagnostic.contains("construct declarations without executable source operations"))
         ));
     }
     #[test]
