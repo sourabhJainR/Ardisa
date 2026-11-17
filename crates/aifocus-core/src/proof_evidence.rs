@@ -23,18 +23,43 @@ pub trait SignatureVerifier: Send + Sync {
     fn verify(&self, key_id: &str, payload: &[u8], signature: &[u8]) -> Result<bool, String>;
 }
 
+#[derive(Clone)]
+enum ProducerKey {
+    Active(Arc<dyn SignatureVerifier>),
+    Revoked,
+}
+
 #[derive(Default, Clone)]
 pub struct TrustRegistry {
-    keys: BTreeMap<(String, String), Arc<dyn SignatureVerifier>>,
+    keys: BTreeMap<(String, String), ProducerKey>,
 }
 impl TrustRegistry {
     pub fn new() -> Self { Self::default() }
 
+    /// Register a new producer key. Key IDs are never reusable, including after revocation.
+    /// Rotation must register a distinct key ID before producers begin using it.
     pub fn register(&mut self, producer: &str, key: &str, verifier: Arc<dyn SignatureVerifier>) -> Result<(), AdmissionError> {
         valid_id(producer)?; valid_id(key)?;
         let id = (producer.to_owned(), key.to_owned());
         if self.keys.contains_key(&id) { return Err(AdmissionError::DuplicateKey); }
-        self.keys.insert(id, verifier); Ok(())
+        self.keys.insert(id, ProducerKey::Active(verifier)); Ok(())
+    }
+
+    /// Permanently revoke a producer/key pair in this registry snapshot.
+    /// Revocation is immediate for all subsequent admissions using this snapshot.
+    /// Re-registering the same key ID is forbidden; use a new key ID for rotation.
+    pub fn revoke(&mut self, producer: &str, key: &str) -> Result<(), AdmissionError> {
+        valid_id(producer)?; valid_id(key)?;
+        let id = (producer.to_owned(), key.to_owned());
+        match self.keys.get_mut(&id) {
+            Some(state @ ProducerKey::Active(_)) => { *state = ProducerKey::Revoked; Ok(()) }
+            Some(ProducerKey::Revoked) => Err(AdmissionError::DuplicateKey),
+            None => Err(AdmissionError::UnknownProducerKey),
+        }
+    }
+
+    pub fn is_active(&self, producer: &str, key: &str) -> bool {
+        matches!(self.keys.get(&(producer.to_owned(), key.to_owned())), Some(ProducerKey::Active(_)))
     }
 }
 
@@ -78,7 +103,7 @@ pub enum AdmissionError {
     InvalidId, InvalidDigest, TooManyItems, EvidenceTooLarge, EmptyEvidence, EmptySignature,
     UnknownGate(String), MissingGate(String), UnknownRequirement(String, String),
     MissingRequirement(String, String), DuplicateOutcome(String, String), InvalidStatus,
-    DuplicateKey, UnknownProducerKey, SignatureRejected, VerifierUnavailable(String),
+    DuplicateKey, UnknownProducerKey, RevokedProducerKey, SignatureRejected, VerifierUnavailable(String),
     ReplayOrRollback, ReplayStoreUnavailable,
 }
 
@@ -147,8 +172,11 @@ pub fn admit(
         if seen.insert(key, item.status.clone()).is_some() {
             return Err(AdmissionError::DuplicateOutcome(item.gate_id.clone(), item.requirement.clone()));
         }
-        let verifier = trust.keys.get(&(item.producer_id.clone(), item.key_id.clone()))
-            .ok_or(AdmissionError::UnknownProducerKey)?;
+        let verifier = match trust.keys.get(&(item.producer_id.clone(), item.key_id.clone())) {
+            Some(ProducerKey::Active(verifier)) => verifier,
+            Some(ProducerKey::Revoked) => return Err(AdmissionError::RevokedProducerKey),
+            None => return Err(AdmissionError::UnknownProducerKey),
+        };
         match verifier.verify(&item.key_id, &item.canonical_payload(), &item.signature) {
             Ok(true) => (), Ok(false) => return Err(AdmissionError::SignatureRejected),
             Err(e) => return Err(AdmissionError::VerifierUnavailable(e)),
@@ -229,6 +257,39 @@ mod tests {
         let valid = vec![evidence("BuildGate","type_safety",1), evidence("ReleaseGate","bounds",2)];
         admit(&declarations(), &valid, &"a".repeat(64), &registry(), &replay).unwrap();
         assert_eq!(replay.latest("ci","ci-key"), Some(2));
+    }
+
+
+    #[test] fn revoked_producer_keys_are_rejected_and_ids_cannot_be_reused() {
+        let mut trust = registry();
+        let replay = MemoryReplayStore::default();
+        assert!(trust.is_active("ci", "ci-key"));
+        trust.revoke("ci", "ci-key").unwrap();
+        assert!(!trust.is_active("ci", "ci-key"));
+        assert_eq!(
+            admit(&declarations(), &[evidence("BuildGate", "type_safety", 1), evidence("ReleaseGate", "bounds", 2)],
+                &"a".repeat(64), &trust, &replay),
+            Err(AdmissionError::RevokedProducerKey)
+        );
+        assert_eq!(replay.latest("ci", "ci-key"), None);
+        assert_eq!(trust.register("ci", "ci-key", Arc::new(Echo)), Err(AdmissionError::DuplicateKey));
+        assert_eq!(trust.revoke("unknown", "key"), Err(AdmissionError::UnknownProducerKey));
+    }
+
+    #[test] fn key_rotation_accepts_new_key_and_rejects_old_key() {
+        let mut trust = registry();
+        trust.register("ci", "ci-key-v2", Arc::new(Echo)).unwrap();
+        trust.revoke("ci", "ci-key").unwrap();
+        let replay = MemoryReplayStore::default();
+        let mut first = evidence("BuildGate", "type_safety", 1);
+        first.key_id = "ci-key-v2".into();
+        first.signature = first.canonical_payload();
+        let mut second = evidence("ReleaseGate", "bounds", 2);
+        second.key_id = "ci-key-v2".into();
+        second.signature = second.canonical_payload();
+        assert_eq!(admit(&declarations(), &[first, second], &"a".repeat(64), &trust, &replay).unwrap().len(), 2);
+        assert!(trust.is_active("ci", "ci-key-v2"));
+        assert!(!trust.is_active("ci", "ci-key"));
     }
 
     #[test] fn rejects_tampering_replay_and_rollback_atomically() {
