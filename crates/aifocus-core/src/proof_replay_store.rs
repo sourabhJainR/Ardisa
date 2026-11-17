@@ -133,8 +133,8 @@ impl ReplayStore for AnchoredFileReplayStore {
                 if previous.as_ref().is_some_and(|p| p.0 == *producer && p.1 == *key && p.2 == *sequence) {
                     return Err(AnchoredReplayError::InvalidBatch);
                 }
-                let expected = pending.get(&id).and_then(|v| v.checked_add(1)).unwrap_or(1);
-                if *sequence != expected { return Err(AnchoredReplayError::InvalidBatch); }
+                let expected = pending.get(&id).copied().map_or(Some(1), |v| v.checked_add(1));
+                if expected != Some(*sequence) { return Err(AnchoredReplayError::InvalidBatch); }
                 pending.insert(id, *sequence);
                 previous = Some((producer.clone(), key.clone(), *sequence));
             }
@@ -201,9 +201,13 @@ fn decode_batch(payload: &[u8], counters: &mut BTreeMap<(String, String), u64>) 
     let count = u32::from_be_bytes(take(payload, &mut offset, 4)?.try_into().unwrap()) as usize;
     if count == 0 || count > 65_536 { return Err(AnchoredReplayError::CorruptJournal); }
     for _ in 0..count {
-        let producer = std::str::from_utf8(take(payload, &mut offset, read_u16(payload, &mut offset)?)?)
+        let producer_len = read_u16(payload, &mut offset)?;
+        if producer_len == 0 || producer_len > 128 { return Err(AnchoredReplayError::CorruptJournal); }
+        let producer = std::str::from_utf8(take(payload, &mut offset, producer_len)?)
             .map_err(|_| AnchoredReplayError::CorruptJournal)?.to_owned();
-        let key = std::str::from_utf8(take(payload, &mut offset, read_u16(payload, &mut offset)?)?)
+        let key_len = read_u16(payload, &mut offset)?;
+        if key_len == 0 || key_len > 128 { return Err(AnchoredReplayError::CorruptJournal); }
+        let key = std::str::from_utf8(take(payload, &mut offset, key_len)?)
             .map_err(|_| AnchoredReplayError::CorruptJournal)?.to_owned();
         let sequence = u64::from_be_bytes(take(payload, &mut offset, 8)?.try_into().unwrap());
         if producer.is_empty() || key.is_empty() { return Err(AnchoredReplayError::CorruptJournal); }
