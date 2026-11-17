@@ -6,7 +6,7 @@ use crate::proof_trust_config::{
     KeyState, SignedTrustConfig, TrustConfigStore, TrustConfigVersion, TrustEntry,
 };
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -35,9 +35,12 @@ pub trait TrustConfigAnchor: Send + Sync {
     ) -> Result<(), String>;
 }
 
-struct LockGuard(PathBuf);
+struct LockGuard { path: PathBuf, file: Option<File> }
 impl Drop for LockGuard {
-    fn drop(&mut self) { let _ = fs::remove_file(&self.0); }
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 pub struct AnchoredFileTrustConfigStore {
@@ -134,9 +137,9 @@ impl TrustConfigStore for AnchoredFileTrustConfigStore {
         next: SignedTrustConfig,
     ) -> Result<(), String> {
         let lock = self.lock_path();
-        let _lock_file = OpenOptions::new().write(true).create_new(true).open(&lock)
+        let lock_file = OpenOptions::new().write(true).create_new(true).open(&lock)
             .map_err(|_| "trust config writer lock unavailable".to_string())?;
-        let _guard = LockGuard(lock);
+        let _guard = LockGuard { path: lock, file: Some(lock_file) };
         let current_anchor = self.anchor.load()?;
         let current = self.read_config()?;
         let current_version = current.as_ref().map(SignedTrustConfig::version)
