@@ -306,10 +306,28 @@ mod tests {
         let backup = path.with_extension("backup");
         let anchor = Arc::new(TestAnchor::default());
         let store = AnchoredFileTrustConfigStore::open(&path, anchor.clone()).unwrap();
-        let original = encode(&config()).unwrap();
+        let first = config();
+        let original = encode(&first).unwrap();
         fs::write(&backup, &original).unwrap();
-        store.compare_and_store(None, config()).unwrap();
+        let first_version = first.version().unwrap();
+        store.compare_and_store(None, first).unwrap();
+
+        let mut second = SignedTrustConfig {
+            generation: 2,
+            previous_digest: first_version.digest,
+            entries: vec![TrustEntry {
+                producer_id: "ci".into(),
+                key_id: "key-v2".into(),
+                state: KeyState::Active,
+            }],
+            signature: vec![4, 5, 6],
+        };
+        second.signature = second.canonical_payload().unwrap();
+        store.compare_and_store(Some(first_version), second).unwrap();
         drop(store);
+
+        // Restore the genuinely older generation-1 snapshot while the
+        // independently held anchor remains at generation 2.
         fs::copy(&backup, &path).unwrap();
         assert!(AnchoredFileTrustConfigStore::open(&path, anchor).is_err());
         let _ = fs::remove_file(path);
