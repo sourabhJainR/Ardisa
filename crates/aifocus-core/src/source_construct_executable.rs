@@ -1156,6 +1156,73 @@ fn main() -> Int
         event
     }
 
+    const ALL_CONSTRUCTS_SOURCE: &str = r#"module all_constructs
+phase Lifecycle
+  initial: Ready
+  Ready -> Done
+cell Counter
+  value: Int
+  invariant: value >= 0
+vault Local
+  capabilities: filesystem_read
+proof ReleaseGate
+  requires: type_safety, bounds
+  ensures: true
+  on_unknown: reject
+  required: true
+trace Audit
+  signature: required
+fn main() -> Int
+  trace_emit("Audit", "release")
+  proof_evaluate("ReleaseGate")
+  cell_initialize("Counter", "value", 1)
+  phase_transition("Lifecycle", "Ready", "Done")
+  vault_authorize("Local", "filesystem_read")
+  cell_update("Counter", "value", 2)
+  return 29
+"#;
+
+    #[test]
+    fn all_five_constructs_round_trip_and_execute_through_standard_compile_source() {
+        let compiled = crate::pipeline::compile_source(ALL_CONSTRUCTS_SOURCE)
+            .expect("bounded Cell/Phase/Vault/Proof/Trace source compiles");
+        let repeated = crate::pipeline::compile_source(ALL_CONSTRUCTS_SOURCE)
+            .expect("repeat compilation succeeds");
+        assert_eq!(compiled.artifact, repeated.artifact);
+
+        let decoded = native::decode_program(&compiled.artifact)
+            .expect("combined executable artifact decodes");
+        let code = &decoded.functions["main"].code;
+        assert!(code.iter().any(|instruction| matches!(instruction, NativeInstr::CellStart { .. })));
+        assert!(code.iter().any(|instruction| matches!(instruction, NativeInstr::PhaseStart { .. })));
+        assert!(code.iter().any(|instruction| matches!(instruction, NativeInstr::VaultAuthorize { .. })));
+        assert!(code.iter().any(|instruction| matches!(instruction, NativeInstr::ProofCheck { .. })));
+        assert!(code.iter().any(|instruction| matches!(instruction, NativeInstr::TracePrepare { .. })));
+
+        let mut runtime = crate::trace_policy_runtime::TraceRuntimeSet::from_source(ALL_CONSTRUCTS_SOURCE).unwrap();
+        let mut event = trace_event();
+        event.event_kind = "release".into();
+        event.subject_sha256 = source_sha256_hex(ALL_CONSTRUCTS_SOURCE);
+        let outcomes = vec![
+            "ReleaseGate:type_safety=proved".to_string(),
+            "ReleaseGate:bounds=runtime_checked".to_string(),
+        ];
+        let result = run_combined_artifact_with_proof_and_trace(
+            ALL_CONSTRUCTS_SOURCE,
+            &compiled.artifact,
+            &outcomes,
+            &mut runtime,
+            event,
+            &TestTraceSigner,
+            &TestTraceSigner,
+            native::ExecutionLimits::default(),
+        ).expect("combined native runtime executes all five constructs");
+
+        assert_eq!(result, NativeValue::Int(29));
+        assert_eq!(runtime.receipts("Audit").unwrap().len(), 1);
+        runtime.verify("Audit", &TestTraceSigner).unwrap();
+    }
+
     #[test]
     fn standard_compiler_executes_proof_and_trace_in_one_native_artifact() {
         let compiled = crate::pipeline::compile_source(PROOF_TRACE_SOURCE)
