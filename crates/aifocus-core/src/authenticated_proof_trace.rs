@@ -238,6 +238,5 @@ mod trust_config_execution_tests {
             Err(SourceConstructExecutableError::UnsupportedRuntimeBoundary(message))
                 if message.contains("InvalidGeneration")
         ));
-        let _ = TrustConfigError::InvalidGeneration;
     }
 }
