@@ -56,6 +56,7 @@ pub mod proof_native;
 pub mod proof_evidence;
 pub mod proof_replay_store;
 pub mod proof_trust_config;
+pub mod anchored_trust_store;
 pub mod authenticated_proof_trace;
 pub mod proof_runtime;
 pub mod resource_guard;
