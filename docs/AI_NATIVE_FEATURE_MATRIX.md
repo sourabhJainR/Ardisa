@@ -41,3 +41,26 @@ The previous main commit `85034a10445c0dceab614b6f616431b90eec4563` passed Rust 
 5. **Self-hosting:** retain the Stage 0 -> 1 -> 2 -> 3 gate, byte-identical Stage 2/3 output, independent holdouts, and forbidden-host-fallback checks.
 
 A source declaration without executable semantics must continue to fail compilation with AIF610 rather than being ignored. A runtime helper does not establish cryptographic trust, OS isolation, formal proof, Rust parity, or self-hosting.
+
+## Cross-repository application acceptance evidence
+
+TradingDYOR now contains an isolated Ardisa compiler/runtime acceptance test bed
+(`sourabhJainR/TradingDYOR`, PR #35, merged 2026-11-21). It pins this Ardisa
+revision, `b0473b105db6f118bfc2eb7443999325c93a516f`, and invokes the real
+`ardisa` CLI from a separate checkout.
+
+The exact-head acceptance workflow passed these contracts:
+
+- A deterministic `.ardisa` source program executes through the native runtime.
+- Repeated `bootstrap compile` calls emit byte-identical artifacts.
+- The generated artifact passes `bootstrap verify` and `bootstrap run`.
+- A malformed artifact is rejected.
+- Proof/Trace declarations without the standard executable trust/evidence path
+  are rejected and do not leave an output artifact.
+- The experiment records the immutable compiler revision and fixture digest.
+
+This is application-level regression evidence for the listed CLI/runtime
+contracts only. It does not promote Proof or Trace to standard compiler support,
+prove the complete Stage 0-to-3 self-hosting contract, or establish independent
+holdout, cryptographic trust, OS isolation, or general language completeness.
+The committed fixtures are deterministic public tests, not a sealed holdout.
