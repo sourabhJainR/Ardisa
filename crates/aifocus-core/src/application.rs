@@ -380,7 +380,22 @@ impl NativeHttpServer {
         self.serve_stream(stream, app, handler)
     }
     pub fn serve_forever(&self, app: &AppRuntime, handler: &dyn AppHandler) -> Result<(), AppError> {
-        loop { self.serve_once(app, handler)?; }
+        self.serve_connections(app, handler, None)
+    }
+    /// Serve a bounded number of connections. Per-client I/O failures are
+    /// isolated so a disconnected client cannot stop the listener.
+    pub fn serve_n(&self, app: &AppRuntime, handler: &dyn AppHandler, count: usize) -> Result<(), AppError> {
+        self.serve_connections(app, handler, Some(count))
+    }
+    fn serve_connections(&self, app: &AppRuntime, handler: &dyn AppHandler, limit: Option<usize>) -> Result<(), AppError> {
+        let mut served = 0usize;
+        while limit.is_none_or(|max| served < max) {
+            let (stream, _) = self.listener.accept()
+                .map_err(|error| AppError::Handler(format!("HTTP accept failed: {error}")))?;
+            served += 1;
+            let _ = self.serve_stream(stream, app, handler);
+        }
+        Ok(())
     }
     fn serve_stream(&self, mut stream: TcpStream, app: &AppRuntime, handler: &dyn AppHandler) -> Result<(), AppError> {
         stream.set_read_timeout(Some(self.config.read_timeout.min(self.config.max_request_duration)))
@@ -408,6 +423,12 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result
         if Instant::now() >= deadline {
             return Err(AppError::RequestLimit("HTTP request read deadline exceeded".into()));
         }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(AppError::RequestLimit("HTTP request read deadline exceeded".into()));
+        }
+        stream.set_read_timeout(Some(config.read_timeout.min(remaining)))
+            .map_err(|error| AppError::Handler(format!("HTTP read deadline setup failed: {error}")))?;
         stream.read_exact(&mut byte).map_err(|error| AppError::InvalidRequest(format!("incomplete HTTP headers: {error}")))?;
         if Instant::now() >= deadline {
             return Err(AppError::RequestLimit("HTTP request read deadline exceeded".into()));
@@ -480,6 +501,12 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result
         if Instant::now() >= deadline {
             return Err(AppError::RequestLimit("HTTP request read deadline exceeded".into()));
         }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(AppError::RequestLimit("HTTP request read deadline exceeded".into()));
+        }
+        stream.set_read_timeout(Some(config.read_timeout.min(remaining)))
+            .map_err(|error| AppError::Handler(format!("HTTP body deadline setup failed: {error}")))?;
         let count = stream.read(&mut body[received..])
             .map_err(|error| AppError::InvalidRequest(format!("incomplete HTTP request body: {error}")))?;
         if count == 0 { return Err(AppError::InvalidRequest("incomplete HTTP request body".into())); }
@@ -683,6 +710,33 @@ mod tests {
         worker.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 400 Bad Request")
             || response.starts_with("HTTP/1.1 413 Payload Too Large"));
+    }
+
+    #[test]
+    fn native_http_server_continues_after_a_disconnected_client() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, HttpServerConfig::default()).unwrap();
+        let address = server.local_addr().unwrap();
+        let handler = EchoHandler;
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Get, "/", "home").unwrap();
+        let worker = thread::spawn(move || server.serve_n(&app, &handler, 2).unwrap());
+
+        let mut disconnected = TcpStream::connect(address).unwrap();
+        disconnected.write_all(b"G").unwrap();
+        drop(disconnected);
+
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(b"GET / HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n").unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.ends_with("home:GET:/"));
     }
 
     #[test]
