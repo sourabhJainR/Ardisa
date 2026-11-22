@@ -1,0 +1,4 @@
+module browser_app
+
+fn greet(name: String) -> String
+  "Hello from Ardisa running in WebAssembly."
