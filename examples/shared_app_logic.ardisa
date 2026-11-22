@@ -1,0 +1,4 @@
+module shared_app_logic
+
+fn home(method: String, path: String, body: String) -> String
+  "Hello from shared Ardisa application logic"
