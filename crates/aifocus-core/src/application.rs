@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use crate::native::{ExecutionLimits, NativeProgram, NativeValue, ValidatedNativeProgram};
 
 pub const APP_PROTOCOL_VERSION: u16 = 1;
@@ -345,13 +345,14 @@ pub trait DesktopHost {
 pub struct HttpServerConfig {
     pub read_timeout: Duration,
     pub write_timeout: Duration,
+    pub max_request_duration: Duration,
     pub max_header_bytes: usize,
     pub max_body_bytes: usize,
 }
 impl Default for HttpServerConfig {
     fn default() -> Self {
         Self { read_timeout: Duration::from_secs(5), write_timeout: Duration::from_secs(5),
-            max_header_bytes: 16_384, max_body_bytes: 1_048_576 }
+            max_request_duration: Duration::from_secs(15), max_header_bytes: 16_384, max_body_bytes: 1_048_576 }
     }
 }
 
@@ -362,7 +363,8 @@ impl NativeHttpServer {
     pub fn bind(address: &str, policy: &AppPolicy, config: HttpServerConfig) -> Result<Self, AppError> {
         policy.require(AppCapability::HttpListen)?;
         if config.max_header_bytes == 0 || config.max_body_bytes == 0
-            || config.read_timeout.is_zero() || config.write_timeout.is_zero() {
+            || config.read_timeout.is_zero() || config.write_timeout.is_zero()
+            || config.max_request_duration.is_zero() {
             return Err(AppError::InvalidRequest("HTTP server limits and timeouts must be non-zero".into()));
         }
         let listener = TcpListener::bind(address)
@@ -381,7 +383,7 @@ impl NativeHttpServer {
         loop { self.serve_once(app, handler)?; }
     }
     fn serve_stream(&self, mut stream: TcpStream, app: &AppRuntime, handler: &dyn AppHandler) -> Result<(), AppError> {
-        stream.set_read_timeout(Some(self.config.read_timeout))
+        stream.set_read_timeout(Some(self.config.read_timeout.min(self.config.max_request_duration)))
             .map_err(|error| AppError::Handler(format!("HTTP read timeout setup failed: {error}")))?;
         stream.set_write_timeout(Some(self.config.write_timeout))
             .map_err(|error| AppError::Handler(format!("HTTP write timeout setup failed: {error}")))?;
@@ -398,9 +400,13 @@ impl NativeHttpServer {
 }
 
 fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result<AppRequest, AppError> {
+    let deadline = Instant::now() + config.max_request_duration;
     let mut header = Vec::new();
     let mut byte = [0u8; 1];
     loop {
+        if Instant::now() >= deadline {
+            return Err(AppError::RequestLimit("HTTP request read deadline exceeded".into()));
+        }
         stream.read_exact(&mut byte).map_err(|error| AppError::InvalidRequest(format!("incomplete HTTP headers: {error}")))?;
         header.push(byte[0]);
         if header.len() > config.max_header_bytes {
@@ -465,8 +471,15 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result
     }
     let length = content_length.unwrap_or(0);
     let mut body = vec![0u8; length];
-    if length > 0 {
-        stream.read_exact(&mut body).map_err(|error| AppError::InvalidRequest(format!("incomplete HTTP request body: {error}")))?;
+    let mut received = 0usize;
+    while received < length {
+        if Instant::now() >= deadline {
+            return Err(AppError::RequestLimit("HTTP request read deadline exceeded".into()));
+        }
+        let count = stream.read(&mut body[received..])
+            .map_err(|error| AppError::InvalidRequest(format!("incomplete HTTP request body: {error}")))?;
+        if count == 0 { return Err(AppError::InvalidRequest("incomplete HTTP request body".into())); }
+        received += count;
     }
     let request = AppRequest {
         method, path: path.to_owned(), query: query.to_owned(), headers, body,
@@ -634,6 +647,35 @@ mod tests {
         let request = AppRequest::new(AppMethod::Get, "/echo").with_query("q=ardisa&mode=test");
         let response = app.dispatch(request, &handler).unwrap();
         assert_eq!(response.body, b"q=ardisa&mode=test");
+    }
+
+    #[test]
+    fn native_http_server_enforces_total_request_read_deadline() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+        use std::time::Duration;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let config = HttpServerConfig {
+            read_timeout: Duration::from_secs(2),
+            max_request_duration: Duration::from_millis(150),
+            ..HttpServerConfig::default()
+        };
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, config).unwrap();
+        let address = server.local_addr().unwrap();
+        let handler = EchoHandler;
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Get, "/", "home").unwrap();
+        let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(b"G").unwrap();
+        thread::sleep(Duration::from_millis(250));
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request")
+            || response.starts_with("HTTP/1.1 413 Payload Too Large"));
     }
 
     #[test]
