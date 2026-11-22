@@ -41,6 +41,14 @@ jobs:
           install -m 0755 target/release/ardisa target/package/usr/bin/ardisa
           printf 'Package: ardisa\nVersion: 0.1.0\nSection: devel\nPriority: optional\nArchitecture: amd64\nMaintainer: Ardisa\nDescription: Ardisa language compiler and runtime\n' > target/package/DEBIAN/control
           dpkg-deb --build target/package target/ardisa_0.1.0_amd64.deb
+      - name: Verify Linux install and uninstall
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo dpkg -i target/ardisa_0.1.0_amd64.deb
+          /usr/bin/ardisa --help
+          sudo dpkg -r ardisa
+          test ! -e /usr/bin/ardisa
       - name: Install WiX Toolset
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -52,6 +60,16 @@ jobs:
           $wix = (Get-Command wix.exe -ErrorAction Stop).Source
           & $wix build installer/ardisa.wxs -d ArdisaExe="$PWD/target/release/ardisa.exe" -o target/Ardisa-0.1.0-x64.msi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify Windows install and uninstall
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $install = Start-Process msiexec.exe -ArgumentList '/i', 'target/Ardisa-0.1.0-x64.msi', '/qn', '/norestart' -Wait -PassThru
+          if ($install.ExitCode -notin @(0, 3010)) { exit $install.ExitCode }
+          & "$env:ProgramFiles\\Ardisa\\ardisa.exe" --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $remove = Start-Process msiexec.exe -ArgumentList '/x', 'target/Ardisa-0.1.0-x64.msi', '/qn', '/norestart' -Wait -PassThru
+          if ($remove.ExitCode -notin @(0, 3010)) { exit $remove.ExitCode }
       - name: Build macOS PKG installer
         if: matrix.platform == 'macos'
         shell: bash
@@ -59,6 +77,14 @@ jobs:
           mkdir -p target/pkg-root/usr/local/bin
           install -m 0755 target/release/ardisa target/pkg-root/usr/local/bin/ardisa
           pkgbuild --root target/pkg-root --identifier org.ardisa.cli --version 0.1.0 --install-location / target/Ardisa-0.1.0-macos.pkg
+      - name: Verify macOS install and uninstall
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          sudo installer -pkg target/Ardisa-0.1.0-macos.pkg -target /
+          /usr/local/bin/ardisa --help
+          sudo pkgutil --forget org.ardisa.cli
+          sudo rm -f /usr/local/bin/ardisa
       - name: Generate CycloneDX SBOM
         shell: bash
         run: python3 scripts/create_sbom.py target/ardisa.cdx.json
