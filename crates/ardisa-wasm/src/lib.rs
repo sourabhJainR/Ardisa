@@ -3,7 +3,7 @@
 //! The runtime exposes only pure Ardisa execution. It does not grant browser,
 //! network, filesystem, process, or DOM capabilities.
 use ardisa_core::native::{
-    decode_program, encode_program, encode_program_v1, ExecutionLimits, NativeInstr, NativeValue, ValidatedNativeProgram,
+    decode_program, encode_program, encode_program_v1, ExecutionLimits, NativeInstr, NativeProgram, NativeValue, ValidatedNativeProgram,
 };
 use wasm_bindgen::prelude::*;
 use js_sys::Array;
@@ -38,9 +38,7 @@ impl ArdisaBrowserRuntime {
         if canonical != artifact {
             return Err(js_error("executable artifact is not canonically encoded"));
         }
-        if decoded.functions.values().any(|function| {
-            function.code.iter().any(|instruction| matches!(instruction, NativeInstr::Spawn { .. }))
-        }) {
+        if contains_task_spawn(&decoded) {
             return Err(js_error("browser WebAssembly runtime does not support task-spawning instructions"));
         }
         let program = ValidatedNativeProgram::try_new(decoded)
@@ -82,6 +80,12 @@ impl ArdisaBrowserRuntime {
     }
 }
 
+fn contains_task_spawn(program: &NativeProgram) -> bool {
+    program.functions.values().any(|function| {
+        function.code.iter().any(|instruction| matches!(instruction, NativeInstr::Spawn { .. }))
+    })
+}
+
 fn js_error(message: &str) -> JsValue {
     JsValue::from_str(message)
 }
@@ -93,5 +97,34 @@ mod tests {
         assert!(super::MAX_ARTIFACT_BYTES > 0);
         assert!(super::MAX_ARGUMENTS > 0);
         assert!(super::MAX_RESULT_BYTES > 0);
+    }
+
+    #[test]
+    fn legacy_v1_artifacts_keep_their_original_canonical_marker() {
+        let source = "module legacy\\nfn greet() -> String\\n  \\"ok\\"\\n";
+        let compiled = ardisa_core::compile_source(source).expect("source compiles");
+        let program = super::decode_program(&compiled.artifact).expect("V2 artifact decodes");
+        let legacy = super::encode_program_v1(&program);
+        assert!(legacy.starts_with("ARDISA-EXEC-V1\\n"));
+        let decoded = super::decode_program(&legacy).expect("V1 artifact decodes");
+        assert_eq!(super::encode_program_v1(&decoded), legacy);
+    }
+
+    #[test]
+    fn browser_runtime_rejects_task_spawning_programs() {
+        let program = ardisa_core::native::NativeProgram {
+            functions: [(
+                "main".to_owned(),
+                ardisa_core::native::NativeFunction {
+                    params: Vec::new(),
+                    code: vec![NativeInstr::Spawn {
+                        name: "child".into(),
+                        callee: "worker".into(),
+                        argc: 0,
+                    }],
+                },
+            )].into_iter().collect(),
+        };
+        assert!(super::contains_task_spawn(&program));
     }
 }
