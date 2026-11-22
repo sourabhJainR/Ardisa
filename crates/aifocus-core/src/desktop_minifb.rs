@@ -21,7 +21,7 @@ const LEFT: usize = 24;
 const TEXT_TOP: usize = 16;
 
 pub struct MinifbDesktopHost {
-    window: Window,
+    window: Option<Window>,
     pixels: Vec<u32>,
     tree: Option<UiTree>,
     events: VecDeque<UiEvent>,
@@ -41,7 +41,7 @@ impl MinifbDesktopHost {
             .map_err(|error| AppError::Handler(format!("desktop window creation failed: {error}")))?;
         window.set_target_fps(30);
         Ok(Self {
-            window,
+            window: Some(window),
             pixels: vec![0x00_F4_F6_F8; WIDTH * HEIGHT],
             tree: None,
             events: VecDeque::new(),
@@ -52,7 +52,7 @@ impl MinifbDesktopHost {
     }
 
     pub fn is_open(&self) -> bool {
-        !self.closed && self.window.is_open()
+        !self.closed && self.window.as_ref().is_some_and(Window::is_open)
     }
 
     fn draw_tree(&mut self, tree: &UiTree) -> Result<(), AppError> {
@@ -81,12 +81,15 @@ impl MinifbDesktopHost {
             draw_text(&mut self.pixels, LEFT + 10, y + 12, &text, foreground);
             row += 1;
         }
-        self.window.update_with_buffer(&self.pixels, WIDTH, HEIGHT)
+        let window = self.window.as_mut()
+            .ok_or_else(|| AppError::Handler("desktop window is closed".into()))?;
+        window.update_with_buffer(&self.pixels, WIDTH, HEIGHT)
             .map_err(|error| AppError::Handler(format!("desktop frame presentation failed: {error}")))
     }
 
     fn poll_native_events(&mut self) -> Result<(), AppError> {
-        if !self.window.is_open() {
+        let Some(window) = self.window.as_mut() else { return Ok(()); };
+        if !window.is_open() {
             if !self.closed {
                 self.events.push_back(UiEvent { node_id: None, kind: UiEventKind::WindowClosed });
                 self.closed = true;
@@ -94,7 +97,7 @@ impl MinifbDesktopHost {
             return Ok(());
         }
 
-        let pressed = self.window.get_keys_pressed(KeyRepeat::No);
+        let pressed = window.get_keys_pressed(KeyRepeat::No);
         if let Some(node_id) = self.focused_input {
             let mut changed = None;
             if let Some(tree) = self.tree.as_mut() {
@@ -129,9 +132,9 @@ impl MinifbDesktopHost {
             }
         }
 
-        let mouse_down = self.window.get_mouse_down(MouseButton::Left);
+        let mouse_down = window.get_mouse_down(MouseButton::Left);
         if mouse_down && !self.mouse_was_down {
-            if let Some((x, y)) = self.window.get_mouse_pos(MouseMode::Discard) {
+            if let Some((x, y)) = window.get_mouse_pos(MouseMode::Discard) {
                 let x = x as usize;
                 let y = y as usize;
                 let row = y.saturating_sub(TEXT_TOP) / ROW_HEIGHT;
@@ -178,8 +181,9 @@ impl DesktopHost for MinifbDesktopHost {
         let tree = self.tree.as_mut()
             .ok_or_else(|| AppError::InvalidUiTree("present a UI tree before applying actions".into()))?;
         if tree.apply_action(action)? {
-            self.window.set_title("Ardisa application (closing)");
             self.closed = true;
+            self.window.take();
+            self.window.take();
             return Ok(());
         }
         let snapshot = tree.clone();
