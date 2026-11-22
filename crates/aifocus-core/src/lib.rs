@@ -2,6 +2,7 @@
 
 pub mod ai;
 pub mod application;
+pub mod application_source;
 pub mod ai_types;
 pub mod ai_primitives;
 pub mod ai_routing;
@@ -96,6 +97,7 @@ pub use interop::{
 pub use ir::{IrFunction, IrModule, IrOp, IrValue};
 pub use optimizer::optimize;
 pub use pipeline::{compile_source, CompiledArtifact, PipelineError, PipelineEvidence, PipelineTiming};
+pub use application_source::{compile_application_source, ApplicationDefinition, ApplicationRoute, ApplicationSourceError, CompiledApplication};
 pub use typed_ir::{TypedBasicBlock, TypedIrFunction, TypedIrModule, TypedIrOp, TypedTerminator, TypedValue, TypedValueKind};
 pub use kv_cache::{CacheFullPolicy, KvCache, KvCacheError, KvEntry};
 pub use learning::{
