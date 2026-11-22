@@ -49,6 +49,29 @@ fn health(method: String, path: String, query: String, body: String) -> String
 
 The `compile_application_source` API extracts the application block, validates route paths, methods, duplicate routes, handler names and explicit capabilities, then compiles the remaining module through the normal compiler pipeline. `ApplicationDefinition::build_runtime` creates the bounded shared router. Host code must still grant the declared capability through `AppPolicy`; source declarations do not grant permissions. This initial slice covers HTTP route metadata only; UI declarations, typed handler request/response values and target-specific lowering remain future work.
 
+
+### Concrete native desktop host (initial backend)
+
+The optional `native-desktop` feature provides `MinifbDesktopHost` in
+`ardisa_core::desktop_minifb`. It opens a real OS window, renders the shared
+`UiTree`, translates button clicks and text edits into validated `UiEvent`
+values, and applies `UiAction` updates. It requires an explicit
+`AppPolicy` grant for `DesktopWindow`; constructing the host without that
+grant fails before opening a window.
+
+Build the backend with:
+
+```sh
+cargo check -p ardisa-core --features native-desktop
+```
+
+This first backend is a lightweight pixel renderer, not a full native widget
+toolkit. It displays accessible names as visible labels, but minifb does not
+provide native accessibility-tree integration or screen-reader semantics.
+It also has a fixed initial window size and simple vertical layout. Those
+limitations remain open work; do not treat this backend as accessibility
+complete or as a substitute for platform-native controls.
+
 ## Next implementation gates
 
 1. **HTTP host hardening:** add bounded concurrent connections, graceful shutdown, keep-alive policy, TLS integration, richer route parameters and production-grade operational controls. The current single-connection local host is only the first transport slice.
