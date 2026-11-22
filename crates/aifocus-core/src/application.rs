@@ -187,8 +187,8 @@ impl AppRuntime {
         }
         validate_headers(&response.headers, self.limits.max_headers, self.limits.max_header_bytes)
             .map_err(|e| AppError::InvalidResponse(e.to_string()))?;
-        if response.headers.iter().any(|(name, _)| matches!(name.to_ascii_lowercase().as_str(), \"content-length\" | \"transfer-encoding\" | \"connection\")) {
-            return Err(AppError::InvalidResponse(\"response cannot override transport framing headers\".into()));
+        if response.headers.iter().any(|(name, _)| matches!(name.to_ascii_lowercase().as_str(), "content-length" | "transfer-encoding" | "connection")) {
+            return Err(AppError::InvalidResponse("response cannot override transport framing headers".into()));
         }
         if response.body.len() > self.limits.max_response_body_bytes {
             return Err(AppError::ResponseLimit("response body byte limit exceeded".into()));
