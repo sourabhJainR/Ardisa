@@ -268,9 +268,38 @@ impl UiTree {
                 let node = self.nodes.get(&id).ok_or_else(|| AppError::InvalidUiEvent("event targets unknown UI node".into()))?;
                 if !node.enabled { return Err(AppError::InvalidUiEvent("event targets disabled UI node".into())); }
                 match (node.kind, kind) {
-                    (UiNodeKind::Button, UiEventKind::Clicked) | (UiNodeKind::TextInput, UiEventKind::TextChanged(_)) => Ok(()),
+                    (UiNodeKind::Button, UiEventKind::Clicked) => Ok(()),
+                    (UiNodeKind::TextInput, UiEventKind::TextChanged(value)) if value.len() <= 4_096 => Ok(()),
+                    (UiNodeKind::TextInput, UiEventKind::TextChanged(_)) =>
+                        Err(AppError::InvalidUiEvent("text input event exceeds byte limit".into())),
                     _ => Err(AppError::InvalidUiEvent("event kind does not match its UI control".into())),
                 }
+            }
+        }
+    }
+    pub fn apply_action(&mut self, action: &UiAction) -> Result<bool, AppError> {
+        match action {
+            UiAction::CloseWindow => Ok(true),
+            UiAction::SetText { node_id, text } => {
+                if text.len() > 4_096 {
+                    return Err(AppError::InvalidUiTree("UI action text exceeds byte limit".into()));
+                }
+                let node = self.nodes.get_mut(node_id)
+                    .ok_or_else(|| AppError::InvalidUiTree("UI action targets unknown node".into()))?;
+                if !matches!(node.kind, UiNodeKind::Label | UiNodeKind::Button | UiNodeKind::TextInput) {
+                    return Err(AppError::InvalidUiTree("text action requires a text-capable control".into()));
+                }
+                node.text = text.clone();
+                Ok(false)
+            }
+            UiAction::SetEnabled { node_id, enabled } => {
+                let node = self.nodes.get_mut(node_id)
+                    .ok_or_else(|| AppError::InvalidUiTree("UI action targets unknown node".into()))?;
+                if node.kind == UiNodeKind::Window {
+                    return Err(AppError::InvalidUiTree("window enabled state is controlled by the host".into()));
+                }
+                node.enabled = *enabled;
+                Ok(false)
             }
         }
     }
@@ -367,6 +396,20 @@ mod tests {
         assert!(tree.validate_event(&UiEvent { node_id: None, kind: UiEventKind::WindowClosed }).is_ok());
     }
     #[test]
+    fn ui_actions_validate_targets_and_text_budgets() {
+        let mut tree = UiTree::new(root(), 4).unwrap();
+        tree.add(UiNode { id: 2, parent: Some(1), kind: UiNodeKind::Label,
+            accessible_name: "Status".into(), text: "Ready".into(), enabled: true }).unwrap();
+        assert!(tree.apply_action(&UiAction::SetText { node_id: 2, text: "Updated".into() }).is_ok());
+        assert_eq!(tree.nodes().get(&2).unwrap().text, "Updated");
+        assert!(tree.apply_action(&UiAction::SetText { node_id: 2, text: "x".repeat(4_097) }).is_err());
+        assert!(tree.apply_action(&UiAction::SetEnabled { node_id: 99, enabled: false }).is_err());
+        assert!(tree.apply_action(&UiAction::CloseWindow).unwrap());
+        assert!(tree.validate_event(&UiEvent { node_id: Some(2),
+            kind: UiEventKind::TextChanged("x".repeat(4_097)) }).is_err());
+    }
+
+    #[test]
     fn native_ardisa_program_can_handle_a_shared_application_route() {
         let source = include_str!("../../../examples/shared_app_logic.ardisa");
         let compiled = crate::compile_source(source).unwrap();
@@ -376,6 +419,6 @@ mod tests {
         app.route(AppMethod::Get, "/", "home").unwrap();
         let response = app.dispatch(AppRequest::new(AppMethod::Get, "/"), &handler).unwrap();
         assert_eq!(response.status, 200);
-        assert_eq!(response.body, b"hello from Ardisa");
+        assert_eq!(response.body, b"Hello from shared Ardisa application logic");
     }
 }
