@@ -34,6 +34,13 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("serve") => match (args.next(), args.next(), args.next()) {
+            (Some(path), Some(flag), Some(bind)) if flag == "--allow-http-listen" => serve_file(&path, &bind, args.collect()),
+            _ => {
+                eprintln!("error: serve requires <file> --allow-http-listen <bind> followed by METHOD PATH HANDLER triples");
+                ExitCode::from(2)
+            }
+        },
         Some("bootstrap") => match args.next().as_deref() {
             Some("compile") => match (args.next(), args.next()) {
                 (Some(source), Some(output)) => bootstrap_compile(&source, &output),
@@ -67,6 +74,10 @@ fn main() -> ExitCode {
             println!("  Lower Ardisa to readable Rust.");
             println!("ardisa run <file> [args...]");
             println!("  Compile and execute the module natively without Rust.");
+            println!("ardisa serve <file> --allow-http-listen <bind> METHOD PATH HANDLER [METHOD PATH HANDLER ...]");
+            println!("  Run a bounded native HTTP/1.x server using Ardisa handler functions.");
+            println!("  Handler ABI: (method: String, path: String, query: String, body: String) -> String.");
+            println!("  The explicit flag grants the HTTP listen capability; bind to 127.0.0.1 for local use.");
             println!("  The entry function is 'main'; arguments are typed from its signature.");
             println!("ardisa bootstrap compile <source.ardisa> <output.aexe>");
             println!("  Produce a deterministic native executable artifact without invoking Rust at run time.");
@@ -492,3 +503,58 @@ fn require_ardisa_extension(path: &str) {
         std::process::exit(2);
     }
 }
+
+fn serve_file(path: &str, bind: &str, route_args: Vec<String>) -> ExitCode {
+    require_ardisa_extension(path);
+    if route_args.is_empty() || route_args.len() % 3 != 0 {
+        eprintln!("error: serve requires one or more METHOD PATH HANDLER triples");
+        return ExitCode::from(2);
+    }
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) => { eprintln!("{path}: error[AIF000]: {error}"); return ExitCode::from(1); }
+    };
+    let compiled = match ardisa_core::compile_source(&source) {
+        Ok(compiled) => compiled,
+        Err(error) => { eprintln!("{path}: error[AIF603]: native compilation failed: {error:?}"); return ExitCode::from(1); }
+    };
+    let program = match ardisa_core::native::decode_program(&compiled.artifact) {
+        Ok(program) => program,
+        Err(error) => { eprintln!("{path}: error[AIF603]: invalid native artifact: {error:?}"); return ExitCode::from(1); }
+    };
+    let handler = match ardisa_core::application::NativeProgramHandler::new(
+        program, ardisa_core::native::ExecutionLimits::default()
+    ) {
+        Ok(handler) => handler,
+        Err(error) => { eprintln!("{path}: error[AIF603]: invalid application handler: {error}"); return ExitCode::from(1); }
+    };
+    let mut app = ardisa_core::application::AppRuntime::new(ardisa_core::application::AppLimits::default());
+    for route in route_args.chunks_exact(3) {
+        let method = match ardisa_core::application::AppMethod::parse(&route[0]) {
+            Ok(method) => method,
+            Err(error) => { eprintln!("{path}: error[AIF603]: invalid route method: {error}"); return ExitCode::from(2); }
+        };
+        if let Err(error) = app.route(method, route[1].clone(), route[2].clone()) {
+            eprintln!("{path}: error[AIF603]: invalid route: {error}");
+            return ExitCode::from(2);
+        }
+    }
+    let policy = ardisa_core::application::AppPolicy::allow([
+        ardisa_core::application::AppCapability::HttpListen
+    ]);
+    let server = match ardisa_core::application::NativeHttpServer::bind(
+        bind, &policy, ardisa_core::application::HttpServerConfig::default()
+    ) {
+        Ok(server) => server,
+        Err(error) => { eprintln!("{path}: error[AIF604]: HTTP server failed to bind: {error}"); return ExitCode::from(1); }
+    };
+    match server.local_addr() {
+        Ok(address) => println!("Ardisa HTTP server listening on http://{address}"),
+        Err(error) => { eprintln!("{path}: error[AIF604]: {error}"); return ExitCode::from(1); }
+    }
+    match server.serve_forever(&app, &handler) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => { eprintln!("{path}: error[AIF604]: HTTP server stopped: {error}"); ExitCode::from(1) }
+    }
+}
+
