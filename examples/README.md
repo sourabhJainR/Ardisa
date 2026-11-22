@@ -43,7 +43,7 @@ Hello from Ardisa
 See desktop-app/README.md.
 
 ```sh
-python examples/desktop-app/app.py
+python3 examples/desktop-app/app.py  # macOS/Linux; use py -3 on Windows
 ```
 
 ## Run the web application
@@ -51,7 +51,7 @@ python examples/desktop-app/app.py
 See web-app/README.md.
 
 ```sh
-python examples/web-app/server.py
+python3 examples/web-app/server.py  # macOS/Linux; use py -3 on Windows
 ```
 
 Open http://127.0.0.1:8080 and select Run check again to invoke Ardisa again. Stop the local server with Ctrl+C.
