@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Ardisa" Manufacturer="Ardisa" Version="$(var.ProductVersion)"
+           UpgradeCode="A5B75D3E-6D5A-4B4C-8A3D-5A6F24D3E2A1" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Ardisa is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Feature Id="MainFeature" Title="Ardisa" Level="1">
+      <ComponentGroupRef Id="ArdisaComponents" />
+    </Feature>
+  </Package>
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Ardisa" />
+    </StandardDirectory>
+  </Fragment>
+  <Fragment>
+    <ComponentGroup Id="ArdisaComponents" Directory="INSTALLFOLDER">
+      <Component Id="ArdisaExecutable" Guid="*">
+        <File Id="ArdisaExe" Source="$(var.BinPath)" Name="ardisa.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>
