@@ -24,7 +24,7 @@ The application router can dispatch a request into a function in a validated nat
 
 The desktop side currently defines the common UI tree, event model and host trait. It does not yet include a Win32, Cocoa, GTK or other concrete window renderer.
 
-The HTTP side now includes a bounded native TCP listener, an HTTP/1.0 and HTTP/1.1 request parser, query forwarding, duplicate Content-Length and Transfer-Encoding rejection, a close-after-response transport, and an `ardisa serve` CLI command. It also rejects whitespace before header colons and non-digit Content-Length values. The initial server handles one connection at a time, has no TLS, rejects chunked transfer encoding, and is intended for local development only. It is not a production internet-facing server.
+The HTTP side now includes a bounded native TCP listener, an HTTP/1.0 and HTTP/1.1 request parser, query forwarding, duplicate Content-Length and Transfer-Encoding rejection, a close-after-response transport, an absolute request-read deadline, client-disconnect isolation, and an `ardisa serve` CLI command. It also rejects whitespace before header colons and non-digit Content-Length values. The initial server handles one connection at a time, has no TLS, rejects chunked transfer encoding, and is intended for local development only. It is not a production internet-facing server.
 
 These APIs are runtime embedding contracts. They are not yet accepted source-level language syntax and are not advertised as complete native desktop or HTTP APIs.
 
