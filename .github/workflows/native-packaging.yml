@@ -44,7 +44,7 @@ jobs:
       - name: Install WiX Toolset
         if: matrix.platform == 'windows'
         shell: pwsh
-        run: choco install wixtoolset --no-progress -y
+        run: dotnet tool install --global wix --version 4.0.5
       - name: Build Windows MSI installer
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -68,7 +68,12 @@ jobs:
           cd target
           if [ "${{ matrix.platform }}" = "linux" ]; then sha256sum ardisa_0.1.0_amd64.deb ardisa.cdx.json > SHA256SUMS; fi
           if [ "${{ matrix.platform }}" = "macos" ]; then shasum -a 256 Ardisa-0.1.0-macos.pkg ardisa.cdx.json > SHA256SUMS; fi
-          if [ "${{ matrix.platform }}" = "windows" ]; then Get-FileHash Ardisa-0.1.0-x64.msi -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Ardisa-0.1.0-x64.msi" } | Out-File -Encoding ascii SHA256SUMS; Get-FileHash ardisa.cdx.json -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  ardisa.cdx.json" } | Out-File -Encoding ascii -Append SHA256SUMS; fi
+      - name: Generate Windows checksums
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          Get-FileHash Ardisa-0.1.0-x64.msi -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Ardisa-0.1.0-x64.msi" } | Out-File -Encoding ascii SHA256SUMS
+          Get-FileHash ardisa.cdx.json -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  ardisa.cdx.json" } | Out-File -Encoding ascii -Append SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: ardisa-${{ matrix.platform }}-installer
