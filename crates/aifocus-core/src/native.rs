@@ -3464,7 +3464,16 @@ pub const ARTIFACT_MAGIC_V1: &str = "ARDISA-EXEC-V1";
 pub const ARTIFACT_MAGIC: &str = "ARDISA-EXEC-V2";
 
 pub fn encode_program(program: &NativeProgram) -> String {
-    let mut out = String::from(ARTIFACT_MAGIC);
+    encode_program_with_magic(program, ARTIFACT_MAGIC)
+}
+
+/// Encode a legacy V1 artifact without silently upgrading its format marker.
+pub fn encode_program_v1(program: &NativeProgram) -> String {
+    encode_program_with_magic(program, ARTIFACT_MAGIC_V1)
+}
+
+fn encode_program_with_magic(program: &NativeProgram, magic: &str) -> String {
+    let mut out = String::from(magic);
     out.push('\n');
     for (name, function) in &program.functions {
         out.push_str("FN|");
