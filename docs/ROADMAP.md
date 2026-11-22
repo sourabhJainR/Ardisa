@@ -66,3 +66,10 @@ The gate opens only when all of the following are demonstrated in CI:
 5. The resulting artifact passes the full parser, semantic, ownership, IR, native, protocol, mutation and differential acceptance suite.
 
 Until those checks pass, self_hosting_ready must remain false and release documentation must not describe Ardisa as self-hosting.
+
+
+## Application platform (in progress)
+
+- Initial shared application runtime contracts and native VM handler bridge are implemented in `crates/aifocus-core/src/application.rs`.
+- The common HTTP request/response router and desktop UI/event model are host contracts only; a native listener, concrete OS renderers and source-level syntax remain open.
+- See `docs/APPLICATION_PLATFORM.md` and [Issue #397](https://github.com/sourabhJainR/Ardisa/issues/397) for delivery gates. WASM compilation and native installers remain unimplemented until their acceptance tests exist.
