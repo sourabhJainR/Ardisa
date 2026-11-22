@@ -3,7 +3,7 @@
 //! The runtime exposes only pure Ardisa execution. It does not grant browser,
 //! network, filesystem, process, or DOM capabilities.
 use ardisa_core::native::{
-    decode_program, ExecutionLimits, NativeValue, ValidatedNativeProgram,
+    decode_program, encode_program, encode_program_v1, ExecutionLimits, NativeInstr, NativeValue, ValidatedNativeProgram,
 };
 use wasm_bindgen::prelude::*;
 use js_sys::Array;
@@ -30,9 +30,18 @@ impl ArdisaBrowserRuntime {
         }
         let decoded = decode_program(artifact)
             .map_err(|error| js_error(&format!("invalid ARDISA-EXEC-V1 artifact: {error:?}")))?;
-        let canonical = ardisa_core::native::encode_program(&decoded);
+        let canonical = if artifact.starts_with("ARDISA-EXEC-V1\\n") {
+            encode_program_v1(&decoded)
+        } else {
+            encode_program(&decoded)
+        };
         if canonical != artifact {
             return Err(js_error("executable artifact is not canonically encoded"));
+        }
+        if decoded.functions.values().any(|function| {
+            function.code.iter().any(|instruction| matches!(instruction, NativeInstr::Spawn { .. }))
+        }) {
+            return Err(js_error("browser WebAssembly runtime does not support task-spawning instructions"));
         }
         let program = ValidatedNativeProgram::try_new(decoded)
             .map_err(|error| js_error(&format!("executable validation failed: {error:?}")))?;
@@ -40,7 +49,7 @@ impl ArdisaBrowserRuntime {
         limits.max_instructions = 250_000;
         limits.max_call_depth = 64;
         limits.max_tasks = 0;
-        limits.max_string_bytes = MAX_ARGUMENT_BYTES;
+        limits.max_string_bytes = MAX_RESULT_BYTES;
         limits.max_collection_items = 4_096;
         Ok(Self { program, limits })
     }
