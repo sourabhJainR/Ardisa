@@ -55,7 +55,7 @@ impl MinifbDesktopHost {
         !self.closed && self.window.is_open()
     }
 
-    fn draw_tree(&mut self, tree: &UiTree) {
+    fn draw_tree(&mut self, tree: &UiTree) -> Result<(), AppError> {
         self.pixels.fill(0x00_F4_F6_F8);
         let mut row = 0usize;
         for node in tree.nodes().values() {
@@ -81,7 +81,8 @@ impl MinifbDesktopHost {
             draw_text(&mut self.pixels, LEFT + 10, y + 12, &text, foreground);
             row += 1;
         }
-        let _ = self.window.update_with_buffer(&self.pixels, WIDTH, HEIGHT);
+        self.window.update_with_buffer(&self.pixels, WIDTH, HEIGHT)
+            .map_err(|error| AppError::Handler(format!("desktop frame presentation failed: {error}")))
     }
 
     fn poll_native_events(&mut self) -> Result<(), AppError> {
@@ -160,8 +161,7 @@ impl DesktopHost for MinifbDesktopHost {
     fn present(&mut self, tree: &UiTree) -> Result<(), AppError> {
         if self.closed { return Err(AppError::Handler("desktop window is closed".into())); }
         self.tree = Some(tree.clone());
-        self.draw_tree(tree);
-        Ok(())
+        self.draw_tree(tree)
     }
 
     fn next_event(&mut self) -> Result<Option<UiEvent>, AppError> {
@@ -178,8 +178,7 @@ impl DesktopHost for MinifbDesktopHost {
             return Ok(());
         }
         let snapshot = tree.clone();
-        self.draw_tree(&snapshot);
-        Ok(())
+        self.draw_tree(&snapshot)
     }
 }
 
