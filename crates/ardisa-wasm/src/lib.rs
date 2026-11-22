@@ -108,6 +108,8 @@ mod tests {
         assert!(legacy.starts_with("ARDISA-EXEC-V1\n"));
         let decoded = super::decode_program(&legacy).expect("V1 artifact decodes");
         assert_eq!(super::encode_program_v1(&decoded), legacy);
+        let _runtime = super::ArdisaBrowserRuntime::new(&legacy)
+            .expect("browser runtime accepts canonical V1 artifacts");
     }
 
     #[test]
