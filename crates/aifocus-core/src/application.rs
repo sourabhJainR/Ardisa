@@ -522,13 +522,19 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig, listener_
         validate_listener_host(host, listener_address)?;
     }
     if let Some((_, origin)) = headers.iter().find(|(name, _)| name == "origin") {
-        if !is_loopback_origin(origin) {
-            return Err(AppError::InvalidRequest("Origin must be a loopback origin".into()));
+        if !is_listener_origin(origin, listener_address) {
+            return Err(AppError::InvalidRequest(
+                "Origin must match the exact HTTP listener origin".into(),
+            ));
         }
     }
     if let Some((_, site)) = headers.iter().find(|(name, _)| name == "sec-fetch-site") {
-        if !matches!(site.to_ascii_lowercase().as_str(), "same-origin" | "same-site" | "none") {
-            return Err(AppError::InvalidRequest("cross-site or unknown Fetch Metadata site is not allowed".into()));
+        // A different localhost port is same-site but not same-origin. It must
+        // not be trusted to submit forms to state-changing application routes.
+        if !matches!(site.to_ascii_lowercase().as_str(), "same-origin" | "none") {
+            return Err(AppError::InvalidRequest(
+                "only same-origin or user-initiated Fetch Metadata requests are allowed".into(),
+            ));
         }
     }
     let length = content_length.unwrap_or(0);
@@ -585,6 +591,29 @@ fn validate_listener_host(host: &str, listener_address: SocketAddr) -> Result<()
             "Host header must match the loopback listener address".into(),
         ))
     }
+}
+
+fn is_listener_origin(origin: &str, listener_address: SocketAddr) -> bool {
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return false;
+    };
+    // This server only speaks plain HTTP. HTTPS origins and opaque "null"
+    // origins cannot be same-origin with this listener.
+    if !scheme.eq_ignore_ascii_case("http") || authority.is_empty() {
+        return false;
+    }
+    if authority.chars().any(|character| {
+        character.is_ascii_whitespace()
+            || matches!(character, '/' | '?' | '#' | '@' | '\\')
+    }) {
+        return false;
+    }
+
+    let authority = authority.to_ascii_lowercase();
+    let exact = listener_address.to_string().to_ascii_lowercase();
+    let localhost_alias = format!("localhost:{}", listener_address.port());
+    authority == exact
+        || (listener_address.ip().is_loopback() && authority == localhost_alias)
 }
 
 fn is_loopback_origin(origin: &str) -> bool {
