@@ -731,7 +731,7 @@ mod tests {
         drop(disconnected);
 
         let mut client = TcpStream::connect(address).unwrap();
-        client.write_all(b"GET / HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n").unwrap();
+        client.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
         worker.join().unwrap();
