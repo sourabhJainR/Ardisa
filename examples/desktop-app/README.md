@@ -28,7 +28,8 @@ cargo install --path crates/aifocus-cli --force
 ```sh
 cargo run -p ardisa -- check examples/desktop_app.ardisa
 cargo run -p ardisa -- run examples/desktop_app.ardisa
-python examples/desktop-app/app.py
+python3 examples/desktop-app/app.py  # macOS/Linux
+# Windows PowerShell: py -3 examples/desktop-app/app.py
 ```
 
 The window opens. Select Run Ardisa to execute the .ardisa program again. Close the window to exit. The demo uses the repository-local compiler via Cargo, so it works without a globally installed ardisa command. The first run builds the compiler and may take longer.
