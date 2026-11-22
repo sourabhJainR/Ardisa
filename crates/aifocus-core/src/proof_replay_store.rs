@@ -16,6 +16,9 @@ use std::{
 const MAGIC: &[u8; 8] = b"ARDPRP01";
 const ZERO_HASH: [u8; 32] = [0; 32];
 const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
+const MAX_JOURNAL_BYTES: usize = 64 * 1024 * 1024;
+const MAX_BATCH_ITEMS: usize = 65_536;
+const MAX_REPLAY_KEYS: usize = 65_536;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnchorState {
@@ -39,6 +42,7 @@ pub enum AnchoredReplayError {
     CorruptJournal,
     InvalidBatch,
     LockUnavailable,
+    JournalTooLarge,
 }
 impl From<AnchoredReplayError> for AdmissionError {
     fn from(error: AnchoredReplayError) -> Self {
@@ -46,6 +50,7 @@ impl From<AnchoredReplayError> for AdmissionError {
             AnchoredReplayError::AnchorMismatch
             | AnchoredReplayError::CorruptJournal
             | AnchoredReplayError::InvalidBatch => AdmissionError::ReplayOrRollback,
+            AnchoredReplayError::JournalTooLarge => AdmissionError::ReplayStoreUnavailable,
             _ => AdmissionError::ReplayStoreUnavailable,
         }
     }
@@ -101,18 +106,24 @@ impl AnchoredFileReplayStore {
 
     fn recover(&self, file: &mut File) -> Result<Snapshot, AnchoredReplayError> {
         let anchor = self.anchor.load().map_err(AnchoredReplayError::Anchor)?;
-        let mut bytes = Vec::new();
+        let length = file.metadata().map_err(io_error)?.len();
+        if length > MAX_JOURNAL_BYTES as u64 {
+            return Err(AnchoredReplayError::JournalTooLarge);
+        }
+        let mut bytes = Vec::with_capacity(length as usize);
         file.seek(SeekFrom::Start(0)).map_err(io_error)?;
         file.read_to_end(&mut bytes).map_err(io_error)?;
-        let snapshots = scan(&bytes)?;
-        let matched = snapshots.iter().find(|s| s.state == anchor).ok_or(AnchoredReplayError::AnchorMismatch)?;
+        // Keep only the current replay state and the one state matching the
+        // independent anchor. Retaining a full counter-map snapshot per record
+        // made recovery memory grow with records multiplied by tracked keys.
+        let matched = scan(&bytes, &anchor)?;
         // An unanchored tail can only be an interrupted append. Discard it.
         if matched.end as usize != bytes.len() {
             file.set_len(matched.end).map_err(io_error)?;
             file.sync_all().map_err(io_error)?;
         }
         file.seek(SeekFrom::End(0)).map_err(io_error)?;
-        Ok(Snapshot { state: matched.state.clone(), end: matched.end, counters: matched.counters.clone() })
+        Ok(matched)
     }
 }
 
@@ -120,7 +131,9 @@ impl ReplayStore for AnchoredFileReplayStore {
     fn commit_batch(&self, advances: &[(String, String, u64)]) -> Result<(), AdmissionError> {
         self.with_lock(|file| {
             let current = self.recover(file)?;
-            if advances.is_empty() { return Err(AnchoredReplayError::InvalidBatch); }
+            if advances.is_empty() || advances.len() > MAX_BATCH_ITEMS {
+                return Err(AnchoredReplayError::InvalidBatch);
+            }
             let mut sorted = advances.to_vec();
             sorted.sort_by(|a, b| (&a.0, &a.1, a.2).cmp(&(&b.0, &b.1, b.2)));
             let mut pending = current.counters.clone();
@@ -136,6 +149,9 @@ impl ReplayStore for AnchoredFileReplayStore {
                 let expected = pending.get(&id).copied().map_or(Some(1), |v| v.checked_add(1));
                 if expected != Some(*sequence) { return Err(AnchoredReplayError::InvalidBatch); }
                 pending.insert(id, *sequence);
+                if pending.len() > MAX_REPLAY_KEYS {
+                    return Err(AnchoredReplayError::InvalidBatch);
+                }
                 previous = Some((producer.clone(), key.clone(), *sequence));
             }
             let payload = encode_batch(&sorted)?;
@@ -176,6 +192,9 @@ fn put_string(out: &mut Vec<u8>, value: &str) -> Result<(), AnchoredReplayError>
     Ok(())
 }
 fn encode_batch(items: &[(String, String, u64)]) -> Result<Vec<u8>, AnchoredReplayError> {
+    if items.is_empty() || items.len() > MAX_BATCH_ITEMS {
+        return Err(AnchoredReplayError::InvalidBatch);
+    }
     let count = u32::try_from(items.len()).map_err(|_| AnchoredReplayError::InvalidBatch)?;
     let mut out = MAGIC.to_vec();
     out.extend_from_slice(&count.to_be_bytes());
@@ -212,16 +231,30 @@ fn decode_batch(payload: &[u8], counters: &mut BTreeMap<(String, String), u64>) 
         let sequence = u64::from_be_bytes(take(payload, &mut offset, 8)?.try_into().unwrap());
         if producer.is_empty() || key.is_empty() { return Err(AnchoredReplayError::CorruptJournal); }
         let id = (producer, key);
-        let expected = counters.get(&id).and_then(|v| v.checked_add(1)).unwrap_or(1);
+        let expected = match counters.get(&id) {
+            Some(last) => last.checked_add(1).ok_or(AnchoredReplayError::CorruptJournal)?,
+            None => 1,
+        };
         if sequence != expected { return Err(AnchoredReplayError::CorruptJournal); }
         counters.insert(id, sequence);
+        if counters.len() > MAX_REPLAY_KEYS {
+            return Err(AnchoredReplayError::CorruptJournal);
+        }
     }
     if offset != payload.len() { return Err(AnchoredReplayError::CorruptJournal); }
     Ok(())
 }
-fn scan(bytes: &[u8]) -> Result<Vec<Snapshot>, AnchoredReplayError> {
+fn scan(bytes: &[u8], anchor: &AnchorState) -> Result<Snapshot, AnchoredReplayError> {
+    if bytes.len() > MAX_JOURNAL_BYTES {
+        return Err(AnchoredReplayError::JournalTooLarge);
+    }
     let genesis = AnchorState { generation: 0, head_sha256: ZERO_HASH };
-    let mut result = vec![Snapshot { state: genesis, end: 0, counters: BTreeMap::new() }];
+    let mut current = Snapshot { state: genesis, end: 0, counters: BTreeMap::new() };
+    let mut matched = (current.state == *anchor).then(|| Snapshot {
+        state: current.state.clone(),
+        end: current.end,
+        counters: current.counters.clone(),
+    });
     let mut offset = 0usize;
     while bytes.len().saturating_sub(offset) >= 4 {
         let len = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
@@ -232,20 +265,25 @@ fn scan(bytes: &[u8]) -> Result<Vec<Snapshot>, AnchoredReplayError> {
         let previous: [u8; 32] = body[..32].try_into().unwrap();
         let payload = &body[32..body.len() - 32];
         let stored: [u8; 32] = body[body.len() - 32..].try_into().unwrap();
-        let last = result.last().unwrap();
-        if previous != last.state.head_sha256 || record_hash(&previous, payload) != stored {
+        if previous != current.state.head_sha256 || record_hash(&previous, payload) != stored {
             return Err(AnchoredReplayError::CorruptJournal);
         }
-        let mut counters = last.counters.clone();
-        decode_batch(payload, &mut counters)?;
-        result.push(Snapshot {
-            state: AnchorState { generation: last.state.generation.checked_add(1).ok_or(AnchoredReplayError::CorruptJournal)?, head_sha256: stored },
-            end: end as u64,
-            counters,
-        });
+        decode_batch(payload, &mut current.counters)?;
+        current.state = AnchorState {
+            generation: current.state.generation.checked_add(1).ok_or(AnchoredReplayError::CorruptJournal)?,
+            head_sha256: stored,
+        };
+        current.end = end as u64;
+        if current.state == *anchor {
+            matched = Some(Snapshot {
+                state: current.state.clone(),
+                end: current.end,
+                counters: current.counters.clone(),
+            });
+        }
         offset = end;
     }
-    Ok(result)
+    matched.ok_or(AnchoredReplayError::AnchorMismatch)
 }
 
 #[cfg(test)]
@@ -306,6 +344,54 @@ mod tests {
         let store = AnchoredFileReplayStore::open(&path, anchor).unwrap();
         assert_eq!(store.commit_batch(&[("ci".into(), "key".into(), 2)]), Err(AdmissionError::ReplayOrRollback));
         assert!(store.commit_batch(&[("ci".into(), "key".into(), 1)]).is_ok());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn decoder_rejects_sequence_wrap_after_u64_max() {
+        let mut counters = BTreeMap::from([(("ci".to_string(), "key".to_string()), u64::MAX)]);
+        let payload = encode_batch(&[("ci".into(), "key".into(), 1)]).unwrap();
+        assert_eq!(decode_batch(&payload, &mut counters), Err(AnchoredReplayError::CorruptJournal));
+        assert_eq!(counters.get(&("ci".into(), "key".into())), Some(&u64::MAX));
+    }
+
+    #[test]
+    fn recovery_truncates_an_unanchored_partial_append() {
+        let path = path();
+        let anchor = Arc::new(TestAnchor::default());
+        let store = AnchoredFileReplayStore::open(&path, anchor.clone()).unwrap();
+        store.commit_batch(&[("ci".into(), "key".into(), 1)]).unwrap();
+        drop(store);
+        let committed_len = fs::metadata(&path).unwrap().len();
+        OpenOptions::new().append(true).open(&path).unwrap()
+            .write_all(&[0, 0]).unwrap();
+
+        let reopened = AnchoredFileReplayStore::open(&path, anchor).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), committed_len);
+        assert!(reopened.commit_batch(&[("ci".into(), "key".into(), 2)]).is_ok());
+        drop(reopened);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn recovery_rejects_a_complete_corrupt_unanchored_tail() {
+        let path = path();
+        let anchor = Arc::new(TestAnchor::default());
+        let store = AnchoredFileReplayStore::open(&path, anchor.clone()).unwrap();
+        store.commit_batch(&[("ci".into(), "key".into(), 1)]).unwrap();
+        drop(store);
+
+        // A complete but invalid record is not an interrupted append and must
+        // not be silently discarded, even though the anchor matches an earlier
+        // record in the journal.
+        let mut corrupt = vec![0, 0, 0, 64];
+        corrupt.extend_from_slice(&[0; 64]);
+        OpenOptions::new().append(true).open(&path).unwrap()
+            .write_all(&corrupt).unwrap();
+        assert!(matches!(
+            AnchoredFileReplayStore::open(&path, anchor),
+            Err(AnchoredReplayError::CorruptJournal)
+        ));
         let _ = fs::remove_file(path);
     }
 }
