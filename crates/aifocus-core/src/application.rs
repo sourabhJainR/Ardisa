@@ -400,7 +400,8 @@ impl NativeHttpServer {
 }
 
 fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result<AppRequest, AppError> {
-    let deadline = Instant::now() + config.max_request_duration;
+    let deadline = Instant::now().checked_add(config.max_request_duration)
+        .ok_or_else(|| AppError::InvalidRequest("HTTP request deadline is out of range".into()))?;
     let mut header = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -408,6 +409,9 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result
             return Err(AppError::RequestLimit("HTTP request read deadline exceeded".into()));
         }
         stream.read_exact(&mut byte).map_err(|error| AppError::InvalidRequest(format!("incomplete HTTP headers: {error}")))?;
+        if Instant::now() >= deadline {
+            return Err(AppError::RequestLimit("HTTP request read deadline exceeded".into()));
+        }
         header.push(byte[0]);
         if header.len() > config.max_header_bytes {
             return Err(AppError::RequestLimit("HTTP header byte limit exceeded".into()));
@@ -479,6 +483,9 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result
         let count = stream.read(&mut body[received..])
             .map_err(|error| AppError::InvalidRequest(format!("incomplete HTTP request body: {error}")))?;
         if count == 0 { return Err(AppError::InvalidRequest("incomplete HTTP request body".into())); }
+        if Instant::now() >= deadline {
+            return Err(AppError::RequestLimit("HTTP request read deadline exceeded".into()));
+        }
         received += count;
     }
     let request = AppRequest {
