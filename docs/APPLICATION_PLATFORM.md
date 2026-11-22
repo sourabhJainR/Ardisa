@@ -65,3 +65,12 @@ The `compile_application_source` API extracts the application block, validates r
 - Apply resource budgets before allocating or dispatching request, UI or browser data.
 - Keep native and browser platform bindings outside the pure shared business-logic module.
 - Do not promote self-hosting readiness from application-platform work.
+
+
+## WebAssembly and browser runtime
+
+The `ardisa-wasm` crate builds the ARDISA-EXEC-V1 VM runtime for `wasm32-unknown-unknown`. It validates the executable artifact before execution and exposes a small JavaScript ABI (`runtime_abi_version`, `run_artifact`). The browser boundary accepts at most 1 MiB of artifact text, 32 arguments, bounded strings and JavaScript safe integers. Execution has explicit instruction, stack, frame and value limits; task spawning is disabled.
+
+The browser runtime executes Ardisa VM bytecode inside WebAssembly. It does not yet compile Ardisa source directly to native WebAssembly instructions. It grants no browser, network, filesystem, clock or process capability. The sample under `examples/browser` runs a user-selected local artifact without uploading it. Generate the JavaScript glue with `wasm-bindgen` for `wasm32-unknown-unknown` and place the generated package in `examples/browser/pkg`.
+
+The dedicated WebAssembly workflow checks the target build and tests the host boundary. Browser automation, source-to-WASM lowering, WASI support, and browser capability adapters remain separate follow-up work.
