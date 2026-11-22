@@ -53,3 +53,27 @@ python3 examples/web-app/server.py
 ```
 
 The server binds to 127.0.0.1 only. It is a local demonstration, not hardened for public exposure. The HTML/JavaScript is the browser presentation layer; the status decision is compiled and executed from web_app.ardisa.
+
+
+## Install the compiler
+
+From the repository root, install Rust stable with Cargo and build the CLI:
+
+```sh
+cargo build --release -p ardisa
+cargo install --path crates/aifocus-cli --force
+```
+
+On Windows PowerShell, use the same Cargo commands and start the server with:
+
+```powershell
+py -3 examples/web-app/server.py
+```
+
+On macOS/Linux:
+
+```sh
+python3 examples/web-app/server.py
+```
+
+The server binds to 127.0.0.1 only. It is a local demonstration, not hardened for public exposure. The HTML/JavaScript is the browser presentation layer; the status decision is compiled and executed from web_app.ardisa.
