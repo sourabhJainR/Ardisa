@@ -72,6 +72,30 @@ It also has a fixed initial window size and simple vertical layout. Those
 limitations remain open work; do not treat this backend as accessibility
 complete or as a substitute for platform-native controls.
 
+
+### WebAssembly browser runtime (initial execution target)
+
+The `ardisa-wasm` crate builds a browser-loadable WebAssembly runtime for
+canonical ARDISA-EXEC-V1 artifacts. It validates the artifact before execution,
+then invokes Ardisa functions through a bounded string-only browser ABI.
+Artifact size, argument count and size, instruction count, call depth and
+result size are limited. No DOM, network, filesystem, process or clock
+capability is granted by this runtime. Browser code must use explicit host
+adapters and safe DOM APIs.
+
+Build and validate the target with:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo check -p ardisa-wasm --target wasm32-unknown-unknown
+wasm-pack build crates/ardisa-wasm --target web --out-dir ../../examples/browser_app/pkg
+```
+
+A runnable host example is in `examples/browser_app`. This first target runs
+the existing Ardisa executable format inside a WebAssembly-compiled VM. It is
+not yet direct per-application Ardisa-to-WASM code generation, and its ABI v1
+supports string arguments and string results only.
+
 ## Next implementation gates
 
 1. **HTTP host hardening:** add bounded concurrent connections, graceful shutdown, keep-alive policy, TLS integration, richer route parameters and production-grade operational controls. The current single-connection local host is only the first transport slice.
