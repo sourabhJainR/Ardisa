@@ -17,6 +17,7 @@ const WIDTH: usize = 800;
 const HEIGHT: usize = 600;
 const MAX_TEXT_BYTES: usize = 4_096;
 const ROW_HEIGHT: usize = 52;
+const MAX_VISIBLE_ROWS: usize = 11;
 const LEFT: usize = 24;
 const TEXT_TOP: usize = 16;
 
@@ -138,7 +139,8 @@ impl MinifbDesktopHost {
                 let x = x as usize;
                 let y = y as usize;
                 let row = y.saturating_sub(TEXT_TOP) / ROW_HEIGHT;
-                let inside_control = x >= LEFT && x < WIDTH - LEFT
+                let inside_control = row < MAX_VISIBLE_ROWS
+                    && x >= LEFT && x < WIDTH - LEFT
                     && y >= TEXT_TOP + row * ROW_HEIGHT
                     && y < TEXT_TOP + row * ROW_HEIGHT + 36;
                 let target = inside_control.then(|| self.tree.as_ref()).flatten().and_then(|tree| {
