@@ -343,4 +343,44 @@ mod tests {
         assert!(store.commit_batch(&[("ci".into(), "key".into(), 1)]).is_ok());
         let _ = fs::remove_file(path);
     }
+
+    #[test]
+    fn recovery_truncates_an_unanchored_partial_append() {
+        let path = path();
+        let anchor = Arc::new(TestAnchor::default());
+        let store = AnchoredFileReplayStore::open(&path, anchor.clone()).unwrap();
+        store.commit_batch(&[("ci".into(), "key".into(), 1)]).unwrap();
+        drop(store);
+        let committed_len = fs::metadata(&path).unwrap().len();
+        OpenOptions::new().append(true).open(&path).unwrap()
+            .write_all(&[0, 0]).unwrap();
+
+        let reopened = AnchoredFileReplayStore::open(&path, anchor).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), committed_len);
+        assert!(reopened.commit_batch(&[("ci".into(), "key".into(), 2)]).is_ok());
+        drop(reopened);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn recovery_rejects_a_complete_corrupt_unanchored_tail() {
+        let path = path();
+        let anchor = Arc::new(TestAnchor::default());
+        let store = AnchoredFileReplayStore::open(&path, anchor.clone()).unwrap();
+        store.commit_batch(&[("ci".into(), "key".into(), 1)]).unwrap();
+        drop(store);
+
+        // A complete but invalid record is not an interrupted append and must
+        // not be silently discarded, even though the anchor matches an earlier
+        // record in the journal.
+        let mut corrupt = vec![0, 0, 0, 64];
+        corrupt.extend_from_slice(&[0; 64]);
+        OpenOptions::new().append(true).open(&path).unwrap()
+            .write_all(&corrupt).unwrap();
+        assert!(matches!(
+            AnchoredFileReplayStore::open(&path, anchor),
+            Err(AnchoredReplayError::CorruptJournal)
+        ));
+        let _ = fs::remove_file(path);
+    }
 }
