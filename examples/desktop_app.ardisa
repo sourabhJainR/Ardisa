@@ -1,6 +1,4 @@
 module desktop_app
 
-// Desktop application behaviour is owned by Ardisa.
-// The Python host only displays the result in a native window.
 fn main() -> String
   "Hello from the Ardisa desktop application"
