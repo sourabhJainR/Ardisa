@@ -72,8 +72,8 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          Get-FileHash Ardisa-0.1.0-x64.msi -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Ardisa-0.1.0-x64.msi" } | Out-File -Encoding ascii SHA256SUMS
-          Get-FileHash ardisa.cdx.json -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  ardisa.cdx.json" } | Out-File -Encoding ascii -Append SHA256SUMS
+          Get-FileHash target/Ardisa-0.1.0-x64.msi -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Ardisa-0.1.0-x64.msi" } | Out-File -Encoding ascii target/SHA256SUMS
+          Get-FileHash target/ardisa.cdx.json -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  ardisa.cdx.json" } | Out-File -Encoding ascii -Append target/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: ardisa-${{ matrix.platform }}-installer
