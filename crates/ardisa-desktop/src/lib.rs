@@ -38,6 +38,8 @@ pub struct MinifbDesktopHost {
     input_values: std::collections::BTreeMap<u32, String>,
     previous_mouse_down: bool,
     close_emitted: bool,
+    close_requested: bool,
+    enabled_overrides: std::collections::BTreeMap<u32, bool>,
 }
 impl MinifbDesktopHost {
     pub fn new(config: DesktopConfig) -> Result<Self, AppError> {
@@ -50,7 +52,7 @@ impl MinifbDesktopHost {
             .map_err(|error| AppError::Handler(format!("could not create native window: {error}")))?;
         Ok(Self { window, config, buffer: vec![BACKGROUND; config.width * config.height],
             events: VecDeque::new(), focused_input: None, input_values: Default::default(),
-            previous_mouse_down: false, close_emitted: false })
+            previous_mouse_down: false, close_emitted: false, close_requested: false, enabled_overrides: Default::default() })
     }
 
     fn draw_text(&mut self, x: usize, y: usize, value: &str, color: u32) {
@@ -120,7 +122,7 @@ impl MinifbDesktopHost {
         }
     }
     fn pump(&mut self, tree: &UiTree) -> Result<(), AppError> {
-        if !self.window.is_open() {
+        if self.close_requested || !self.window.is_open() {
             if !self.close_emitted { self.events.push_back(UiEvent { node_id: None, kind: UiEventKind::WindowClosed }); self.close_emitted = true; }
             return Ok(());
         }
@@ -132,8 +134,8 @@ impl MinifbDesktopHost {
             if let Some((mx, my)) = self.window.get_mouse_pos(MouseMode::Clamp) {
                 if let Some(node) = self.hit_test(tree, mx as usize, my as usize) {
                     match node.kind {
-                        UiNodeKind::Button if node.enabled => self.events.push_back(UiEvent { node_id: Some(node.id), kind: UiEventKind::Clicked }),
-                        UiNodeKind::TextInput if node.enabled => self.focused_input = Some(node.id),
+                        UiNodeKind::Button if self.enabled_overrides.get(&node.id).copied().unwrap_or(node.enabled) => self.events.push_back(UiEvent { node_id: Some(node.id), kind: UiEventKind::Clicked }),
+                        UiNodeKind::TextInput if self.enabled_overrides.get(&node.id).copied().unwrap_or(node.enabled) => self.focused_input = Some(node.id),
                         _ => self.focused_input = None,
                     }
                 } else { self.focused_input = None; }
@@ -169,10 +171,10 @@ impl DesktopHost for MinifbDesktopHost {
     fn next_event(&mut self) -> Result<Option<UiEvent>, AppError> { Ok(self.events.pop_front()) }
     fn apply(&mut self, action: &UiAction) -> Result<(), AppError> {
         match action {
-            UiAction::CloseWindow => self.window.update(),
+            UiAction::CloseWindow => { self.close_requested = true; },
             UiAction::SetText { node_id, text } if text.len() <= 4096 => { self.input_values.insert(*node_id, text.clone()); }
             UiAction::SetText { .. } => return Err(AppError::InvalidUiTree("desktop text exceeds byte limit".into())),
-            UiAction::SetEnabled { .. } => {}
+            UiAction::SetEnabled { node_id, enabled } => { self.enabled_overrides.insert(*node_id, *enabled); }
         }
         Ok(())
     }
