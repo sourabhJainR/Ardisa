@@ -874,7 +874,7 @@ mod tests {
         let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
         let mut client = TcpStream::connect(address).unwrap();
         client.write_all(format!(
-            "GET / HTTP/1.1\\r\\nHost: localhost:{}\\r\\nSec-Fetch-Site: cross-site\\r\\nSec-Fetch-Mode: no-cors\\r\\n\\r\\n",
+            "GET / HTTP/1.1\r\nHost: localhost:{}\r\nSec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: no-cors\r\n\r\n",
             address.port()
         ).as_bytes()).unwrap();
         let mut response = String::new();
@@ -899,7 +899,7 @@ mod tests {
         let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
         let mut client = TcpStream::connect(address).unwrap();
         client.write_all(format!(
-            "GET / HTTP/1.1\\r\\nHost: localhost:{}\\r\\nSec-Fetch-Site: same-origin\\r\\nSec-Fetch-Mode: cors\\r\\n\\r\\n",
+            "GET / HTTP/1.1\r\nHost: localhost:{}\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: cors\r\n\r\n",
             address.port()
         ).as_bytes()).unwrap();
         let mut response = String::new();
