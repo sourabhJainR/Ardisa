@@ -382,14 +382,15 @@ impl NativeHttpServer {
             .map_err(|error| AppError::Handler(format!("HTTP read timeout setup failed: {error}")))?;
         stream.set_write_timeout(Some(self.config.write_timeout))
             .map_err(|error| AppError::Handler(format!("HTTP write timeout setup failed: {error}")))?;
+        let mut head_only = false;
         let response = match read_http_request(&mut stream, self.config) {
-            Ok(request) => match app.dispatch(request, handler) {
-                Ok(response) => response,
-                Err(error) => error_response(&error),
+            Ok(request) => {
+                head_only = request.method == AppMethod::Head;
+                match app.dispatch(request, handler) { Ok(response) => response, Err(error) => error_response(&error) }
             },
             Err(error) => error_response(&error),
         };
-        write_http_response(&mut stream, &response)
+        write_http_response(&mut stream, &response, head_only)
     }
 }
 
@@ -479,7 +480,7 @@ fn error_response(error: &AppError) -> AppResponse {
     AppResponse::text(status, body)
 }
 
-fn write_http_response(stream: &mut TcpStream, response: &AppResponse) -> Result<(), AppError> {
+fn write_http_response(stream: &mut TcpStream, response: &AppResponse, head_only: bool) -> Result<(), AppError> {
     let reason = match response.status {
         200 => "OK", 201 => "Created", 202 => "Accepted", 204 => "No Content",
         301 => "Moved Permanently", 302 => "Found", 304 => "Not Modified",
@@ -498,7 +499,7 @@ fn write_http_response(stream: &mut TcpStream, response: &AppResponse) -> Result
     }
     output.push_str(&format!("content-length: {}\r\nconnection: close\r\n\r\n", response.body.len()));
     stream.write_all(output.as_bytes())
-        .and_then(|_| stream.write_all(&response.body))
+        .and_then(|_| if head_only { Ok(()) } else { stream.write_all(&response.body) })
         .and_then(|_| stream.flush())
         .map_err(|error| AppError::Handler(format!("HTTP response write failed: {error}")))
 }
@@ -587,6 +588,52 @@ mod tests {
         assert!(tree.apply_action(&UiAction::CloseWindow).unwrap());
         assert!(tree.validate_event(&UiEvent { node_id: Some(3),
             kind: UiEventKind::TextChanged("x".repeat(4_097)) }).is_err());
+    }
+
+    #[test]
+    fn native_http_server_dispatches_to_ardisa_and_preserves_query() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, HttpServerConfig::default()).unwrap();
+        let address = server.local_addr().unwrap();
+        let compiled = crate::compile_source(include_str!("../../../examples/shared_app_logic.ardisa")).unwrap();
+        let program = crate::native::decode_program(&compiled.artifact).unwrap();
+        let handler = NativeProgramHandler::new(program, ExecutionLimits::default()).unwrap();
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Get, "/", "home").unwrap();
+
+        let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(b"GET /?q=ardisa HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n").unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.ends_with("Hello from shared Ardisa application logic"));
+    }
+
+    #[test]
+    fn native_http_server_rejects_ambiguous_request_framing() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, HttpServerConfig::default()).unwrap();
+        let address = server.local_addr().unwrap();
+        let handler = EchoHandler;
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Post, "/", "post").unwrap();
+        let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(b"POST / HTTP/1.1\\r\\nHost: localhost\\r\\nContent-Length: 0\\r\\nContent-Length: 1\\r\\n\\r\\n").unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
     }
 
     #[test]
