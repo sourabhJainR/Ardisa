@@ -56,6 +56,20 @@ The repository is intentionally standalone: it has no runtime or build dependenc
 
 See the [AI-native source feature matrix](docs/AI_NATIVE_FEATURE_MATRIX.md) for the distinction between parsed declarations, runtime helper APIs, and verified source-to-runtime support. Also see `docs/ROADMAP.md`, `docs/DESIGN.md`, `docs/IMPLEMENTATION_PLAN.md`, the [security and resource-safety model](docs/SECURITY_MODEL.md), and the proposed [AI Mode language specification](docs/AI_MODE.md). AI Mode is currently a design specification, not yet accepted source syntax.
 
+## Application showcase
+
+Runnable console, desktop, and web integration samples are available in [examples](examples/README.md). Each sample keeps application behaviour in `.ardisa` source; desktop and web integrations use thin host adapters where native platform APIs are not yet part of the language.
+
+Quick start:
+
+```sh
+cargo run -p ardisa -- run examples/console.ardisa
+python examples/desktop-app/app.py
+python examples/web-app/server.py
+```
+
+See the showcase guide for download, installation, compilation, platform requirements, and limitations.
+
 ## Source files
 
 Use `*.ardisa` for Ardisa programs. The CLI accepts Ardisa source files and treats `.ardisa` as the canonical source extension. `ardisa run` executes the supported subset directly through the dependency-free native backend; `ardisa build` emits readable Rust when a Rust artifact is required.
