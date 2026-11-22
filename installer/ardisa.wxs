@@ -1,0 +1,16 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Ardisa" Manufacturer="Ardisa" Version="0.1.0"
+           UpgradeCode="{D3A9E721-7C64-4A53-9B38-3F4D51F4A711}">
+    <MediaTemplate />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Ardisa">
+        <Component Id="ArdisaExecutable" Guid="*">
+          <File Id="ArdisaExe" Source="$(var.ArdisaExe)" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="MainFeature" Title="Ardisa" Level="1">
+      <ComponentRef Id="ArdisaExecutable" />
+    </Feature>
+  </Package>
+</Wix>
