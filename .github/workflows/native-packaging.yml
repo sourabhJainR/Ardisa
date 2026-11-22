@@ -64,12 +64,19 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          $install = Start-Process msiexec.exe -ArgumentList '/i', 'target/Ardisa-0.1.0-x64.msi', '/qn', '/norestart' -Wait -PassThru
-          if ($install.ExitCode -notin @(0, 3010)) { exit $install.ExitCode }
-          & "$env:ProgramFiles\\Ardisa\\ardisa.exe" --help
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $remove = Start-Process msiexec.exe -ArgumentList '/x', 'target/Ardisa-0.1.0-x64.msi', '/qn', '/norestart' -Wait -PassThru
+          $log = Join-Path $PWD 'target/msi-install.log'
+          $install = Start-Process msiexec.exe -ArgumentList '/i', (Join-Path $PWD 'target/Ardisa-0.1.0-x64.msi'), '/qn', '/norestart', '/l*v', $log -Wait -PassThru
+          Write-Host "MSI install exit code: $($install.ExitCode)"
+          if ($install.ExitCode -notin @(0, 3010)) { Get-Content $log -Tail 80; exit $install.ExitCode }
+          $installedExe = Join-Path $env:ProgramFiles 'Ardisa/ardisa.exe'
+          if (-not (Test-Path $installedExe)) { Get-ChildItem $env:ProgramFiles -Recurse -Filter ardisa.exe -ErrorAction SilentlyContinue; Get-Content $log -Tail 80; throw "Installed Ardisa executable not found." }
+          & $installedExe --help
+          $runExit = $LASTEXITCODE
+          if ($runExit -ne 0) { throw "Installed Ardisa CLI returned exit code $runExit." }
+          $remove = Start-Process msiexec.exe -ArgumentList '/x', (Join-Path $PWD 'target/Ardisa-0.1.0-x64.msi'), '/qn', '/norestart' -Wait -PassThru
+          Write-Host "MSI uninstall exit code: $($remove.ExitCode)"
           if ($remove.ExitCode -notin @(0, 3010)) { exit $remove.ExitCode }
+          if (Test-Path $installedExe) { throw "Ardisa executable remains after MSI uninstall." }
       - name: Build macOS PKG installer
         if: matrix.platform == 'macos'
         shell: bash
