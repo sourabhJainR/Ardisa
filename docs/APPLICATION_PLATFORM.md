@@ -28,6 +28,27 @@ The HTTP side now includes a bounded native TCP listener, an HTTP/1.0 and HTTP/1
 
 These APIs are runtime embedding contracts. They are not yet accepted source-level language syntax and are not advertised as complete native desktop or HTTP APIs.
 
+## First-class source declarations (initial slice)
+
+Application route metadata can now be declared in Ardisa source rather than repeated in host-language setup:
+
+```ardisa
+module inventory_app
+
+app inventory
+  capability http_listen
+  route GET "/" home
+  route GET "/health" health
+
+fn home(method: String, path: String, query: String, body: String) -> String
+  "Inventory service"
+
+fn health(method: String, path: String, query: String, body: String) -> String
+  "ok"
+```
+
+The `compile_application_source` API extracts the application block, validates route paths, methods, duplicate routes, handler names and explicit capabilities, then compiles the remaining module through the normal compiler pipeline. `ApplicationDefinition::build_runtime` creates the bounded shared router. Host code must still grant the declared capability through `AppPolicy`; source declarations do not grant permissions. This initial slice covers HTTP route metadata only; UI declarations, typed handler request/response values and target-specific lowering remain future work.
+
 ## Next implementation gates
 
 1. **HTTP host hardening:** add bounded concurrent connections, graceful shutdown, keep-alive policy, TLS integration, richer route parameters and production-grade operational controls. The current single-connection local host is only the first transport slice.
