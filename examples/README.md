@@ -75,7 +75,7 @@ fn echo_query(method: String, path: String, query: String, body: String) -> Stri
   query
 ```
 
-The explicit `--allow-http-listen` flag grants the listener capability. The server handles one connection at a time, enforces a total request-read deadline, continues after client disconnects, and has no TLS support; bind to loopback for local development. Do not expose this initial host directly to the public internet.
+The explicit `--allow-http-listen` flag grants the listener capability. The current host accepts numeric loopback addresses only and rejects non-loopback binds until authenticated TLS support exists. It handles one connection at a time, enforces a total request-read deadline, and continues after client disconnects. This is a local development host, not a production public HTTP server.
 
 ## Current platform boundary
 
