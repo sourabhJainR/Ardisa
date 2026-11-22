@@ -96,6 +96,21 @@ the existing Ardisa executable format inside a WebAssembly-compiled VM. It is
 not yet direct per-application Ardisa-to-WASM code generation, and its ABI v1
 supports string arguments and string results only.
 
+
+### Native installer pipeline (initial release packaging)
+
+The native packaging workflow builds the Ardisa CLI and creates:
+- Linux x86_64 `.deb` installer
+- Windows x64 `.msi` installer using WiX
+- macOS `.pkg` installer
+
+Each platform artifact includes a CycloneDX SBOM and SHA-256 checksums.
+Tagged releases are signed with Sigstore keyless signatures and receive
+GitHub build-provenance attestations. The MSI and PKG are not yet signed with
+Microsoft Authenticode or an Apple Developer ID certificate; those require
+maintainer-managed signing identities. The current packages install the CLI
+only, not standalone GUI application bundles.
+
 ## Next implementation gates
 
 1. **HTTP host hardening:** add bounded concurrent connections, graceful shutdown, keep-alive policy, TLS integration, richer route parameters and production-grade operational controls. The current single-connection local host is only the first transport slice.
