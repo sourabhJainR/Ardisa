@@ -31,6 +31,8 @@ jobs:
         run: python3 -m unittest tests/test_rust_capability_manifest.py
       - run: cargo check --workspace --all-targets
       - run: cargo test --workspace --all-targets
+      - name: Smoke-test Ardisa application examples
+        run: python3 examples/smoke_test.py
 
   bootstrap:
     name: Bootstrap probe stage-2/stage-3 reproducibility gate

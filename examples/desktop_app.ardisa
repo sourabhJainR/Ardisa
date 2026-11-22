@@ -1,0 +1,4 @@
+module desktop_app
+
+fn main() -> String
+  "Hello from the Ardisa desktop application"
