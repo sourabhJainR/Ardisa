@@ -209,7 +209,7 @@ mod tests {
         let handler = NativeProgramHandler::new(program, ExecutionLimits::default()).unwrap();
         let response = runtime.dispatch(AppRequest::new(AppMethod::Get, "/"), &handler).unwrap();
         assert_eq!(response.status, 200);
-        assert_eq!(response.body, b"ok");
+        assert_eq!(response.body.as_slice(), b"ok");
     }
     #[test]
     fn rejects_undeclared_capability_and_duplicate_route() {
