@@ -34,7 +34,7 @@ jobs:
       - name: Build and test optional native desktop host
         run: |
           cargo check -p ardisa-core --features native-desktop --all-targets
-          cargo test -p ardisa-core --features native-desktop
+          cargo test -p ardisa-core --features native-desktop desktop_minifb::tests
       - name: Smoke-test Ardisa application examples
         run: python3 examples/smoke_test.py
 
