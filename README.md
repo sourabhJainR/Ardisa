@@ -64,8 +64,10 @@ Quick start:
 
 ```sh
 cargo run -p ardisa -- run examples/console.ardisa
-python examples/desktop-app/app.py
-python examples/web-app/server.py
+python3 examples/desktop-app/app.py  # macOS/Linux
+# Windows PowerShell: py -3 examples/desktop-app/app.py
+python3 examples/web-app/server.py  # macOS/Linux
+# Windows PowerShell: py -3 examples/web-app/server.py
 ```
 
 See the showcase guide for download, installation, compilation, platform requirements, and limitations.
