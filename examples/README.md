@@ -62,14 +62,17 @@ Open http://127.0.0.1:8080 and select Run check again to invoke Ardisa again. St
 The native HTTP host compiles the shared Ardisa handler and runs it through the native VM. It accepts HTTP/1.0 and HTTP/1.1 with bounded Content-Length bodies. It rejects chunked transfer encoding, duplicate Content-Length, unsupported Expect framing and unsafe request paths.
 
 ```sh
-cargo run -p ardisa -- serve examples/shared_app_logic.ardisa --allow-http-listen 127.0.0.1:8080 GET / home
+cargo run -p ardisa -- serve examples/shared_app_logic.ardisa --allow-http-listen 127.0.0.1:8080 GET / home GET /echo echo_query
 ```
 
-Open http://127.0.0.1:8080. The example handler ABI is:
+Open http://127.0.0.1:8080. The `/echo?q=ardisa` route returns the raw query string. The example handler ABI is:
 
 ```ardisa
 fn home(method: String, path: String, query: String, body: String) -> String
   "Hello from shared Ardisa application logic"
+
+fn echo_query(method: String, path: String, query: String, body: String) -> String
+  query
 ```
 
 The explicit `--allow-http-listen` flag grants the listener capability. The server handles one connection at a time and has no TLS support; bind to loopback for local development. Do not expose this initial host directly to the public internet.
