@@ -231,7 +231,10 @@ fn decode_batch(payload: &[u8], counters: &mut BTreeMap<(String, String), u64>) 
         let sequence = u64::from_be_bytes(take(payload, &mut offset, 8)?.try_into().unwrap());
         if producer.is_empty() || key.is_empty() { return Err(AnchoredReplayError::CorruptJournal); }
         let id = (producer, key);
-        let expected = counters.get(&id).and_then(|v| v.checked_add(1)).unwrap_or(1);
+        let expected = match counters.get(&id) {
+            Some(last) => last.checked_add(1).ok_or(AnchoredReplayError::CorruptJournal)?,
+            None => 1,
+        };
         if sequence != expected { return Err(AnchoredReplayError::CorruptJournal); }
         counters.insert(id, sequence);
         if counters.len() > MAX_REPLAY_KEYS {
@@ -342,6 +345,14 @@ mod tests {
         assert_eq!(store.commit_batch(&[("ci".into(), "key".into(), 2)]), Err(AdmissionError::ReplayOrRollback));
         assert!(store.commit_batch(&[("ci".into(), "key".into(), 1)]).is_ok());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn decoder_rejects_sequence_wrap_after_u64_max() {
+        let mut counters = BTreeMap::from([(("ci".to_string(), "key".to_string()), u64::MAX)]);
+        let payload = encode_batch(&[("ci".into(), "key".into(), 1)]).unwrap();
+        assert_eq!(decode_batch(&payload, &mut counters), Err(AnchoredReplayError::CorruptJournal));
+        assert_eq!(counters.get(&("ci".into(), "key".into())), Some(&u64::MAX));
     }
 
     #[test]
