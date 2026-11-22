@@ -814,7 +814,7 @@ mod tests {
         let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
         let mut client = TcpStream::connect(address).unwrap();
         client.write_all(format!(
-            "GET / HTTP/1.1\\r\\nHost: attacker.example:{}\\r\\n\\r\\n",
+            "GET / HTTP/1.1\r\nHost: attacker.example:{}\r\n\r\n",
             address.port()
         ).as_bytes()).unwrap();
         let mut response = String::new();
@@ -839,7 +839,7 @@ mod tests {
         let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
         let mut client = TcpStream::connect(address).unwrap();
         client.write_all(format!(
-            "GET / HTTP/1.1\\r\\nHost: 127.0.0.1:{}\\r\\nOrigin: https://attacker.example\\r\\n\\r\\n",
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: https://attacker.example\r\n\r\n",
             address.port()
         ).as_bytes()).unwrap();
         let mut response = String::new();
@@ -864,7 +864,7 @@ mod tests {
         let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
         let mut client = TcpStream::connect(address).unwrap();
         client.write_all(format!(
-            "GET / HTTP/1.1\\r\\nHost: localhost:{}\\r\\nOrigin: http://localhost:3000\\r\\n\\r\\n",
+            "GET / HTTP/1.1\r\nHost: localhost:{}\r\nOrigin: http://localhost:3000\r\n\r\n",
             address.port()
         ).as_bytes()).unwrap();
         let mut response = String::new();
