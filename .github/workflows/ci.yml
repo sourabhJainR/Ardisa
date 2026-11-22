@@ -38,6 +38,21 @@ jobs:
       - name: Smoke-test Ardisa application examples
         run: python3 examples/smoke_test.py
 
+  desktop-host-matrix:
+    name: Native desktop host (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile and test native desktop backend
+        run: |
+          cargo check -p ardisa-core --features native-desktop --all-targets
+          cargo test -p ardisa-core --features native-desktop
+
   bootstrap:
     name: Bootstrap probe stage-2/stage-3 reproducibility gate
     runs-on: ubuntu-latest
