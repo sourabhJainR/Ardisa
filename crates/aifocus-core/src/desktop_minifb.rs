@@ -98,7 +98,7 @@ impl MinifbDesktopHost {
         if let Some(node_id) = self.focused_input {
             let mut changed = None;
             if let Some(tree) = self.tree.as_mut() {
-                if let Some(node) = tree.nodes().get(&node_id) {
+                if let Some(node) = tree.nodes().get(&node_id).filter(|node| node.kind == UiNodeKind::TextInput && node.enabled) {
                     let mut value = node.text.clone();
                     for key in pressed {
                         match key {
@@ -116,7 +116,7 @@ impl MinifbDesktopHost {
                                 }
                             }
                         }
-                        if value.len() > MAX_TEXT_BYTES { value.truncate(MAX_TEXT_BYTES); }
+                        while value.len() > MAX_TEXT_BYTES { value.pop(); }
                     }
                     if value != node.text { changed = Some(value); }
                 }
@@ -131,9 +131,14 @@ impl MinifbDesktopHost {
 
         let mouse_down = self.window.get_mouse_down(MouseButton::Left);
         if mouse_down && !self.mouse_was_down {
-            if let Some((_, y)) = self.window.get_mouse_pos(MouseMode::Discard) {
-                let row = ((y as usize).saturating_sub(TEXT_TOP)) / ROW_HEIGHT;
-                let target = self.tree.as_ref().and_then(|tree| {
+            if let Some((x, y)) = self.window.get_mouse_pos(MouseMode::Discard) {
+                let x = x as usize;
+                let y = y as usize;
+                let row = y.saturating_sub(TEXT_TOP) / ROW_HEIGHT;
+                let inside_control = x >= LEFT && x < WIDTH - LEFT
+                    && y >= TEXT_TOP + row * ROW_HEIGHT
+                    && y < TEXT_TOP + row * ROW_HEIGHT + 36;
+                let target = inside_control.then(|| self.tree.as_ref()).flatten().and_then(|tree| {
                     tree.nodes().values()
                         .filter(|node| node.kind != UiNodeKind::Window)
                         .nth(row)
