@@ -2,7 +2,6 @@
 """Smoke-test the Ardisa console, desktop logic, and web integration examples."""
 from pathlib import Path
 import json
-import os
 import subprocess
 import sys
 import time
