@@ -2,3 +2,6 @@ module shared_app_logic
 
 fn home(method: String, path: String, query: String, body: String) -> String
   "Hello from shared Ardisa application logic"
+
+fn echo_query(method: String, path: String, query: String, body: String) -> String
+  query
