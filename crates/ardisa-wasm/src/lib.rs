@@ -119,7 +119,7 @@ mod tests {
                 "main".to_owned(),
                 ardisa_core::native::NativeFunction {
                     params: Vec::new(),
-                    code: vec![NativeInstr::Spawn {
+                    code: vec![super::NativeInstr::Spawn {
                         name: "child".into(),
                         callee: "worker".into(),
                         argc: 0,
