@@ -97,13 +97,15 @@ impl MinifbDesktopHost {
         for (index, node) in tree.nodes().values().filter(|node| node.kind != UiNodeKind::Window && node.kind != UiNodeKind::Container).cloned().enumerate() {
             let (x, y, width, height) = self.bounds(index);
             if y >= self.config.height { break; }
+            let enabled = self.enabled_overrides.get(&node.id).copied().unwrap_or(node.enabled);
+            let text = self.input_values.get(&node.id).cloned().unwrap_or_else(|| node.text.clone());
             match node.kind {
                 UiNodeKind::Label => {
-                    self.draw_text(x + 4, y + 12, &node.text, FOREGROUND);
+                    self.draw_text(x + 4, y + 12, &text, if enabled { FOREGROUND } else { DISABLED });
                 }
                 UiNodeKind::Button => {
-                    self.rect(x, y, width, height, if node.enabled { ACCENT } else { DISABLED });
-                    self.draw_text(x + 12, y + 13, &node.text, 0x00FFFFFF);
+                    self.rect(x, y, width, height, if enabled { ACCENT } else { DISABLED });
+                    self.draw_text(x + 12, y + 13, &text, 0x00FFFFFF);
                 }
                 UiNodeKind::TextInput => {
                     self.rect(x, y, width, height, 0x00FFFFFF);
@@ -112,7 +114,7 @@ impl MinifbDesktopHost {
                     self.rect(x, y, 1, height, BORDER);
                     self.rect(x + width - 1, y, 1, height, BORDER);
                     let value = self.input_values.get(&node.id).cloned().unwrap_or_else(|| node.text.clone());
-                    self.draw_text(x + 8, y + 13, &value, if node.enabled { FOREGROUND } else { DISABLED });
+                    self.draw_text(x + 8, y + 13, &value, if enabled { FOREGROUND } else { DISABLED });
                 }
                 _ => {}
             }
@@ -132,10 +134,16 @@ impl MinifbDesktopHost {
         let mouse_down = self.window.get_mouse_down(MouseButton::Left);
         if mouse_down && !self.previous_mouse_down {
             if let Some((mx, my)) = self.window.get_mouse_pos(MouseMode::Clamp) {
-                if let Some(node) = self.hit_test(tree, mx as usize, my as usize) {
-                    match node.kind {
-                        UiNodeKind::Button if self.enabled_overrides.get(&node.id).copied().unwrap_or(node.enabled) => self.events.push_back(UiEvent { node_id: Some(node.id), kind: UiEventKind::Clicked }),
-                        UiNodeKind::TextInput if self.enabled_overrides.get(&node.id).copied().unwrap_or(node.enabled) => self.focused_input = Some(node.id),
+                let selected = self.hit_test(tree, mx as usize, my as usize)
+                    .map(|node| (node.id, node.kind, node.enabled, node.text.clone()));
+                if let Some((node_id, kind, node_enabled, initial_text)) = selected {
+                    let enabled = self.enabled_overrides.get(&node_id).copied().unwrap_or(node_enabled);
+                    match kind {
+                        UiNodeKind::Button if enabled => self.events.push_back(UiEvent { node_id: Some(node_id), kind: UiEventKind::Clicked }),
+                        UiNodeKind::TextInput if enabled => {
+                            self.input_values.entry(node_id).or_insert(initial_text);
+                            self.focused_input = Some(node_id);
+                        }
                         _ => self.focused_input = None,
                     }
                 } else { self.focused_input = None; }
@@ -143,7 +151,8 @@ impl MinifbDesktopHost {
         }
         self.previous_mouse_down = mouse_down;
         if let Some(id) = self.focused_input {
-            let mut value = self.input_values.get(&id).cloned().unwrap_or_default();
+            let initial = tree.nodes().get(&id).map(|node| node.text.clone()).unwrap_or_default();
+            let mut value = self.input_values.get(&id).cloned().unwrap_or(initial);
             let mut changed = false;
             for key in self.window.get_keys_pressed(KeyRepeat::Yes) {
                 match key {
