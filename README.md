@@ -54,6 +54,8 @@ Bootstrap-to-self-hosting development is in progress. The repository now has a d
 
 The repository is intentionally standalone: it has no runtime or build dependency on an external agent framework. Engineering feedback and learning are repository-local compiler facilities.
 
+See [Application Platform](docs/APPLICATION_PLATFORM.md) for the shared runtime, host contracts and cross-platform implementation gates. Track the work in [Issue #397](https://github.com/sourabhJainR/Ardisa/issues/397).
+
 See the [AI-native source feature matrix](docs/AI_NATIVE_FEATURE_MATRIX.md) for the distinction between parsed declarations, runtime helper APIs, and verified source-to-runtime support. Also see `docs/ROADMAP.md`, `docs/DESIGN.md`, `docs/IMPLEMENTATION_PLAN.md`, the [security and resource-safety model](docs/SECURITY_MODEL.md), and the proposed [AI Mode language specification](docs/AI_MODE.md). AI Mode is currently a design specification, not yet accepted source syntax.
 
 ## Application showcase
