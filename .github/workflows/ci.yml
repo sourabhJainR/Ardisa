@@ -35,6 +35,8 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check -p ardisa-wasm --target wasm32-unknown-unknown
+          cargo install wasm-pack --version 0.13.1 --locked
+          wasm-pack test --headless --chrome crates/ardisa-wasm
       - name: Build and test optional native desktop host
         run: |
           cargo check -p ardisa-core --features native-desktop --all-targets
