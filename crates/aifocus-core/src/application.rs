@@ -474,6 +474,7 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig, listener_
     let mut content_length = None;
     let mut host_count = 0usize;
     let mut origin_count = 0usize;
+    let mut fetch_site_count = 0usize;
     let mut transfer_encoding = false;
     for line in lines {
         let (name, value) = line.split_once(':')
@@ -498,6 +499,7 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig, listener_
             "transfer-encoding" => transfer_encoding = true,
             "host" => host_count += 1,
             "origin" => origin_count += 1,
+            "sec-fetch-site" => fetch_site_count += 1,
             "expect" => return Err(AppError::InvalidRequest("Expect request framing is not supported".into())),
             _ => {}
         }
@@ -510,6 +512,9 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig, listener_
     if origin_count > 1 {
         return Err(AppError::InvalidRequest("duplicate Origin headers are not allowed".into()));
     }
+    if fetch_site_count > 1 {
+        return Err(AppError::InvalidRequest("duplicate Sec-Fetch-Site headers are not allowed".into()));
+    }
     if parts[2] == "HTTP/1.1" && host_count != 1 {
         return Err(AppError::InvalidRequest("HTTP/1.1 requires exactly one Host header".into()));
     }
@@ -519,6 +524,11 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig, listener_
     if let Some((_, origin)) = headers.iter().find(|(name, _)| name == "origin") {
         if !is_loopback_origin(origin) {
             return Err(AppError::InvalidRequest("Origin must be a loopback origin".into()));
+        }
+    }
+    if let Some((_, site)) = headers.iter().find(|(name, _)| name == "sec-fetch-site") {
+        if !matches!(site.to_ascii_lowercase().as_str(), "same-origin" | "same-site" | "none") {
+            return Err(AppError::InvalidRequest("cross-site or unknown Fetch Metadata site is not allowed".into()));
         }
     }
     let length = content_length.unwrap_or(0);
@@ -846,6 +856,56 @@ mod tests {
         client.read_to_string(&mut response).unwrap();
         worker.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+    }
+
+    #[test]
+    fn native_http_server_rejects_cross_site_fetch_metadata_without_origin() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, HttpServerConfig::default()).unwrap();
+        let address = server.local_addr().unwrap();
+        let handler = EchoHandler;
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Get, "/", "home").unwrap();
+
+        let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(format!(
+            "GET / HTTP/1.1\\r\\nHost: localhost:{}\\r\\nSec-Fetch-Site: cross-site\\r\\nSec-Fetch-Mode: no-cors\\r\\n\\r\\n",
+            address.port()
+        ).as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+    }
+
+    #[test]
+    fn native_http_server_accepts_same_origin_fetch_metadata_without_origin() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, HttpServerConfig::default()).unwrap();
+        let address = server.local_addr().unwrap();
+        let handler = EchoHandler;
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Get, "/", "home").unwrap();
+
+        let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(format!(
+            "GET / HTTP/1.1\\r\\nHost: localhost:{}\\r\\nSec-Fetch-Site: same-origin\\r\\nSec-Fetch-Mode: cors\\r\\n\\r\\n",
+            address.port()
+        ).as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
     }
 
     #[test]
