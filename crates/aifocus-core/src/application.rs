@@ -182,6 +182,9 @@ impl AppRuntime {
         if !(200..=599).contains(&response.status) {
             return Err(AppError::InvalidResponse("response status must be between 200 and 599".into()));
         }
+        if matches!(response.status, 204 | 304) && !response.body.is_empty() {
+            return Err(AppError::InvalidResponse("204 and 304 responses cannot include a body".into()));
+        }
         validate_headers(&response.headers, self.limits.max_headers, self.limits.max_header_bytes)
             .map_err(|e| AppError::InvalidResponse(e.to_string()))?;
         if response.headers.iter().any(|(name, _)| matches!(name.to_ascii_lowercase().as_str(), \"content-length\" | \"transfer-encoding\" | \"connection\")) {
@@ -432,7 +435,9 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result
     for line in lines {
         let (name, value) = line.split_once(':')
             .ok_or_else(|| AppError::InvalidRequest("malformed HTTP header".into()))?;
-        let name = name.trim();
+        if name.trim() != name {
+            return Err(AppError::InvalidRequest("whitespace before HTTP header colon is not allowed".into()));
+        }
         let value = value.trim();
         if !valid_header_name(name) || !valid_header_value(value) {
             return Err(AppError::InvalidRequest("invalid HTTP header name or value".into()));
@@ -440,6 +445,9 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result
         match name.to_ascii_lowercase().as_str() {
             "content-length" => {
                 if content_length.is_some() { return Err(AppError::InvalidRequest("duplicate Content-Length is not allowed".into())); }
+                if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(AppError::InvalidRequest("invalid Content-Length".into()));
+                }
                 let length = value.parse::<usize>().map_err(|_| AppError::InvalidRequest("invalid Content-Length".into()))?;
                 if length > config.max_body_bytes { return Err(AppError::RequestLimit("HTTP request body byte limit exceeded".into())); }
                 content_length = Some(length);
@@ -613,6 +621,19 @@ mod tests {
         worker.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.ends_with("Hello from shared Ardisa application logic"));
+    }
+
+    #[test]
+    fn native_ardisa_handler_receives_the_raw_query_string() {
+        let source = include_str!("../../../examples/shared_app_logic.ardisa");
+        let compiled = crate::compile_source(source).unwrap();
+        let program = crate::native::decode_program(&compiled.artifact).unwrap();
+        let handler = NativeProgramHandler::new(program, ExecutionLimits::default()).unwrap();
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Get, "/echo", "echo_query").unwrap();
+        let request = AppRequest::new(AppMethod::Get, "/echo").with_query("q=ardisa&mode=test");
+        let response = app.dispatch(request, &handler).unwrap();
+        assert_eq!(response.body, b"q=ardisa&mode=test");
     }
 
     #[test]
