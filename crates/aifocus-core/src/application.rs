@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 use crate::native::{ExecutionLimits, NativeProgram, NativeValue, ValidatedNativeProgram};
 
@@ -367,7 +367,17 @@ impl NativeHttpServer {
             || config.max_request_duration.is_zero() {
             return Err(AppError::InvalidRequest("HTTP server limits and timeouts must be non-zero".into()));
         }
-        let listener = TcpListener::bind(address)
+        let socket_address = address.parse::<SocketAddr>().map_err(|_| {
+            AppError::InvalidRequest(
+                "native HTTP server requires a numeric loopback socket address".into(),
+            )
+        })?;
+        if !socket_address.ip().is_loopback() {
+            return Err(AppError::InvalidRequest(
+                "native HTTP server accepts loopback addresses only until authenticated TLS is supported".into(),
+            ));
+        }
+        let listener = TcpListener::bind(socket_address)
             .map_err(|error| AppError::Handler(format!("HTTP bind failed: {error}")))?;
         Ok(Self { listener, config })
     }
@@ -680,6 +690,22 @@ mod tests {
         assert!(tree.apply_action(&UiAction::CloseWindow).unwrap());
         assert!(tree.validate_event(&UiEvent { node_id: Some(3),
             kind: UiEventKind::TextChanged("x".repeat(4_097)) }).is_err());
+    }
+
+    #[test]
+    fn native_http_server_rejects_non_loopback_bind_addresses() {
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        for address in ["0.0.0.0:0", "[::]:0", "192.0.2.1:0", "localhost:0"] {
+            let result = NativeHttpServer::bind(
+                address,
+                &policy,
+                HttpServerConfig::default(),
+            );
+            assert!(
+                matches!(result, Err(AppError::InvalidRequest(message)) if message.contains("loopback")),
+                "address {address} must be rejected before binding"
+            );
+        }
     }
 
     #[test]
