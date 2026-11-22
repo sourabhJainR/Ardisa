@@ -111,8 +111,8 @@ impl MinifbDesktopHost {
                     self.rect(x, y + height - 1, width, 1, BORDER);
                     self.rect(x, y, 1, height, BORDER);
                     self.rect(x + width - 1, y, 1, height, BORDER);
-                    let value = self.input_values.get(&node.id).map(String::as_str).unwrap_or(&node.text);
-                    self.draw_text(x + 8, y + 13, value, if node.enabled { FOREGROUND } else { DISABLED });
+                    let value = self.input_values.get(&node.id).cloned().unwrap_or_else(|| node.text.clone());
+                    self.draw_text(x + 8, y + 13, &value, if node.enabled { FOREGROUND } else { DISABLED });
                 }
                 _ => {}
             }
