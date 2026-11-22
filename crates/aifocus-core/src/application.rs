@@ -412,8 +412,9 @@ impl NativeHttpServer {
             .map_err(|error| AppError::Handler(format!("HTTP read timeout setup failed: {error}")))?;
         stream.set_write_timeout(Some(self.config.write_timeout))
             .map_err(|error| AppError::Handler(format!("HTTP write timeout setup failed: {error}")))?;
+        let local_addr = self.local_addr()?;
         let mut head_only = false;
-        let response = match read_http_request(&mut stream, self.config) {
+        let response = match read_http_request(&mut stream, self.config, local_addr) {
             Ok(request) => {
                 head_only = request.method == AppMethod::Head;
                 match app.dispatch(request, handler) { Ok(response) => response, Err(error) => error_response(&error) }
@@ -424,7 +425,7 @@ impl NativeHttpServer {
     }
 }
 
-fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result<AppRequest, AppError> {
+fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig, listener_address: SocketAddr) -> Result<AppRequest, AppError> {
     let deadline = Instant::now().checked_add(config.max_request_duration)
         .ok_or_else(|| AppError::InvalidRequest("HTTP request deadline is out of range".into()))?;
     let mut header = Vec::new();
@@ -472,6 +473,7 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result
     let mut headers = Vec::new();
     let mut content_length = None;
     let mut host_count = 0usize;
+    let mut origin_count = 0usize;
     let mut transfer_encoding = false;
     for line in lines {
         let (name, value) = line.split_once(':')
@@ -495,14 +497,29 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result
             }
             "transfer-encoding" => transfer_encoding = true,
             "host" => host_count += 1,
+            "origin" => origin_count += 1,
             "expect" => return Err(AppError::InvalidRequest("Expect request framing is not supported".into())),
             _ => {}
         }
         headers.push((name.to_ascii_lowercase(), value.to_owned()));
     }
     if transfer_encoding { return Err(AppError::InvalidRequest("Transfer-Encoding is not supported; use bounded Content-Length".into())); }
+    if host_count > 1 {
+        return Err(AppError::InvalidRequest("duplicate Host headers are not allowed".into()));
+    }
+    if origin_count > 1 {
+        return Err(AppError::InvalidRequest("duplicate Origin headers are not allowed".into()));
+    }
     if parts[2] == "HTTP/1.1" && host_count != 1 {
         return Err(AppError::InvalidRequest("HTTP/1.1 requires exactly one Host header".into()));
+    }
+    if let Some((_, host)) = headers.iter().find(|(name, _)| name == "host") {
+        validate_listener_host(host, listener_address)?;
+    }
+    if let Some((_, origin)) = headers.iter().find(|(name, _)| name == "origin") {
+        if !is_loopback_origin(origin) {
+            return Err(AppError::InvalidRequest("Origin must be a loopback origin".into()));
+        }
     }
     let length = content_length.unwrap_or(0);
     let mut body = vec![0u8; length];
@@ -533,6 +550,79 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig) -> Result
         return Err(AppError::InvalidRequest("query string is invalid or exceeds byte limit".into()));
     }
     Ok(request)
+}
+
+fn validate_listener_host(host: &str, listener_address: SocketAddr) -> Result<(), AppError> {
+    let host = host.to_ascii_lowercase();
+    let mut allowed = vec![listener_address.to_string().to_ascii_lowercase()];
+    if listener_address.ip().is_loopback() {
+        allowed.push(format!("localhost:{}", listener_address.port()));
+    }
+    if listener_address.port() == 80 {
+        let bare_address = match listener_address.ip() {
+            std::net::IpAddr::V4(ip) => ip.to_string(),
+            std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+        };
+        allowed.push(bare_address);
+        if listener_address.ip().is_loopback() {
+            allowed.push("localhost".to_owned());
+        }
+    }
+    if allowed.iter().any(|candidate| candidate == &host) {
+        Ok(())
+    } else {
+        Err(AppError::InvalidRequest(
+            "Host header must match the loopback listener address".into(),
+        ))
+    }
+}
+
+fn is_loopback_origin(origin: &str) -> bool {
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    if authority.is_empty()
+        || authority.chars().any(|character| {
+            character.is_ascii_whitespace()
+                || matches!(character, '/' | '?' | '#' | '@' | '\\')
+        })
+    {
+        return false;
+    }
+
+    let valid_port = |port: &str| port.parse::<u16>().map(|value| value > 0).unwrap_or(false);
+    if let Some(rest) = authority.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            return false;
+        };
+        let host = &rest[..end];
+        let suffix = &rest[end + 1..];
+        if !suffix.is_empty() {
+            let Some(port) = suffix.strip_prefix(':') else {
+                return false;
+            };
+            if !valid_port(port) {
+                return false;
+            }
+        }
+        return host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false);
+    }
+
+    let mut parts = authority.split(':');
+    let host = parts.next().unwrap_or_default();
+    if host.is_empty() {
+        return false;
+    }
+    if let Some(port) = parts.next() {
+        if parts.next().is_some() || !valid_port(port) {
+            return false;
+        }
+    }
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
 }
 
 fn error_response(error: &AppError) -> AppResponse {
@@ -709,6 +799,82 @@ mod tests {
     }
 
     #[test]
+    fn native_http_server_rejects_dns_rebinding_host_headers() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, HttpServerConfig::default()).unwrap();
+        let address = server.local_addr().unwrap();
+        let handler = EchoHandler;
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Get, "/", "home").unwrap();
+
+        let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(format!(
+            "GET / HTTP/1.1\\r\\nHost: attacker.example:{}\\r\\n\\r\\n",
+            address.port()
+        ).as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+    }
+
+    #[test]
+    fn native_http_server_rejects_remote_browser_origins() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, HttpServerConfig::default()).unwrap();
+        let address = server.local_addr().unwrap();
+        let handler = EchoHandler;
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Get, "/", "home").unwrap();
+
+        let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(format!(
+            "GET / HTTP/1.1\\r\\nHost: 127.0.0.1:{}\\r\\nOrigin: https://attacker.example\\r\\n\\r\\n",
+            address.port()
+        ).as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+    }
+
+    #[test]
+    fn native_http_server_accepts_loopback_host_and_origin() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, HttpServerConfig::default()).unwrap();
+        let address = server.local_addr().unwrap();
+        let handler = EchoHandler;
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Get, "/", "home").unwrap();
+
+        let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(format!(
+            "GET / HTTP/1.1\\r\\nHost: localhost:{}\\r\\nOrigin: http://localhost:3000\\r\\n\\r\\n",
+            address.port()
+        ).as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.ends_with("home:GET:/"));
+    }
+
+    #[test]
     fn native_http_server_dispatches_to_ardisa_and_preserves_query() {
         use std::io::{Read, Write};
         use std::net::TcpStream;
@@ -725,7 +891,7 @@ mod tests {
 
         let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
         let mut client = TcpStream::connect(address).unwrap();
-        client.write_all(b"GET /?q=ardisa HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        client.write_all(format!("GET /?q=ardisa HTTP/1.1\r\nHost: localhost:{}\r\n\r\n", address.port()).as_bytes()).unwrap();
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
         worker.join().unwrap();
@@ -794,7 +960,7 @@ mod tests {
         drop(disconnected);
 
         let mut client = TcpStream::connect(address).unwrap();
-        client.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        client.write_all(format!("GET / HTTP/1.1\r\nHost: localhost:{}\r\n\r\n", address.port()).as_bytes()).unwrap();
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
         worker.join().unwrap();
@@ -816,7 +982,7 @@ mod tests {
         app.route(AppMethod::Post, "/", "post").unwrap();
         let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
         let mut client = TcpStream::connect(address).unwrap();
-        client.write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\n").unwrap();
+        client.write_all(format!("POST / HTTP/1.1\r\nHost: localhost:{}\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\n", address.port()).as_bytes()).unwrap();
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
         worker.join().unwrap();
