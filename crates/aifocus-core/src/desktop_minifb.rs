@@ -4,7 +4,6 @@
 //! visible labels, but minifb does not expose native accessibility-tree APIs;
 //! applications requiring screen-reader integration need a platform UI backend.
 use std::collections::VecDeque;
-use std::time::Duration;
 
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
@@ -104,16 +103,17 @@ impl MinifbDesktopHost {
                         match key {
                             Key::Backspace => { value.pop(); }
                             Key::Space => value.push(' '),
-                            Key::A..=Key::Z => {
-                                let letter = format!("{key:?}");
-                                value.push_str(&letter.to_ascii_lowercase());
-                            }
-                            Key::Key0..=Key::Key9 => {
-                                let digit = format!("{key:?}").trim_start_matches("Key").to_owned();
-                                value.push_str(&digit);
-                            }
                             Key::Enter => {}
-                            _ => {}
+                            other => {
+                                let label = format!("{other:?}");
+                                if label.len() == 1 && label.as_bytes()[0].is_ascii_alphabetic() {
+                                    value.push_str(&label.to_ascii_lowercase());
+                                } else if let Some(digit) = label.strip_prefix("Key") {
+                                    if digit.len() == 1 && digit.as_bytes()[0].is_ascii_digit() {
+                                        value.push_str(digit);
+                                    }
+                                }
+                            }
                         }
                         if value.len() > MAX_TEXT_BYTES { value.truncate(MAX_TEXT_BYTES); }
                     }
