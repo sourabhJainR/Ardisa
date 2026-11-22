@@ -1,0 +1,111 @@
+name: Native packaging
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "installer/**"
+      - "scripts/create_sbom.py"
+      - ".github/workflows/native-packaging.yml"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build native installer (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Ardisa CLI
+        run: cargo build --release -p ardisa
+      - name: Build Linux DEB installer
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          mkdir -p target/package/DEBIAN target/package/usr/bin
+          install -m 0755 target/release/ardisa target/package/usr/bin/ardisa
+          printf 'Package: ardisa\nVersion: 0.1.0\nSection: devel\nPriority: optional\nArchitecture: amd64\nMaintainer: Ardisa\nDescription: Ardisa language compiler and runtime\n' > target/package/DEBIAN/control
+          dpkg-deb --build target/package target/ardisa_0.1.0_amd64.deb
+      - name: Install WiX Toolset
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: choco install wixtoolset --no-progress -y
+      - name: Build Windows MSI installer
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $wix = (Get-Command wix.exe -ErrorAction Stop).Source
+          & $wix build installer/ardisa.wxs -d ArdisaExe="$PWD/target/release/ardisa.exe" -o target/Ardisa-0.1.0-x64.msi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build macOS PKG installer
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          mkdir -p target/pkg-root/usr/local/bin
+          install -m 0755 target/release/ardisa target/pkg-root/usr/local/bin/ardisa
+          pkgbuild --root target/pkg-root --identifier org.ardisa.cli --version 0.1.0 --install-location / target/Ardisa-0.1.0-macos.pkg
+      - name: Generate CycloneDX SBOM
+        shell: bash
+        run: python3 scripts/create_sbom.py target/ardisa.cdx.json
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd target
+          if [ "${{ matrix.platform }}" = "linux" ]; then sha256sum ardisa_0.1.0_amd64.deb ardisa.cdx.json > SHA256SUMS; fi
+          if [ "${{ matrix.platform }}" = "macos" ]; then shasum -a 256 Ardisa-0.1.0-macos.pkg ardisa.cdx.json > SHA256SUMS; fi
+          if [ "${{ matrix.platform }}" = "windows" ]; then Get-FileHash Ardisa-0.1.0-x64.msi -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Ardisa-0.1.0-x64.msi" } | Out-File -Encoding ascii SHA256SUMS; Get-FileHash ardisa.cdx.json -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  ardisa.cdx.json" } | Out-File -Encoding ascii -Append SHA256SUMS; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ardisa-${{ matrix.platform }}-installer
+          path: |
+            target/*.deb
+            target/*.msi
+            target/*.pkg
+            target/ardisa.cdx.json
+            target/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign release assets (keyless)
+        run: |
+          shopt -s globstar nullglob
+          for file in release-assets/**/*; do
+            [ -f "$file" ] || continue
+            case "$file" in *.sigstore.json) continue;; esac
+            cosign sign-blob --yes --bundle "$file.sigstore.json" "$file"
+          done
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "release-assets/*"
+      - name: Publish installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" --generate-notes
