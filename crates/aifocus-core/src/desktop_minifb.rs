@@ -90,6 +90,8 @@ impl MinifbDesktopHost {
 
     fn poll_native_events(&mut self) -> Result<(), AppError> {
         let Some(window) = self.window.as_mut() else { return Ok(()); };
+        window.update_with_buffer(&self.pixels, WIDTH, HEIGHT)
+            .map_err(|error| AppError::Handler(format!("desktop event pump failed: {error}")))?;
         if !window.is_open() {
             if !self.closed {
                 self.events.push_back(UiEvent { node_id: None, kind: UiEventKind::WindowClosed });
@@ -98,30 +100,20 @@ impl MinifbDesktopHost {
             return Ok(());
         }
 
-        let pressed = window.get_keys_pressed(KeyRepeat::No);
+        let pressed = window.get_keys_pressed(KeyRepeat::Yes);
+        let typed_character = window.get_char_pressed();
         if let Some(node_id) = self.focused_input {
             let mut changed = None;
             if let Some(tree) = self.tree.as_mut() {
                 if let Some(node) = tree.nodes().get(&node_id).filter(|node| node.kind == UiNodeKind::TextInput && node.enabled) {
                     let mut value = node.text.clone();
-                    for key in pressed {
-                        match key {
-                            Key::Backspace => { value.pop(); }
-                            Key::Space => value.push(' '),
-                            Key::Enter => {}
-                            other => {
-                                let label = format!("{other:?}");
-                                if label.len() == 1 && label.as_bytes()[0].is_ascii_alphabetic() {
-                                    value.push_str(&label.to_ascii_lowercase());
-                                } else if let Some(digit) = label.strip_prefix("Key") {
-                                    if digit.len() == 1 && digit.as_bytes()[0].is_ascii_digit() {
-                                        value.push_str(digit);
-                                    }
-                                }
-                            }
-                        }
-                        while value.len() > MAX_TEXT_BYTES { value.pop(); }
+                    if pressed.contains(&Key::Backspace) {
+                        value.pop();
                     }
+                    if let Some(character) = typed_character.filter(|character| !character.is_control()) {
+                        value.push(character);
+                    }
+                    while value.len() > MAX_TEXT_BYTES { value.pop(); }
                     if value != node.text { changed = Some(value); }
                 }
                 if let Some(value) = changed {
