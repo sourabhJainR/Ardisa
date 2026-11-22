@@ -3,4 +3,5 @@ resolver = "2"
 members = [
   "crates/aifocus-core",
   "crates/aifocus-cli",
+  "crates/ardisa-wasm",
 ]
