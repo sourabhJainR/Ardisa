@@ -85,7 +85,7 @@ impl MinifbDesktopHost {
         let row_height = 48usize;
         (24, 24 + index.saturating_mul(row_height), self.config.width.saturating_sub(48), 36)
     }
-    fn hit_test(&self, tree: &UiTree, x: usize, y: usize) -> Option<&UiNode> {
+    fn hit_test<'a>(&self, tree: &'a UiTree, x: usize, y: usize) -> Option<&'a UiNode> {
         tree.nodes().values().filter(|node| node.kind != UiNodeKind::Window && node.kind != UiNodeKind::Container)
             .enumerate().find_map(|(index, node)| {
                 let (left, top, width, height) = self.bounds(index);
