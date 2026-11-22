@@ -1,6 +1,7 @@
 //! Core language model, parser, and AI-native structural editing API for Ardisa.
 
 pub mod ai;
+pub mod application;
 pub mod ai_types;
 pub mod ai_primitives;
 pub mod ai_routing;
