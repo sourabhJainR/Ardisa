@@ -615,7 +615,7 @@ mod tests {
 
         let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
         let mut client = TcpStream::connect(address).unwrap();
-        client.write_all(b"GET /?q=ardisa HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n").unwrap();
+        client.write_all(b"GET /?q=ardisa HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
         worker.join().unwrap();
@@ -650,7 +650,7 @@ mod tests {
         app.route(AppMethod::Post, "/", "post").unwrap();
         let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
         let mut client = TcpStream::connect(address).unwrap();
-        client.write_all(b"POST / HTTP/1.1\\r\\nHost: localhost\\r\\nContent-Length: 0\\r\\nContent-Length: 1\\r\\n\\r\\n").unwrap();
+        client.write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\n").unwrap();
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
         worker.join().unwrap();
