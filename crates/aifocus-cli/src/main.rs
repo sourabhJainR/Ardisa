@@ -35,7 +35,7 @@ fn main() -> ExitCode {
             }
         },
         Some("serve") => match (args.next(), args.next(), args.next()) {
-            (Some(path), Some("--allow-http-listen"), Some(bind)) => serve_file(&path, &bind, args.collect()),
+            (Some(path), Some(flag), Some(bind)) if flag == "--allow-http-listen" => serve_file(&path, &bind, args.collect()),
             _ => {
                 eprintln!("error: serve requires <file> --allow-http-listen <bind> followed by METHOD PATH HANDLER triples");
                 ExitCode::from(2)
