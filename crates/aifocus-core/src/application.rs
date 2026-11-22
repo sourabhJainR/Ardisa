@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use crate::native::{ExecutionLimits, NativeError, NativeProgram, NativeValue, ValidatedNativeProgram};
+use crate::native::{ExecutionLimits, NativeProgram, NativeValue, ValidatedNativeProgram};
 
 pub const APP_PROTOCOL_VERSION: u16 = 1;
 pub const DEFAULT_MAX_APP_ROUTES: usize = 1_024;
@@ -368,10 +368,7 @@ mod tests {
     }
     #[test]
     fn native_ardisa_program_can_handle_a_shared_application_route() {
-        let source = r#"module app
-fn home(method: String, path: String, body: String) -> String
-  "hello from Ardisa"
-"#;
+        let source = include_str!("../../../examples/shared_app_logic.ardisa");
         let compiled = crate::compile_source(source).unwrap();
         let program = crate::native::decode_program(&compiled.artifact).unwrap();
         let handler = NativeProgramHandler::new(program, ExecutionLimits::default()).unwrap();
