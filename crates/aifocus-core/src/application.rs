@@ -169,8 +169,8 @@ impl AppRuntime {
     }
     fn validate_request(&self, request: &AppRequest) -> Result<(), AppError> {
         validate_path(&request.path, self.limits.max_path_bytes)?;
-        if request.query.len() > self.limits.max_path_bytes || request.query.bytes().any(|b| b <= 0x20 || b == b'\\r' || b == b'\\n' || b == b'#' || b == 0x7f) {
-            return Err(AppError::InvalidRequest(\"query string is invalid or exceeds byte limit\".into()));
+        if request.query.len() > self.limits.max_path_bytes || request.query.bytes().any(|b| b <= 0x20 || b == b'\r' || b == b'\n' || b == b'#' || b == 0x7f) {
+            return Err(AppError::InvalidRequest("query string is invalid or exceeds byte limit".into()));
         }
         validate_headers(&request.headers, self.limits.max_headers, self.limits.max_header_bytes)?;
         if request.body.len() > self.limits.max_request_body_bytes {
