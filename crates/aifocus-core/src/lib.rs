@@ -3,6 +3,8 @@
 pub mod ai;
 pub mod application;
 pub mod application_source;
+#[cfg(feature = "native-desktop")]
+pub mod desktop_minifb;
 pub mod ai_types;
 pub mod ai_primitives;
 pub mod ai_routing;
