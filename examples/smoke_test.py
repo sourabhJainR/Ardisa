@@ -75,7 +75,7 @@ def main() -> None:
     native_server = subprocess.Popen(
         ["cargo", "run", "--quiet", "-p", "ardisa", "--", "serve",
          "examples/shared_app_logic.ardisa", "--allow-http-listen",
-         f"127.0.0.1:{port}", "GET", "/", "home"],
+         f"127.0.0.1:{port}", "GET", "/", "home", "GET", "/echo", "echo_query"],
         cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
@@ -85,13 +85,16 @@ def main() -> None:
             if native_server.poll() is not None:
                 raise AssertionError("Native Ardisa HTTP server exited before becoming ready")
             try:
-                with urlopen(f"http://127.0.0.1:{port}/?q=smoke", timeout=5) as response:
-                    body = response.read().decode("utf-8")
+                with urlopen(f"http://127.0.0.1:{port}/", timeout=5) as response:
+                    home_body = response.read().decode("utf-8")
+                with urlopen(f"http://127.0.0.1:{port}/echo?q=smoke", timeout=5) as response:
+                    query_body = response.read().decode("utf-8")
+                body = home_body + "|" + query_body
                 break
             except (URLError, TimeoutError, ConnectionError) as error:
                 last_error = error
                 time.sleep(1)
-        if body != "Hello from shared Ardisa application logic":
+        if body != "Hello from shared Ardisa application logic|q=smoke":
             raise AssertionError(f"Native Ardisa HTTP response mismatch: {body!r}; last error: {last_error}")
         print("PASS native Ardisa HTTP server")
     finally:
