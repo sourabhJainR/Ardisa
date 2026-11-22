@@ -1,0 +1,14 @@
+[package]
+name = "ardisa-wasm"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Bounded WebAssembly browser runtime for Ardisa executable artifacts"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ardisa-core = { path = "../aifocus-core" }
+wasm-bindgen = "=0.2.100"
+js-sys = "=0.3.77"
