@@ -182,8 +182,8 @@ impl AppRuntime {
         if !(200..=599).contains(&response.status) {
             return Err(AppError::InvalidResponse("response status must be between 200 and 599".into()));
         }
-        if matches!(response.status, 204 | 304) && !response.body.is_empty() {
-            return Err(AppError::InvalidResponse("204 and 304 responses cannot include a body".into()));
+        if matches!(response.status, 204 | 205 | 304) && !response.body.is_empty() {
+            return Err(AppError::InvalidResponse("204, 205 and 304 responses cannot include a body".into()));
         }
         validate_headers(&response.headers, self.limits.max_headers, self.limits.max_header_bytes)
             .map_err(|e| AppError::InvalidResponse(e.to_string()))?;
@@ -538,7 +538,7 @@ fn error_response(error: &AppError) -> AppResponse {
 fn write_http_response(stream: &mut TcpStream, response: &AppResponse, head_only: bool) -> Result<(), AppError> {
     let reason = match response.status {
         200 => "OK", 201 => "Created", 202 => "Accepted", 204 => "No Content",
-        301 => "Moved Permanently", 302 => "Found", 304 => "Not Modified",
+        205 => "Reset Content", 301 => "Moved Permanently", 302 => "Found", 304 => "Not Modified",
         400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden", 404 => "Not Found",
         405 => "Method Not Allowed", 409 => "Conflict", 413 => "Payload Too Large",
         415 => "Unsupported Media Type", 429 => "Too Many Requests",
@@ -552,7 +552,10 @@ fn write_http_response(stream: &mut TcpStream, response: &AppResponse, head_only
         output.push_str(value);
         output.push_str("\r\n");
     }
-    output.push_str(&format!("content-length: {}\r\nconnection: close\r\n\r\n", response.body.len()));
+    if !matches!(response.status, 204 | 304) {
+        output.push_str(&format!("content-length: {}\r\n", response.body.len()));
+    }
+    output.push_str("connection: close\r\n\r\n");
     stream.write_all(output.as_bytes())
         .and_then(|_| if head_only { Ok(()) } else { stream.write_all(&response.body) })
         .and_then(|_| stream.flush())
@@ -604,7 +607,41 @@ mod tests {
         let mut app = AppRuntime::new(AppLimits::default());
         app.route(AppMethod::Get, "/", "home").unwrap();
         assert!(matches!(app.dispatch(AppRequest::new(AppMethod::Get, "/"), &BadHandler), Err(AppError::InvalidResponse(_))));
+
+        struct ResetWithBody;
+        impl AppHandler for ResetWithBody {
+            fn invoke(&self, _: &str, _: &AppRequest) -> Result<AppResponse, AppError> {
+                Ok(AppResponse::new(205, b"not allowed".to_vec()))
+            }
+        }
+        assert!(matches!(
+            app.dispatch(AppRequest::new(AppMethod::Get, "/"), &ResetWithBody),
+            Err(AppError::InvalidResponse(_))
+        ));
     }
+
+    #[test]
+    fn native_http_204_response_omits_content_length() {
+        use std::io::Read;
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let writer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            write_http_response(&mut stream, &AppResponse::new(204, Vec::new()), false).unwrap();
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        writer.join().unwrap();
+        let response = String::from_utf8(response).unwrap().to_ascii_lowercase();
+        assert!(response.starts_with("http/1.1 204 no content"));
+        assert!(!response.contains("content-length:"));
+        assert!(response.contains("connection: close"));
+    }
+
     #[test]
     fn host_capabilities_are_explicit() {
         let policy = AppPolicy::allow([AppCapability::HttpListen]);
