@@ -1,0 +1,122 @@
+name: Native Installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-installers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release executable
+        run: cargo build --release --locked -p ardisa
+      - name: Create Linux .deb and portable archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$VERSION" == "main" || "$VERSION" == "workflow_dispatch" ]]; then VERSION="0.1.0"; fi
+          mkdir -p dist/deb/DEBIAN dist/deb/usr/bin dist/linux
+          install -m 0755 target/release/ardisa dist/deb/usr/bin/ardisa
+          cat > dist/deb/DEBIAN/control <<EOF
+          Package: ardisa
+          Version: $VERSION
+          Section: devel
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Ardisa maintainers
+          Description: Ardisa language compiler and runtime
+           Native compiler and runtime for the Ardisa programming language.
+          EOF
+          dpkg-deb --root-owner-group --build dist/deb "dist/ardisa-$VERSION-amd64.deb"
+          install -m 0755 target/release/ardisa dist/linux/ardisa
+          cp README.md LICENSE* dist/linux/ 2>/dev/null || true
+          tar -C dist/linux -czf "dist/ardisa-$VERSION-linux-x86_64.tar.gz" .
+          rm -rf dist/deb dist/linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release executable
+        run: cargo build --release --locked -p ardisa
+      - name: Build MSI installer
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($version -eq 'main' -or $version -eq 'workflow_dispatch') { $version = '0.1.0' }
+          dotnet tool install --global wix --version 5.0.2
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          New-Item -ItemType Directory -Force dist | Out-Null
+          wix build installer/windows/Ardisa.wxs -arch x64 -d "ProductVersion=$version" -d "BinPath=$((Get-Location).Path)\target\release\ardisa.exe" -o "dist/Ardisa-$version-windows-x64.msi"
+          Copy-Item target/release/ardisa.exe dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release executable
+        run: cargo build --release --locked -p ardisa
+      - name: Build macOS package installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$VERSION" == "main" || "$VERSION" == "workflow_dispatch" ]]; then VERSION="0.1.0"; fi
+          mkdir -p dist/root/usr/local/bin
+          install -m 0755 target/release/ardisa dist/root/usr/local/bin/ardisa
+          pkgbuild --root dist/root --identifier org.ardisa.cli --version "$VERSION" --install-location / "dist/Ardisa-$VERSION-macos-arm64.pkg"
+          cp target/release/ardisa dist/ardisa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Create checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
