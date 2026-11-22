@@ -39,7 +39,7 @@ impl ArdisaBrowserRuntime {
         let mut limits = ExecutionLimits::default();
         limits.max_instructions = 250_000;
         limits.max_call_depth = 64;
-        limits.max_tasks = 1;
+        limits.max_tasks = 0;
         limits.max_string_bytes = MAX_ARGUMENT_BYTES;
         limits.max_collection_items = 4_096;
         Ok(Self { program, limits })
