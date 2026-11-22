@@ -1,0 +1,46 @@
+# Ardisa application platform
+
+This document tracks the path from the current compiler/runtime to one Ardisa application core that can run on console, desktop, server and browser targets.
+
+## Design contract
+
+Application logic belongs in Ardisa source. Host adapters provide operating-system or browser services, but must not duplicate business rules.
+
+The shared runtime contract is platform-neutral:
+- HTTP-shaped requests and responses with explicit methods, paths, headers and byte bodies.
+- Deterministic exact-route dispatch to named Ardisa functions.
+- Request, response, header, path and route limits.
+- Rejection of path traversal, encoded path aliases, header injection and invalid response status codes.
+- A native VM bridge whose handler ABI is `(method: String, path: String, body: String) -> String`.
+- Explicit host capabilities for HTTP listening, desktop windows, browser DOM, filesystem, network client, clock and process access.
+- A shared UI tree with accessible names, parent validation, bounded node counts and event-kind validation.
+- A `DesktopHost` contract for OS-specific renderers.
+
+## Current implementation
+
+The first runtime contract is in `crates/aifocus-core/src/application.rs`.
+
+The application router can dispatch a request into a function in a validated native Ardisa program. The executable example is `examples/shared_app_logic.ardisa`; the core test compiles it and calls it through `NativeProgramHandler`.
+
+The desktop side currently defines the common UI tree, event model and host trait. It does not yet include a Win32, Cocoa, GTK or other concrete window renderer.
+
+The HTTP side currently defines request/response types, bounded routing and the Ardisa handler bridge. It does not yet include a TCP listener or production HTTP/1.1 server.
+
+These APIs are runtime embedding contracts. They are not yet accepted source-level language syntax and are not advertised as complete native desktop or HTTP APIs.
+
+## Next implementation gates
+
+1. **HTTP host:** add a bounded native listener, strict HTTP/1.1 parser, request framing checks, timeouts, connection limits, graceful shutdown and integration tests. Add an `ardisa serve` CLI command only after the host is complete.
+2. **Desktop host:** implement one concrete native renderer first, then add Windows/macOS/Linux backends behind `DesktopHost`. Add event-loop lifecycle, layout, focus, accessibility, keyboard navigation and safe teardown.
+3. **Source-level API:** define accepted Ardisa declarations for app routes and UI views. Wire parser, semantic checks, effects, ownership, typed IR, native instructions and ARDISA-EXEC-V1 serialization together. Unsupported effects must fail closed.
+4. **WebAssembly:** define the stable host ABI and browser bindings separately from generic WASM. Add compiler target selection, browser loader, memory/fuel bounds, DOM/fetch event adapters and browser automation. Generic WASM must not assume filesystem or threads.
+5. **Packaging:** build signed/reproducible native compiler and application artifacts for Windows, Linux and macOS. Add installer/uninstaller tests, checksums, SBOM and release provenance.
+6. **Shared application proof:** compile the same Ardisa business-logic source for console, desktop, server and browser targets and compare deterministic results.
+
+## Security and compatibility
+
+- All host effects require explicit capability grants; no ambient network, filesystem, process or UI access.
+- Keep ARDISA-EXEC-V1 decoding canonical and fail closed on unsupported opcodes or target features.
+- Apply resource budgets before allocating or dispatching request, UI or browser data.
+- Keep native and browser platform bindings outside the pure shared business-logic module.
+- Do not promote self-hosting readiness from application-platform work.
