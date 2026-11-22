@@ -400,12 +400,14 @@ mod tests {
         let mut tree = UiTree::new(root(), 4).unwrap();
         tree.add(UiNode { id: 2, parent: Some(1), kind: UiNodeKind::Label,
             accessible_name: "Status".into(), text: "Ready".into(), enabled: true }).unwrap();
+        tree.add(UiNode { id: 3, parent: Some(1), kind: UiNodeKind::TextInput,
+            accessible_name: "Search".into(), text: String::new(), enabled: true }).unwrap();
         assert!(tree.apply_action(&UiAction::SetText { node_id: 2, text: "Updated".into() }).is_ok());
         assert_eq!(tree.nodes().get(&2).unwrap().text, "Updated");
         assert!(tree.apply_action(&UiAction::SetText { node_id: 2, text: "x".repeat(4_097) }).is_err());
         assert!(tree.apply_action(&UiAction::SetEnabled { node_id: 99, enabled: false }).is_err());
         assert!(tree.apply_action(&UiAction::CloseWindow).unwrap());
-        assert!(tree.validate_event(&UiEvent { node_id: Some(2),
+        assert!(tree.validate_event(&UiEvent { node_id: Some(3),
             kind: UiEventKind::TextChanged("x".repeat(4_097)) }).is_err());
     }
 
