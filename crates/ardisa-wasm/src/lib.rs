@@ -86,3 +86,27 @@ mod tests {
         assert!(super::MAX_RESULT_BYTES > 0);
     }
 }
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod browser_parity_tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    const SOURCE: &str = "module parity\\napp parity\\n  capability http_listen\\n  route POST \\"/echo\\" echo\\nfn echo(method: String, path: String, query: String, body: String) -> String\\n  body\\n";
+
+    #[wasm_bindgen_test]
+    fn browser_wasm_matches_native_application_abi() {
+        let compiled = ardisa_core::compile_application_source(SOURCE)
+            .expect("shared Ardisa application source compiles");
+        let runtime = ArdisaBrowserRuntime::new(&compiled.program.artifact)
+            .expect("browser runtime validates canonical executable");
+        let args = Array::new();
+        args.push(&JsValue::from_str("POST"));
+        args.push(&JsValue::from_str("/echo"));
+        args.push(&JsValue::from_str(""));
+        args.push(&JsValue::from_str("same-result"));
+        assert_eq!(runtime.invoke("echo", args).expect("browser invocation"), "same-result");
+    }
+}
