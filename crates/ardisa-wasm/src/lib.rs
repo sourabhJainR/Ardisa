@@ -94,7 +94,7 @@ mod browser_parity_tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    const SOURCE: &str = "module parity\\napp parity\\n  capability http_listen\\n  route POST \\"/echo\\" echo\\nfn echo(method: String, path: String, query: String, body: String) -> String\\n  body\\n";
+    const SOURCE: &str = "module parity\\napp parity\\n  capability http_listen\\n  route POST \"/echo\" echo\\nfn echo(method: String, path: String, query: String, body: String) -> String\\n  body\\n";
 
     #[wasm_bindgen_test]
     fn browser_wasm_matches_native_application_abi() {
