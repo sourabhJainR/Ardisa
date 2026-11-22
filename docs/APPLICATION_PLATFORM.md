@@ -26,7 +26,28 @@ The desktop side currently defines the common UI tree, event model and host trai
 
 The HTTP side now includes a bounded native TCP listener, an HTTP/1.0 and HTTP/1.1 request parser, query forwarding, duplicate Content-Length and Transfer-Encoding rejection, a close-after-response transport, an absolute request-read deadline, client-disconnect isolation, and an `ardisa serve` CLI command. It also rejects whitespace before header colons and non-digit Content-Length values. The initial server accepts numeric loopback bind addresses only, handles one connection at a time, has no TLS, and rejects chunked transfer encoding. Any supplied Host value must match the bound loopback listener address and port (or its `localhost` alias); HTTP/1.1 requires exactly one Host. Duplicate Host/Origin/Sec-Fetch-Site headers, non-loopback browser Origin values, and cross-site or unknown Fetch Metadata site values are rejected, including cross-site requests that omit Origin. This reduces DNS-rebinding and browser CSRF exposure but is not client authentication: native clients without Fetch Metadata can still connect. Keep GET/HEAD handlers side-effect-free and add CSRF protection to state-changing handlers. Non-loopback and hostname binds are rejected until authenticated TLS support is implemented. It is for local development, not production internet-facing use.
 
-These APIs are runtime embedding contracts. They are not yet accepted source-level language syntax and are not advertised as complete native desktop or HTTP APIs.
+The lower-level APIs remain runtime embedding contracts; the initial HTTP route declaration syntax described below is now accepted by the application-source compiler API. This is not yet a complete native desktop or HTTP language surface.
+
+## First-class source declarations (initial slice)
+
+Application route metadata can now be declared in Ardisa source rather than repeated in host-language setup:
+
+```ardisa
+module inventory_app
+
+app inventory
+  capability http_listen
+  route GET "/" home
+  route GET "/health" health
+
+fn home(method: String, path: String, query: String, body: String) -> String
+  "Inventory service"
+
+fn health(method: String, path: String, query: String, body: String) -> String
+  "ok"
+```
+
+The `compile_application_source` API extracts the application block, validates route paths, methods, duplicate routes, handler names and explicit capabilities, then compiles the remaining module through the normal compiler pipeline. `ApplicationDefinition::build_runtime` creates the bounded shared router. Host code must still grant the declared capability through `AppPolicy`; source declarations do not grant permissions. This initial slice covers HTTP route metadata only; UI declarations, typed handler request/response values and target-specific lowering remain future work.
 
 ## Next implementation gates
 
