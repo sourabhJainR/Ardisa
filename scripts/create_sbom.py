@@ -13,15 +13,20 @@ metadata = json.loads(subprocess.check_output(
 ))
 components = []
 for package in metadata.get("packages", []):
-    if package.get("source") is None:
-        continue
     components.append({
-        "type": "library",
+        "type": "application" if package["name"] == "ardisa" else "library",
         "bom-ref": f"pkg:cargo/{package['name']}@{package['version']}",
         "name": package["name"],
         "version": package["version"],
         "purl": f"pkg:cargo/{package['name']}@{package['version']}",
     })
+dependencies = []
+for node in (metadata.get("resolve") or {}).get("nodes", []):
+    dependencies.append({
+        "ref": node["id"],
+        "dependsOn": [dependency["pkg"] for dependency in node.get("deps", [])],
+    })
+
 bom = {
     "bomFormat": "CycloneDX",
     "specVersion": "1.5",
@@ -29,5 +34,6 @@ bom = {
     "version": 1,
     "metadata": {"timestamp": datetime.now(timezone.utc).isoformat()},
     "components": components,
+    "dependencies": dependencies,
 }
 output.write_text(json.dumps(bom, indent=2) + "\n", encoding="utf-8")
