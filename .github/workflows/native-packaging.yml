@@ -92,14 +92,14 @@ jobs:
         shell: bash
         run: |
           cd target
-          if [ "${{ matrix.platform }}" = "linux" ]; then sha256sum ardisa_0.1.0_amd64.deb ardisa.cdx.json > SHA256SUMS; fi
-          if [ "${{ matrix.platform }}" = "macos" ]; then shasum -a 256 Ardisa-0.1.0-macos.pkg ardisa.cdx.json > SHA256SUMS; fi
+          if [ "${{ matrix.platform }}" = "linux" ]; then sha256sum ardisa_0.1.0_amd64.deb ardisa.cdx.json > SHA256SUMS-linux; fi
+          if [ "${{ matrix.platform }}" = "macos" ]; then shasum -a 256 Ardisa-0.1.0-macos.pkg ardisa.cdx.json > SHA256SUMS-macos; fi
       - name: Generate Windows checksums
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          Get-FileHash target/Ardisa-0.1.0-x64.msi -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Ardisa-0.1.0-x64.msi" } | Out-File -Encoding ascii target/SHA256SUMS
-          Get-FileHash target/ardisa.cdx.json -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  ardisa.cdx.json" } | Out-File -Encoding ascii -Append target/SHA256SUMS
+          Get-FileHash target/Ardisa-0.1.0-x64.msi -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Ardisa-0.1.0-x64.msi" } | Out-File -Encoding ascii target/SHA256SUMS-windows
+          Get-FileHash target/ardisa.cdx.json -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  ardisa.cdx.json" } | Out-File -Encoding ascii -Append target/SHA256SUMS-windows
       - uses: actions/upload-artifact@v4
         with:
           name: ardisa-${{ matrix.platform }}-installer
@@ -108,7 +108,7 @@ jobs:
             target/*.msi
             target/*.pkg
             target/ardisa.cdx.json
-            target/SHA256SUMS
+            target/SHA256SUMS*
           if-no-files-found: error
 
   publish:
