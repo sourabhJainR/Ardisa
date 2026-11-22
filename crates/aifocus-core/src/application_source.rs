@@ -200,6 +200,18 @@ mod tests {
     }
 
     #[test]
+    fn compiled_application_dispatches_to_ardisa_handler() {
+        use crate::application::{AppRequest, NativeProgramHandler};
+        use crate::native::{decode_program, ExecutionLimits};
+        let compiled = compile_application_source(SOURCE).expect("valid app source");
+        let runtime = compiled.definition.build_runtime(AppLimits::default()).unwrap();
+        let program = decode_program(&compiled.program.artifact).expect("decode Ardisa artifact");
+        let handler = NativeProgramHandler::new(program, ExecutionLimits::default()).unwrap();
+        let response = runtime.dispatch(AppRequest::new(AppMethod::Get, "/"), &handler).unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"ok");
+    }
+    #[test]
     fn rejects_undeclared_capability_and_duplicate_route() {
         let unknown = SOURCE.replace("http_listen", "ambient_network");
         assert!(matches!(compile_application_source(&unknown), Err(ApplicationSourceError::Declaration(_))));
