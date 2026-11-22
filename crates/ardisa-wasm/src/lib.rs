@@ -30,7 +30,7 @@ impl ArdisaBrowserRuntime {
         }
         let decoded = decode_program(artifact)
             .map_err(|error| js_error(&format!("invalid ARDISA-EXEC-V1 artifact: {error:?}")))?;
-        let canonical = if artifact.starts_with("ARDISA-EXEC-V1\\n") {
+        let canonical = if artifact.starts_with("ARDISA-EXEC-V1\n") {
             encode_program_v1(&decoded)
         } else {
             encode_program(&decoded)
@@ -101,11 +101,11 @@ mod tests {
 
     #[test]
     fn legacy_v1_artifacts_keep_their_original_canonical_marker() {
-        let source = "module legacy\\nfn greet() -> String\\n  \\"ok\\"\\n";
+        let source = "module legacy\nfn greet() -> String\n  \"ok\"\n";
         let compiled = ardisa_core::compile_source(source).expect("source compiles");
         let program = super::decode_program(&compiled.artifact).expect("V2 artifact decodes");
         let legacy = super::encode_program_v1(&program);
-        assert!(legacy.starts_with("ARDISA-EXEC-V1\\n"));
+        assert!(legacy.starts_with("ARDISA-EXEC-V1\n"));
         let decoded = super::decode_program(&legacy).expect("V1 artifact decodes");
         assert_eq!(super::encode_program_v1(&decoded), legacy);
     }
