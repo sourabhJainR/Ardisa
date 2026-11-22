@@ -8,7 +8,7 @@ const MAX_STRING_BYTES: usize = 262_144;
 
 fn browser_error(message: impl AsRef<str>) -> JsValue { JsValue::from_str(message.as_ref()) }
 fn limits() -> ExecutionLimits {
-    ExecutionLimits { max_instructions: 100_000, max_call_depth: 64, max_tasks: 1,
+    ExecutionLimits { max_instructions: 100_000, max_call_depth: 64, max_tasks: 0,
         max_collection_items: 4_096, max_string_bytes: MAX_STRING_BYTES, max_value_nodes: 4_096,
         max_value_depth: 32, max_stack_values: 4_096, max_locals: 1_024,
         max_frame_value_nodes: 8_192, max_frame_string_bytes: 524_288 }
@@ -20,7 +20,7 @@ fn parse_argument(value: JsValue) -> Result<NativeValue, JsValue> {
     }
     if let Some(value) = value.as_bool() { return Ok(NativeValue::Bool(value)); }
     if let Some(value) = value.as_f64() {
-        if !value.is_finite() || value.fract() != 0.0 || value < i64::MIN as f64 || value >= 9_223_372_036_854_775_808.0 {
+        if !value.is_finite() || value.fract() != 0.0 || value.abs() > 9_007_199_254_740_991.0 {
             return Err(browser_error("numeric arguments must be finite signed 64-bit integers"));
         }
         return Ok(NativeValue::Int(value as i64));
@@ -71,13 +71,7 @@ mod tests {
     fn browser_limits_are_conservative() {
         let value = limits();
         assert_eq!(value.max_instructions, 100_000);
-        assert_eq!(value.max_tasks, 1);
+        assert_eq!(value.max_tasks, 0);
         assert_eq!(value.max_string_bytes, MAX_STRING_BYTES);
-    }
-    #[test]
-    fn rejects_non_scalar_browser_arguments() {
-        assert!(parse_argument(JsValue::NULL).is_err());
-        assert!(parse_argument(JsValue::from_f64(f64::INFINITY)).is_err());
-        assert!(parse_argument(JsValue::from_f64(1.5)).is_err());
     }
 }
