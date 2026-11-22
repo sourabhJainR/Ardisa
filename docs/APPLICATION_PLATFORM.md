@@ -65,3 +65,10 @@ The `compile_application_source` API extracts the application block, validates r
 - Apply resource budgets before allocating or dispatching request, UI or browser data.
 - Keep native and browser platform bindings outside the pure shared business-logic module.
 - Do not promote self-hosting readiness from application-platform work.
+
+
+## Native installers
+
+The `Native Installers` workflow builds the Ardisa CLI and creates a Linux x86_64 DEB, Windows x64 MSI and macOS arm64 PKG, plus portable binaries/archives where applicable. Tagging a version as `vX.Y.Z` creates a GitHub release with SHA-256 checksums and build-provenance attestations. Manual workflow runs build artifacts without publishing a release.
+
+These packages are currently unsigned. Windows Authenticode signing and macOS Developer ID signing/notarization require maintainer-managed certificates and secrets and are not claimed until configured. The first installer packages the Ardisa CLI; it does not yet bundle arbitrary end-user desktop applications or their runtime dependencies.
