@@ -1,0 +1,127 @@
+name: Native packaging acceptance
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "installer/**"
+      - "scripts/create_sbom.py"
+      - "scripts/validate_sbom.py"
+      - ".github/workflows/native-packaging.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "installer/**"
+      - "scripts/create_sbom.py"
+      - "scripts/validate_sbom.py"
+      - ".github/workflows/native-packaging.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build and install test (${{matrix.os}})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+    runs-on: ${{matrix.os}}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Ardisa CLI
+        run: cargo build --release -p ardisa
+      - name: Build Linux DEB
+        if: matrix.platform == "linux"
+        shell: bash
+        run: |
+          mkdir -p target/package/DEBIAN target/package/usr/bin
+          install -m 0755 target/release/ardisa target/package/usr/bin/ardisa
+          printf "Package: ardisa\\nVersion: 0.1.0\\nSection: devel\\nPriority: optional\\nArchitecture: amd64\\nMaintainer: Ardisa\\nDescription: Ardisa language compiler and runtime\\n" > target/package/DEBIAN/control
+          dpkg-deb --build target/package target/ardisa_0.1.0_amd64.deb
+      - name: Verify Linux install and removal
+        if: matrix.platform == "linux"
+        shell: bash
+        run: |
+          sudo dpkg -i target/ardisa_0.1.0_amd64.deb
+          /usr/bin/ardisa --help
+          sudo dpkg -r ardisa
+          test ! -e /usr/bin/ardisa
+      - name: Install WiX
+        if: matrix.platform == "windows"
+        shell: pwsh
+        run: dotnet tool install --global wix --version 4.0.5
+      - name: Build Windows x64 MSI
+        if: matrix.platform == "windows"
+        shell: pwsh
+        run: |
+          $wix = (Get-Command wix.exe -ErrorAction Stop).Source
+          & $wix build -arch x64 installer/ardisa.wxs -d ArdisaExe="$PWD/target/release/ardisa.exe" -o target/Ardisa-0.1.0-x64.msi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify Windows install and uninstall
+        if: matrix.platform == "windows"
+        shell: pwsh
+        run: |
+          $log = Join-Path $PWD "target/msi-install.log"
+          $msi = Join-Path $PWD "target/Ardisa-0.1.0-x64.msi"
+          $install = Start-Process msiexec.exe -ArgumentList "/i", $msi, "/qn", "/norestart", "/l*v", $log -Wait -PassThru
+          if ($install.ExitCode -notin @(0, 3010)) { Get-Content $log -Tail 100; exit $install.ExitCode }
+          $installedExe = Join-Path $env:ProgramFiles "Ardisa/ardisa.exe"
+          if (-not (Test-Path $installedExe)) { Get-Content $log -Tail 100; throw "Installed Ardisa executable not found under Program Files." }
+          & $installedExe --help
+          if ($LASTEXITCODE -ne 0) { throw "Installed Ardisa CLI failed." }
+          $remove = Start-Process msiexec.exe -ArgumentList "/x", $msi, "/qn", "/norestart" -Wait -PassThru
+          if ($remove.ExitCode -notin @(0, 3010)) { exit $remove.ExitCode }
+          if (Test-Path $installedExe) { throw "Ardisa executable remains after MSI uninstall." }
+      - name: Build macOS PKG
+        if: matrix.platform == "macos"
+        shell: bash
+        run: |
+          mkdir -p target/pkg-root/usr/local/bin
+          install -m 0755 target/release/ardisa target/pkg-root/usr/local/bin/ardisa
+          pkgbuild --root target/pkg-root --identifier org.ardisa.cli --version 0.1.0 --install-location / target/Ardisa-0.1.0-macos.pkg
+      - name: Verify macOS install and clean up
+        if: matrix.platform == "macos"
+        shell: bash
+        run: |
+          sudo installer -pkg target/Ardisa-0.1.0-macos.pkg -target /
+          /usr/local/bin/ardisa --help
+          sudo pkgutil --forget org.ardisa.cli
+          sudo rm -f /usr/local/bin/ardisa
+      - name: Generate and validate CycloneDX SBOM
+        shell: bash
+        run: |
+          python3 scripts/create_sbom.py target/ardisa.cdx.json
+          python3 scripts/validate_sbom.py target/ardisa.cdx.json
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd target
+          if [ "${{matrix.platform}}" = "linux" ]; then sha256sum ardisa_0.1.0_amd64.deb ardisa.cdx.json > SHA256SUMS-linux; fi
+          if [ "${{matrix.platform}}" = "macos" ]; then shasum -a 256 Ardisa-0.1.0-macos.pkg ardisa.cdx.json > SHA256SUMS-macos; fi
+      - name: Generate Windows checksums
+        if: matrix.platform == "windows"
+        shell: pwsh
+        run: |
+          Get-FileHash target/Ardisa-0.1.0-x64.msi -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Ardisa-0.1.0-x64.msi" } | Out-File -Encoding ascii target/SHA256SUMS-windows
+          Get-FileHash target/ardisa.cdx.json -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  ardisa.cdx.json" } | Out-File -Encoding ascii -Append target/SHA256SUMS-windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ardisa-${{matrix.platform}}-installer
+          path: |
+            target/*.deb
+            target/*.msi
+            target/*.pkg
+            target/ardisa.cdx.json
+            target/SHA256SUMS*
+          if-no-files-found: error
