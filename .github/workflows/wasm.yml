@@ -37,3 +37,8 @@ jobs:
         run: cargo check -p ardisa-wasm --target wasm32-unknown-unknown
       - name: Test browser runtime host boundary
         run: cargo test -p ardisa-wasm
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - name: Run browser parity test
+        run: wasm-pack test --headless --chrome crates/ardisa-wasm
