@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ardisa WebAssembly Runtime</title>
+</head>
+<body>
+  <h1>Ardisa WebAssembly Runtime</h1>
+  <p>Run a locally selected ARDISA-EXEC-V1 artifact in the browser. This page does not upload the artifact.</p>
+  <label>Executable artifact <input id="artifact" type="file" accept=".aexe,.txt"></label>
+  <label>Entry function <input id="entry" value="main" maxlength="128"></label>
+  <label>Arguments (JSON array of strings, booleans or integers) <textarea id="args">[]</textarea></label>
+  <button id="run" type="button">Run in WebAssembly</button>
+  <pre id="result" role="status" aria-live="polite">Loading runtime…</pre>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
