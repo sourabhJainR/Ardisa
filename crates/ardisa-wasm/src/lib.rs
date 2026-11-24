@@ -1,6 +1,6 @@
 use ardisa_core::native::{decode_program, ExecutionLimits, NativeValue, ValidatedNativeProgram};
 use js_sys::Array;
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::{prelude::*, JsCast};
 
 const MAX_ARTIFACT_BYTES: usize = 1_048_576;
 const MAX_ARGUMENTS: u32 = 32;
@@ -53,7 +53,7 @@ pub fn run_artifact(artifact: &str, entry: &str, args: JsValue) -> Result<String
         return Err(browser_error("invalid Ardisa entry function name"));
     }
     if !Array::is_array(&args) { return Err(browser_error("arguments must be a JavaScript array")); }
-    let args = Array::from(&args);
+    let args: Array = args.unchecked_into();
     if args.length() > MAX_ARGUMENTS { return Err(browser_error("argument count exceeds browser runtime limit")); }
     let values = args.iter().map(parse_argument).collect::<Result<Vec<_>, _>>()?;
     let decoded = decode_program(artifact).map_err(|error| browser_error(format!("invalid Ardisa artifact: {error:?}")))?;
