@@ -1,0 +1,11 @@
+[package]
+name = "ardisa-desktop"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Native desktop host for Ardisa applications"
+
+[dependencies]
+ardisa-core = { path = "../aifocus-core" }
+font8x8 = "0.3.1"
+minifb = { version = "0.27.0", default-features = false, features = ["x11"] }
