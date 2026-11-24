@@ -1,0 +1,45 @@
+name: Desktop renderer platform acceptance
+
+on:
+  pull_request:
+    paths:
+      - "crates/ardisa-desktop/**"
+      - "Cargo.toml"
+      - ".github/workflows/desktop-renderer-platform-acceptance.yml"
+  push:
+    branches:
+      - "platform/desktop-renderer-20261123"
+    paths:
+      - "crates/ardisa-desktop/**"
+      - "Cargo.toml"
+      - ".github/workflows/desktop-renderer-platform-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check -p ardisa-desktop --all-targets
+      - run: cargo test -p ardisa-desktop
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check -p ardisa-desktop --all-targets
+      - run: cargo test -p ardisa-desktop
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check -p ardisa-desktop --all-targets
+      - run: cargo test -p ardisa-desktop
