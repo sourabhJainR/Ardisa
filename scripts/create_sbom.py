@@ -20,7 +20,7 @@ components = []
 for package in packages:
     if package["id"] == root["id"]:
         continue
-    purl = f"pkg:cargo/{package[\"name\"]}@{package[\"version\"]}"
+    purl = "pkg:cargo/" + package["name"] + "@" + package["version"]
     if package.get("source"):
         purl += "?repository_url=" + quote(package["source"], safe="")
     components.append({
@@ -49,7 +49,7 @@ for dependency in dependencies:
 bom = {
     "bomFormat": "CycloneDX",
     "specVersion": "1.5",
-    "serialNumber": f"urn:uuid:{uuid.uuid4()}",
+    "serialNumber": "urn:uuid:" + str(uuid.uuid4()),
     "version": 1,
     "metadata": {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -58,7 +58,7 @@ bom = {
             "bom-ref": root_ref,
             "name": root["name"],
             "version": root["version"],
-            "purl": f"pkg:cargo/{root[\"name\"]}@{root[\"version\"]}",
+            "purl": "pkg:cargo/" + root["name"] + "@" + root["version"],
         },
     },
     "components": components,
