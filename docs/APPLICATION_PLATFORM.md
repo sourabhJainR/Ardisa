@@ -74,3 +74,10 @@ The `ardisa-wasm` crate builds the ARDISA-EXEC-V1 VM runtime for `wasm32-unknown
 The browser runtime executes Ardisa VM bytecode inside WebAssembly. It does not yet compile Ardisa source directly to native WebAssembly instructions. It grants no browser, network, filesystem, clock or process capability. The sample under `examples/browser` runs a user-selected local artifact without uploading it. Generate the JavaScript glue with `wasm-bindgen` for `wasm32-unknown-unknown` and place the generated package in `examples/browser/pkg`.
 
 The dedicated WebAssembly workflow checks the target build and tests the host boundary. Browser automation, source-to-WASM lowering, WASI support, and browser capability adapters remain separate follow-up work.
+
+
+### Native packaging acceptance (proposal)
+
+The packaging acceptance workflow builds a Linux x86_64 DEB, Windows x64 MSI, and macOS PKG. It installs and checks each artifact, and removes it where a package-managed uninstall is available. macOS PKG cleanup is manual because PKG receipts do not provide an uninstall operation.
+
+The Windows MSI build explicitly selects x64 architecture so the 64-bit component is installed into `ProgramFiles64Folder`. The SBOM generator binds Cargo package IDs to unique CycloneDX `bom-ref` values and validates that every dependency reference resolves. The workflow uploads test artifacts only; release publishing, signing and deployment are deferred until an approved release environment and review gates are configured.
