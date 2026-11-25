@@ -974,6 +974,30 @@ mod tests {
     }
 
     #[test]
+    fn native_http_server_rejects_wrong_origin_port_without_fetch_metadata() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, HttpServerConfig::default()).unwrap();
+        let address = server.local_addr().unwrap();
+        let handler = EchoHandler;
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Post, "/", "update").unwrap();
+        let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(format!(
+            "POST / HTTP/1.1\r\nHost: localhost:{}\r\nOrigin: http://localhost:3000\r\nContent-Length: 0\r\n\r\n",
+            address.port()
+        ).as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+    }
+
+    #[test]
     fn native_http_server_rejects_same_site_cross_origin_metadata() {
         use std::io::{Read, Write};
         use std::net::TcpStream;
@@ -986,7 +1010,7 @@ mod tests {
         app.route(AppMethod::Post, "/", "update").unwrap();
         let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
         let mut client = TcpStream::connect(address).unwrap();
-        client.write_all(format!("POST / HTTP/1.1\r\nHost: localhost:{}\r\nOrigin: http://localhost:3000\r\nSec-Fetch-Site: same-site\r\nContent-Length: 0\r\n\r\n", address.port()).as_bytes()).unwrap();
+        client.write_all(format!("POST / HTTP/1.1\r\nHost: localhost:{}\r\nSec-Fetch-Site: same-site\r\nContent-Length: 0\r\n\r\n", address.port()).as_bytes()).unwrap();
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
         worker.join().unwrap();
