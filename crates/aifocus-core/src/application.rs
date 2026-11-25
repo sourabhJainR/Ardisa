@@ -537,6 +537,16 @@ fn read_http_request(stream: &mut TcpStream, config: HttpServerConfig, listener_
             ));
         }
     }
+    // Native clients may omit browser headers for read-only requests. Mutating
+    // requests must carry either an exact listener Origin or Fetch Metadata.
+    // This rejects browser-style CSRF requests when both headers are absent.
+    if matches!(method, AppMethod::Post | AppMethod::Put | AppMethod::Patch | AppMethod::Delete)
+        && origin_count == 0 && fetch_site_count == 0
+    {
+        return Err(AppError::InvalidRequest(
+            "mutating HTTP requests require Origin or Fetch Metadata".into(),
+        ));
+    }
     let length = content_length.unwrap_or(0);
     let mut body = vec![0u8; length];
     let mut received = 0usize;
@@ -976,12 +986,60 @@ mod tests {
         app.route(AppMethod::Post, "/", "update").unwrap();
         let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
         let mut client = TcpStream::connect(address).unwrap();
-        client.write_all(format!("POST / HTTP/1.1\\r\\nHost: localhost:{}\\r\\nOrigin: http://localhost:3000\\r\\nSec-Fetch-Site: same-site\\r\\nContent-Length: 0\\r\\n\\r\\n", address.port()).as_bytes()).unwrap();
+        client.write_all(format!("POST / HTTP/1.1\r\nHost: localhost:{}\r\nOrigin: http://localhost:3000\r\nSec-Fetch-Site: same-site\r\nContent-Length: 0\r\n\r\n", address.port()).as_bytes()).unwrap();
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
         worker.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
     }
+    #[test]
+    fn native_http_server_rejects_mutating_request_without_origin_or_fetch_metadata() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, HttpServerConfig::default()).unwrap();
+        let address = server.local_addr().unwrap();
+        let handler = EchoHandler;
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Post, "/", "update").unwrap();
+        let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(format!(
+            "POST / HTTP/1.1\r\nHost: localhost:{}\r\nContent-Length: 0\r\n\r\n",
+            address.port()
+        ).as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+    }
+
+    #[test]
+    fn native_http_server_accepts_mutating_request_with_exact_origin_without_fetch_metadata() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::thread;
+
+        let policy = AppPolicy::allow([AppCapability::HttpListen]);
+        let server = NativeHttpServer::bind("127.0.0.1:0", &policy, HttpServerConfig::default()).unwrap();
+        let address = server.local_addr().unwrap();
+        let handler = EchoHandler;
+        let mut app = AppRuntime::new(AppLimits::default());
+        app.route(AppMethod::Post, "/", "update").unwrap();
+        let worker = thread::spawn(move || server.serve_once(&app, &handler).unwrap());
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(format!(
+            "POST / HTTP/1.1\r\nHost: localhost:{}\r\nOrigin: http://localhost:{}\r\nContent-Length: 0\r\n\r\n",
+            address.port(), address.port()
+        ).as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+    }
+
     #[test]
     fn native_http_server_dispatches_to_ardisa_and_preserves_query() {
         use std::io::{Read, Write};
