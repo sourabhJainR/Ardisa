@@ -4,7 +4,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::thread;
 
 use ardisa_core::application::{
-    AppHandler, AppLimits, AppMethod, AppPolicy, AppRequest, NativeHttpServer,
+    AppLimits, AppMethod, AppPolicy, AppRequest, NativeHttpServer,
     NativeProgramHandler, HttpServerConfig, AppCapability,
 };
 use ardisa_core::native::{decode_program, ExecutionLimits};
